@@ -1,9 +1,9 @@
 paths:
   base_dir: "/home/rdcunha/vista_project/vista_bench"
-  # results_dir: "/home/rdcunha/vista_project/results_constrained_decoding"
-  results_dir: "/home/rdcunha/vista_project/results_constrained_decoding_v2"
+  results_dir: "/home/rdcunha/vista_project/results_retrieval_v3"
+  # results_dir: "/home/rdcunha/vista_project/results_constrained_decoding_v4"
   ct_dir: "/data/fries/datasets/vista_bench_ryan/downloaded_ct_scans/chaudhari_lab/ct_data/ct_scans/vista/nov25"
-  valid_tasks: "tasks/valid_tasks.json"
+  valid_tasks: "tasks/valid_tasks_v1_2.json"
   prompts: "tasks/prompts_by_task.json"
   image_prompts: "tasks/image_valid_tasks.json"
 
@@ -12,7 +12,7 @@ model:
 
 runtime:
   cache_dir: "/data/fries/users/rdcunha/model_cache"
-  batch_size: 20
+  batch_size: 30
   max_new_tokens: 1024
 
 models:
@@ -35,24 +35,29 @@ tasks:
   # - radiation_oligoprogression_answer
   # - early_stage_management_answer
   # CVPR task
-  # - pneumonitis_infection_answer
-
-  - progression_assessment_discussed
-  - pneumonitis_infection_discussed
-  - died_of_cancer_1_yr
-  - died_of_cancer_2_yr
-  - died_of_cancer_3_yr
-  - died_of_cancer_4_yr
-  - died_of_cancer_5_yr
   - has_recurrence_1_yr
   - has_recurrence_2_yr
-  - has_recurrence_3_yr
-  - has_recurrence_4_yr
-  - has_recurrence_5_yr
   - progression_recurrence_free_survival_1_yr
   - progression_recurrence_free_survival_2_yr
-  - died_any_cause_1_yr
-  - died_any_cause_2_yr
+  - has_progression_nonrecurrence_1_yr
+  - has_progression_nonrecurrence_2_yr
+
+  # - progression_assessment_discussed
+  # - pneumonitis_infection_discussed
+  # - died_of_cancer_1_yr
+  # - died_of_cancer_2_yr
+  # - died_of_cancer_3_yr
+  # - died_of_cancer_4_yr
+  # - died_of_cancer_5_yr
+  # - has_recurrence_1_yr
+  # - has_recurrence_2_yr
+  # - has_recurrence_3_yr
+  # - has_recurrence_4_yr
+  # - has_recurrence_5_yr
+  # - progression_recurrence_free_survival_1_yr
+  # - progression_recurrence_free_survival_2_yr
+  # - died_any_cause_1_yr
+  # - died_any_cause_2_yr
 
 experiments:
   # - no_image # no image
@@ -60,37 +65,39 @@ experiments:
   # - all_image # middle image from each view
   # - axial_all_image # 10 axial images
   # - sagittal_all_image # 10 sagittal images
-  - no_timeline # image
-  - no_report # timeline + image
-  - timeline_only # timeline
-  - report # timeline + report
+  # - no_timeline # image
+  # - no_report # timeline + image
+  # - timeline_only # timeline
+  # - all_vb_timeline_only # full test split from _full.parquet, timeline only
+  # - all_vb_image_only # full test split from _full.parquet, image only (same as no_timeline)
+  # - report # timeline + report
   # - retrieved_timeline # retrieved timeline
+  - retrieved_timeline_per_iteration
 
 # Retrieval (for retrieved_timeline experiment)
 retrieval:
   enabled: false
   corpus_dir: "/data/fries/datasets/vista_bench_ryan/thoracic_cohort_lumia"
-  # cache_dir: "/data/fries/users/rdcunha/bm25_cache"
-  cache_dir: "/home/rdcunha/vista_project/bm25_test"
+  cache_dir: "/data/fries/users/rdcunha/bm25_cache"
   max_iterations: 10
-  keywords_per_iteration: 5
+  keywords_per_iteration: 3
   records_per_keyword: 5
-  retrieval_batch_size: 8  # patients per VLM batch (use 1 for sequential)
+  retrieval_batch_size: 20  # patients per VLM batch (use 1 for sequential)
   use_time_filter: true
-  months_before: 60
+  months_before: 6
   save_iterations_log: true
   iterations_log_dir: null  # default: {results_dir}/retrieval_logs/...
   max_rows: null            # optional, for dev
+  eval_per_iteration: true   # Enable per-iteration experiment (use retrieved_timeline_per_iteration in experiments)
+  save_timeline_cache: true  # Save parquet for reuse (per-iteration timelines)
+  use_timeline_cache: false  # Load from cache instead of running retrieval (for inference-only runs)
 
 # Timeline truncation configuration
-# Choose one of two modes:
-# 1. 'max_chars': Truncate to first N characters (specify max_chars)
-# 2. 'last_k_events': Take the last k patient events (specify k)
 # Events are identified by the pattern: [YYYY-MM-DD HH:MM] |
 timeline_truncation:
   mode: "last_k_events"  # Options: "max_chars" or "last_k_events"
   # max_chars: 5000     # Used when mode is "max_chars"
-  k: 35             # Used when mode is "last_k_events"
+  k: 55             # Used when mode is "last_k_events"
 
 # CSV subsampling configuration
 # If true, use _subsampled.csv files instead of regular .csv files
@@ -99,4 +106,4 @@ subsample: true
 # Weill eval: which GPU nodes to use (0-7). Used by eval/weill.sh.
 # Override with WEILL_GPUS env or command-line args if needed.
 weill:
-  gpu_nodes: [0,1,5,6,7]
+  gpu_nodes: [3,4,5,6,7]

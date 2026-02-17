@@ -138,7 +138,8 @@ START_DATE = '2025-01-01'
 END_DATE = '2025-12-19'
 
 # database params
-PATH_TO_MEDS_READER_DB = "/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/vista_thoracic_cohort_v0_db"
+# PATH_TO_MEDS_READER_DB = "/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/vista_thoracic_cohort_v0_db"
+PATH_TO_MEDS_READER_DB = "/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/thoracic_cohort_meds_femr_db"
 ONTOLOGY_PATH = "/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/athena_omop_ontologies"
 
 # Setup

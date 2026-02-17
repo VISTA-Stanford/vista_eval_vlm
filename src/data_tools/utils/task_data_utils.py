@@ -25,6 +25,19 @@ def resolve_timeline_csv_filename(
     return f"{task_name}.csv"
 
 
+def resolve_retrieval_csv_filename(task_name: str) -> str:
+    """Resolve CSV filename for retrieval-only data (no patient timeline merge)."""
+    return f"{task_name}_subsampled_retrieval.csv"
+
+
+def resolve_retrieval_csv_path(
+    base_path: Path, source_csv: str, task_name: str
+) -> Path:
+    """Full path to retrieval CSV file (v1_2 is standard location for subsampled retrieval CSVs)."""
+    filename = resolve_retrieval_csv_filename(task_name)
+    return base_path / "v1_2" / source_csv / filename
+
+
 def resolve_timeline_csv_path(
     base_path: Path, source_csv: str, task_name: str, use_subsampled: bool, use_no_report_csv: bool
 ) -> Path:

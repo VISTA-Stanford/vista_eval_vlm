@@ -22,12 +22,14 @@ from models import load_model_adapter
 from data_tools.utils.query_utils import VISTA_BENCH_DATASET, fetch_task_data_from_bq
 from data_tools.utils.meds_timeline_utils import (
     count_unique_event_dates,
+    count_timeline_events,
     truncate_timeline,
 )
 from data_tools.utils.task_data_utils import (
     resolve_local_bq_cache_path,
     resolve_timeline_csv_path,
     resolve_timeline_csv_filename,
+    resolve_retrieval_csv_path,
     find_bq_timeline_column,
     merge_bq_with_timeline_csv,
 )
@@ -75,17 +77,6 @@ class TaskOrchestrator:
         # 4.25. Initialize GCP Storage Client for NIfTI images
         self.storage_client = storage.Client(project=self.project_id)
 
-        # 4.5. Initialize Meds Database and Ontology Lookup
-        # meds_db_path = self.base_path / "thoracic_cohort_meds" / "vista_thoracic_cohort_v0_db"
-        # ontology_path = self.base_path / "thoracic_cohort_meds" / "athena_omop_ontologies"
-        
-        # print(f"    Initializing meds database from: {meds_db_path}")
-        # print(f"    Initializing ontology lookup from: {ontology_path}")
-        
-        # self.lookup = OntologyDescriptionLookupTable()
-        # self.lookup.load(str(ontology_path))
-        # self.meds_database = meds_reader.SubjectDatabase(str(meds_db_path))
-
         # 5. Initialize Model
         self.adapter = load_model_adapter(
             self.model_type, 
@@ -121,6 +112,24 @@ class TaskOrchestrator:
             "TOKENIZERS_PARALLELISM": "false"
         })
 
+    def _count_prompt_tokens(self, text: str) -> int:
+        """Count token length of prompt text using model tokenizer."""
+        if text is None:
+            return 0
+        text = str(text)
+        tokenizer = getattr(self.processor, "tokenizer", None) if getattr(self, "processor", None) else None
+        if tokenizer is None:
+            tokenizer = getattr(self.model, "tokenizer", None)
+        if tokenizer is not None and hasattr(tokenizer, "encode"):
+            try:
+                return len(tokenizer.encode(text, add_special_tokens=False))
+            except (TypeError, Exception):
+                try:
+                    return len(tokenizer.encode(text))
+                except Exception:
+                    pass
+        return len(text.split())
+
     def run_inference(self, task_names=None):
         # Determine which tasks to run
         tasks_to_run = self.valid_tasks
@@ -136,20 +145,33 @@ class TaskOrchestrator:
             # Data variants:
             # - no_report/timeline_only/report: use *_subsampled_no_img_report.csv AND require patient timeline merge
             # - no_timeline: use *_subsampled_no_img_report.csv BUT do NOT require patient timeline (image-only)
-            # - all other experiments: use normal CSV and require patient timeline merge
-            needs_report_timeline = any(e in ('no_report', 'timeline_only', 'report', 'retrieved_timeline') for e in experiments)
+            # - retrieved_timeline: use *_subsampled_retrieval.csv directly (no BQ/timeline merge)
+            # - all other experiments: use *_subsampled.csv and require patient timeline merge
+            needs_report_timeline = any(e in ('no_report', 'timeline_only', 'report') for e in experiments)
             needs_no_timeline = 'no_timeline' in experiments
-            needs_normal = any(e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'retrieved_timeline') for e in experiments)
+            needs_retrieved_timeline = any(e in ('retrieved_timeline', 'retrieved_timeline_per_iteration') for e in experiments)
+            needs_all_vb_timeline = 'all_vb_timeline_only' in experiments
+            needs_all_vb_image = 'all_vb_image_only' in experiments
+            needs_normal = any(e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'all_vb_timeline_only', 'all_vb_image_only') for e in experiments)
 
             loaded_normal = self._load_task_data(task_info, use_no_report_csv=False, require_timeline=True) if needs_normal else None
             loaded_no_report = self._load_task_data(task_info, use_no_report_csv=True, require_timeline=True) if needs_report_timeline else None
             loaded_no_timeline = self._load_task_data(task_info, use_no_report_csv=True, require_timeline=False) if needs_no_timeline else None
+            loaded_retrieval = self._load_retrieval_task_data(task_info) if needs_retrieved_timeline else None
+            loaded_all_vb_timeline = self._load_all_vb_timeline_task_data(task_info) if needs_all_vb_timeline else None
+            loaded_all_vb_image = self._load_all_vb_image_task_data(task_info) if needs_all_vb_image else None
             for experiment in experiments:
                 print(f"\n>>> Starting Task: {task_name} | Experiment: {experiment}")
                 if experiment == 'no_timeline':
                     loaded = loaded_no_timeline
-                elif experiment in ('no_report', 'timeline_only', 'report', 'retrieved_timeline'):
+                elif experiment == 'all_vb_image_only':
+                    loaded = loaded_all_vb_image
+                elif experiment == 'all_vb_timeline_only':
+                    loaded = loaded_all_vb_timeline
+                elif experiment in ('no_report', 'timeline_only', 'report'):
                     loaded = loaded_no_report
+                elif experiment in ('retrieved_timeline', 'retrieved_timeline_per_iteration'):
+                    loaded = loaded_retrieval
                 else:
                     loaded = loaded_normal
                 if loaded is None:
@@ -251,6 +273,139 @@ class TaskOrchestrator:
             df['unique_events'] = float("nan")
         return (df, timeline_col, source_csv)
 
+    def _load_retrieval_task_data(self, task_info):
+        """
+        Load task data directly from _subsampled_retrieval.csv (no BQ, no patient timeline merge).
+        Used for retrieved_timeline experiment where timeline comes from retrieval.
+        Returns (df, None, source_csv) or None on failure.
+        """
+        task_name = task_info['task_name']
+        source_csv = task_info['task_source_csv']
+
+        csv_path = resolve_retrieval_csv_path(self.base_path, source_csv, task_name)
+        if not csv_path.exists():
+            # Fallback: try base_path without v1_2
+            csv_path_alt = self.base_path / source_csv / f"{task_name}_subsampled_retrieval.csv"
+            if csv_path_alt.exists():
+                csv_path = csv_path_alt
+            else:
+                print(f"!!! Error: Retrieval CSV not found at {csv_path}")
+                print(f"    Run format_retrieval_csv.py first to create _subsampled_retrieval.csv files.")
+                return None
+
+        print(f"\n>>> Loading data for task: {task_name} (retrieved_timeline – from _subsampled_retrieval.csv)")
+        print(f"    Reading {csv_path}...")
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            print(f"!!! Error reading retrieval CSV for {task_name}: {e}")
+            return None
+
+        if df.empty:
+            print(f"!!! No data found for task '{task_name}' in retrieval CSV.")
+            return None
+
+        print(f"    Loaded {len(df)} rows from retrieval CSV.")
+
+        if 'index' not in df.columns:
+            df['index'] = df.index
+
+        df['unique_events'] = float("nan")
+        return (df, None, source_csv)
+
+    def _load_all_vb_timeline_task_data(self, task_info):
+        """
+        Load task data from {task_name}_full.parquet (full test split with patient_string).
+        Used for all_vb_timeline_only experiment. Only requires patient_string.
+        Returns (df, 'patient_string', source_csv) or None on failure.
+        """
+        task_name = task_info['task_name']
+        source_csv = task_info['task_source_csv']
+
+        parquet_path = self.base_path / source_csv / f"{task_name}_full.parquet"
+        if not parquet_path.exists():
+            print(f"!!! Error: Full parquet not found at {parquet_path}")
+            print(f"    Run full_test.py first to create _full.parquet files.")
+            return None
+
+        print(f"\n>>> Loading data for task: {task_name} (all_vb_timeline_only – from _full.parquet)")
+        print(f"    Reading {parquet_path}...")
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception as e:
+            print(f"!!! Error reading parquet for {task_name}: {e}")
+            return None
+
+        if df.empty:
+            print(f"!!! No data found for task '{task_name}' in parquet.")
+            return None
+
+        if 'patient_string' not in df.columns:
+            print(f"!!! Error: 'patient_string' column not found in {parquet_path}")
+            return None
+
+        print(f"    Loaded {len(df)} rows from _full.parquet.")
+
+        if 'index' not in df.columns:
+            df['index'] = df.index
+
+        timeline_col = 'patient_string'
+        df['unique_events'] = df[timeline_col].apply(count_unique_event_dates)
+        truncation_config = self.cfg.get('timeline_truncation', None)
+        df[timeline_col] = df[timeline_col].apply(lambda x: truncate_timeline(x, truncation_config))
+        return (df, timeline_col, source_csv)
+
+    def _load_all_vb_image_task_data(self, task_info):
+        """
+        Load task data from {task_name}_full.parquet for all_vb_image_only experiment.
+        Filters to rows with nifti_path (for image loading). Uses image prompts, no timeline.
+        Returns (df, None, source_csv) - timeline_col is None.
+        """
+        task_name = task_info['task_name']
+        source_csv = task_info['task_source_csv']
+
+        parquet_path = self.base_path / source_csv / f"{task_name}_full.parquet"
+        if not parquet_path.exists():
+            print(f"!!! Error: Full parquet not found at {parquet_path}")
+            print(f"    Run full_test_ehr_vb_download.py first to create _full.parquet files.")
+            return None
+
+        print(f"\n>>> Loading data for task: {task_name} (all_vb_image_only – from _full.parquet)")
+        print(f"    Reading {parquet_path}...")
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception as e:
+            print(f"!!! Error reading parquet for {task_name}: {e}")
+            return None
+
+        if df.empty:
+            print(f"!!! No data found for task '{task_name}' in parquet.")
+            return None
+
+        if 'nifti_path' not in df.columns:
+            print(f"!!! Error: 'nifti_path' column not found in {parquet_path}")
+            return None
+        if '_accession_number' not in df.columns:
+            print(f"!!! Error: '_accession_number' column not found in {parquet_path}")
+            return None
+
+        # Filter to rows with nifti_path and _accession_number (required for image loading)
+        df = df[
+            df['nifti_path'].notna() & (df['nifti_path'].astype(str).str.strip() != "")
+            & df['_accession_number'].notna() & (df['_accession_number'].astype(str).str.strip() != "")
+        ].copy()
+        if df.empty:
+            print(f"!!! No rows with nifti_path and _accession_number for task '{task_name}'")
+            return None
+
+        print(f"    Loaded {len(df)} rows with nifti_path and _accession_number from _full.parquet.")
+
+        if 'index' not in df.columns:
+            df['index'] = df.index
+
+        df['unique_events'] = float("nan")
+        return (df, None, source_csv)
+
     def _prepare_batch_for_inference(self, batch, existing_indices, constrained_choices):
         """
         Prepare a batch for inference (CPU work: create_template, prepare_inputs).
@@ -348,9 +503,20 @@ class TaskOrchestrator:
             inference_batches.append({"indices": list(range(len(new_items))), "inputs": inputs})
             if isinstance(inputs, list):
                 for inp in inputs:
-                    max_input_tokens = max(max_input_tokens, _count_input_tokens(inp))
+                    token_count = _count_input_tokens(inp)
+                    # Add image tokens for vLLM-style inputs (Qwen3, InternVL, OctoMed, etc.)
+                    if isinstance(inp, dict) and inp.get("multi_modal_data") and inp["multi_modal_data"].get("image"):
+                        images = inp["multi_modal_data"]["image"]
+                        num_images = len(images) if isinstance(images, list) else 1
+                        token_count += num_images * 256  # Approximate tokens per image for VLMs
+                    max_input_tokens = max(max_input_tokens, token_count)
             else:
-                max_input_tokens = max(max_input_tokens, _count_input_tokens(inputs))
+                token_count = _count_input_tokens(inputs)
+                if isinstance(inputs, dict) and inputs.get("multi_modal_data") and inputs["multi_modal_data"].get("image"):
+                    images = inputs["multi_modal_data"]["image"]
+                    num_images = len(images) if isinstance(images, list) else 1
+                    token_count += num_images * 256
+                max_input_tokens = max(max_input_tokens, token_count)
 
         return (new_items, inference_batches, max_input_tokens)
 
@@ -384,8 +550,8 @@ class TaskOrchestrator:
         save_dir.mkdir(parents=True, exist_ok=True)
         out_file = save_dir / f"{task_name}_results_{experiment}.csv"
 
-        # Overwrite (don't resume) for retrieved_timeline experiment
-        if experiment == "retrieved_timeline":
+        # Overwrite (don't resume) for retrieved_timeline experiments
+        if experiment in ("retrieved_timeline", "retrieved_timeline_per_iteration"):
             out_file.unlink(missing_ok=True)
 
         existing_indices = set()
@@ -400,8 +566,8 @@ class TaskOrchestrator:
 
         # 3. Prepare Prompt and Dataset (experiment-specific; use copy so shared df is unchanged)
         df_exp = df.copy()
-        if experiment == 'no_timeline':
-            # no_timeline: image-only prompt from image_valid_tasks.json (no patient timeline)
+        if experiment in ('no_timeline', 'all_vb_image_only'):
+            # Image-only prompt from image_valid_tasks.json (no patient timeline)
             base_prompt_template = self.image_prompts_map.get(task_name, "")
             if not base_prompt_template:
                 # Fallback if task missing in image_valid_tasks.json
@@ -477,15 +643,136 @@ class TaskOrchestrator:
                                 "task": task_name,
                                 "model": self.file_model_name,
                                 "iteration": log_entry["iteration"],
-                                # "keywords": ", ".join(log_entry["keywords"]),
                                 "all_keywords_so_far": ", ".join(log_entry.get("all_keywords_so_far", [])),
-                                # "keyword_reasoning": log_entry.get("keyword_reasoning", ""),
-                                # "raw_model_output": log_entry.get("raw_model_output", ""),
                                 "num_results": sum(log_entry.get("num_results_per_keyword", [])),
                                 "total_unique": log_entry.get("total_unique_so_far", 0),
+                                "internal_state": log_entry.get("internal_state", ""),
+                                "current_evidence": log_entry.get("current_evidence", ""),
+                                "search_history": log_entry.get("search_history", ""),
+                                "answer": log_entry.get("answer", ""),
+                                "clinical_reasoning": log_entry.get("clinical_reasoning", ""),
+                                "raw_model_output": log_entry.get("raw_model_output", ""),
                             })
                     if log_rows:
                         pd.DataFrame(log_rows).to_csv(csv_log_path, mode="w", index=False)
+            elif experiment == 'retrieved_timeline_per_iteration':
+                if self.retriever is None:
+                    raise ValueError(
+                        "retrieved_timeline_per_iteration experiment requires retrieval.enabled=true in config"
+                    )
+                from retrieval import run_iterative_retrieval_batch
+                rc = self.retrieval_cfg
+                max_iterations = rc.get("max_iterations", 3)
+                max_rows = rc.get("max_rows")
+                truncation_config = None  # No truncation for retrieved_timeline_per_iteration
+                iterations_log_dir = rc.get("iterations_log_dir") or (
+                    self.results_base / "retrieval_logs" / source_csv / task_name / self.file_model_name
+                )
+                save_log = rc.get("save_iterations_log", True)
+                save_timeline_cache = rc.get("save_timeline_cache", False)
+                use_timeline_cache = rc.get("use_timeline_cache", False)
+                cache_path = Path(iterations_log_dir) / "retrieval_timelines_per_iteration.parquet"
+                if max_rows:
+                    df_exp = df_exp.head(max_rows).copy()
+                if save_log or save_timeline_cache or use_timeline_cache:
+                    Path(iterations_log_dir).mkdir(parents=True, exist_ok=True)
+
+                rows_list = list(df_exp.iterrows())
+                if use_timeline_cache and cache_path.exists():
+                    cache_df = pd.read_parquet(cache_path)
+                    expanded_rows = []
+                    for idx, row in rows_list:
+                        row_dict = row.to_dict()
+                        orig_index = row_dict.get("index", idx)
+                        cache_rows = cache_df[
+                            (cache_df["person_id"].astype(str) == str(row["person_id"]))
+                            & (cache_df["index"] == orig_index)
+                        ].sort_values("iteration")
+                        for _, cr in cache_rows.iterrows():
+                            new_row = dict(row_dict)
+                            new_row["iteration"] = int(cr["iteration"])
+                            timeline = cr["timeline"]
+                            combined = truncate_timeline(timeline, truncation_config)
+                            new_row["dynamic_prompt"] = base_prompt_template.replace("[PATIENT_TIMELINE]", combined)
+                            new_row["unique_events"] = int(cr.get("unique_events", count_timeline_events(timeline)))
+                            expanded_rows.append(new_row)
+                    df_exp = pd.DataFrame(expanded_rows)
+                else:
+                    all_results = []
+                    batch_size = rc.get("retrieval_batch_size", 8)
+                    for i in tqdm(range(0, len(rows_list), batch_size), desc="Retrieval"):
+                        batch_rows = rows_list[i : i + batch_size]
+                        batch_data = []
+                        use_time_filter = rc.get("use_time_filter", False)
+                        for _, r in batch_rows:
+                            entry = {
+                                "person_id": str(r["person_id"]),
+                                "question": str(r.get("question", r.get("label_description", ""))),
+                            }
+                            if use_time_filter:
+                                embed_time = r.get("embed_time")
+                                if embed_time is not None and pd.notna(embed_time):
+                                    et = pd.to_datetime(embed_time, errors="coerce")
+                                    if pd.notna(et):
+                                        entry["end_date"] = et.strftime("%Y-%m-%d")
+                                        start_dt = et - pd.DateOffset(months=rc.get("months_before", 6))
+                                        entry["start_date"] = start_dt.strftime("%Y-%m-%d")
+                            batch_data.append(entry)
+                        results = run_iterative_retrieval_batch(
+                            self.retriever, self.adapter, self.model, self.processor,
+                            batch_data=batch_data,
+                            task_name=task_name,
+                            max_iterations=max_iterations,
+                            keywords_per_iteration=rc.get("keywords_per_iteration", 5),
+                            records_per_keyword=rc.get("records_per_keyword", 5),
+                        )
+                        for (_, row), result in zip(batch_rows, results):
+                            all_results.append((row, result))
+                    expanded_rows = []
+                    cache_rows = []
+                    for row, result in all_results:
+                        row_dict = row.to_dict()
+                        orig_index = row_dict.get("index", row.name)
+                        for iter_num, timeline in enumerate(result.timeline_per_iteration, start=1):
+                            new_row = dict(row_dict)
+                            new_row["iteration"] = iter_num
+                            combined = truncate_timeline(timeline, truncation_config)
+                            new_row["dynamic_prompt"] = base_prompt_template.replace("[PATIENT_TIMELINE]", combined)
+                            new_row["unique_events"] = count_timeline_events(timeline)
+                            expanded_rows.append(new_row)
+                            cache_rows.append({
+                                "person_id": str(row["person_id"]),
+                                "index": orig_index,
+                                "iteration": iter_num,
+                                "timeline": timeline,
+                                "unique_events": count_timeline_events(timeline),
+                            })
+                    df_exp = pd.DataFrame(expanded_rows)
+                    if save_timeline_cache and cache_rows:
+                        pd.DataFrame(cache_rows).to_parquet(cache_path, index=False)
+                    if save_log and all_results:
+                        csv_log_path = Path(iterations_log_dir) / "retrieval_keywords.csv"
+                        log_rows = []
+                        for row, result in all_results:
+                            for log_entry in result.iterations_log:
+                                log_rows.append({
+                                    "person_id": str(row["person_id"]),
+                                    "task": task_name,
+                                    "model": self.file_model_name,
+                                    "iteration": log_entry["iteration"],
+                                    "all_keywords_so_far": ", ".join(log_entry.get("all_keywords_so_far", [])),
+                                    "num_results": sum(log_entry.get("num_results_per_keyword", [])),
+                                    "total_unique": log_entry.get("total_unique_so_far", 0),
+                                    "internal_state": log_entry.get("internal_state", ""),
+                                    "current_evidence": log_entry.get("current_evidence", ""),
+                                    "search_history": log_entry.get("search_history", ""),
+                                    "answer": log_entry.get("answer", ""),
+                                    "clinical_reasoning": log_entry.get("clinical_reasoning", ""),
+                                    "raw_model_output": log_entry.get("raw_model_output", ""),
+                                })
+                        if log_rows:
+                            pd.DataFrame(log_rows).to_csv(csv_log_path, mode="w", index=False)
+                df_exp["index"] = range(len(df_exp))
             else:
                 df_exp['dynamic_prompt'] = df_exp[timeline_col].apply(lambda x: base_prompt_template.replace('[PATIENT_TIMELINE]', str(x)))
 
@@ -542,12 +829,12 @@ class TaskOrchestrator:
                         res_row = item['raw_row'].drop(labels=[timeline_col]).to_dict()
                     else:
                         res_row = item['raw_row'].to_dict()
-                    # if 'note_text' in res_row:
-                    #     res_row = item['raw_row'].drop(labels=["note_text"]).to_dict()
-                    # if 'patient_string' in res_row:
-                    #     res_row = item['raw_row'].drop(labels=["patient_string"]).to_dict()
-                    # if 'report' in res_row:
-                    #     res_row = item['raw_row'].drop(labels=["report"]).to_dict()
+                    if 'note_text' in res_row:
+                        res_row = item['raw_row'].drop(labels=["note_text"]).to_dict()
+                    if 'patient_string' in res_row:
+                        res_row = item['raw_row'].drop(labels=["patient_string"]).to_dict()
+                    if 'report' in res_row:
+                        res_row = item['raw_row'].drop(labels=["report"]).to_dict()
                     # Handle both dict (with logprobs) and legacy string output
                     if isinstance(out, dict):
                         res_row['model_response'] = out.get("text", "")
@@ -568,6 +855,15 @@ class TaskOrchestrator:
                             res_row['used_image'] = 1
                     else:
                         res_row['used_image'] = 0
+                    
+                    if experiment == 'retrieved_timeline_per_iteration':
+                        res_row['input_token_length'] = self._count_prompt_tokens(item.get('question', ''))
+                    
+                    if experiment == 'no_image' and timeline_col and timeline_col in item['raw_row']:
+                        timeline_text = item['raw_row'][timeline_col]
+                        res_row['timeline_token_count'] = self._count_prompt_tokens(
+                            str(timeline_text) if pd.notna(timeline_text) and str(timeline_text) != 'nan' else ''
+                        )
                     
                     results_buffer.append(res_row)
                 

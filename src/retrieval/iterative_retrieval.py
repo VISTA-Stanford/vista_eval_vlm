@@ -1,7 +1,7 @@
 """
 Iterative VLM-driven patient timeline retrieval.
 
-Fixed iterations, 5 keywords per step, top 5 records per keyword, no VLM decision.
+Fixed iterations, keywords_per_iteration per step (from config), records_per_keyword per keyword, no VLM decision.
 """
 
 import json
@@ -59,86 +59,113 @@ def _run_vlm_batch(
     return [str(o).strip() if o is not None else "" for o in outputs]
 
 
-def _parse_reasoning_and_keywords(raw: str) -> Tuple[str, List[str]]:
+def _extract_tag(text: str, tag: str) -> str:
+    """Extract content from <tag>...</tag>. Returns empty string if not found."""
+    if not text:
+        return ""
+    match = re.search(
+        rf"<{tag}\s*>(.+?)</{tag}\s*>",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _parse_structured_output(raw: str, max_keywords: int = 5) -> Dict[str, Any]:
     """
-    Parse format:
-     <clinical_reasoning>... [Reasoning]: ... </clinical_reasoning>
-
-    <answer>
-    ["k1", "k2", "k3", "k4", "k5"]
-    </answer>
-
-    Returns (reasoning_str, keywords_list). Keywords truncated to 5, padded if fewer.
+    Parse model output for tags: internal_state, current_evidence, search_history, answer.
+    Returns dict with keys: internal_state, current_evidence, search_history, keywords, reasoning.
+    Falls back to <clinical_reasoning> for reasoning if present.
     """
-    reasoning = ""
-    keywords: List[str] = []
-
+    result: Dict[str, Any] = {
+        "internal_state": "",
+        "current_evidence": "",
+        "search_history": "",
+        "answer": "",
+        "clinical_reasoning": "",
+        "keywords": [],
+        "reasoning": "",
+    }
     if not raw or not str(raw).strip():
-        return reasoning, keywords
+        return result
 
     text = str(raw).strip()
 
-    # Extract reasoning from <think>...</think>
-    think_match = re.search(
-        r"<clinical_reasoning>\s*(.+?)\s*</clinical_reasoning>",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if think_match:
-        reasoning = think_match.group(1).strip()
+    # Extract structured tags
+    result["internal_state"] = _extract_tag(text, "internal_state")
+    result["current_evidence"] = _extract_tag(text, "current_evidence")
+    result["search_history"] = _extract_tag(text, "search_history")
+    answer_content = _extract_tag(text, "answer")
+    result["answer"] = answer_content
+    result["clinical_reasoning"] = _extract_tag(text, "clinical_reasoning")
 
-    # Extract keywords from <answer>["k1", "k2", ...]</answer>
-    answer_match = re.search(
-        r"<answer>\s*(.+?)\s*</answer>",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if answer_match:
-        inner = answer_match.group(1).strip()
-        # Parse JSON array: ["k1", "k2", "k3", "k4", "k5"]
+    # Fallback: clinical_reasoning for reasoning
+    result["reasoning"] = result["clinical_reasoning"]
+    if not result["reasoning"] and result["internal_state"]:
+        result["reasoning"] = result["internal_state"]
+
+    # Parse keywords from <answer>
+    keywords: List[str] = []
+    if answer_content:
         try:
-            keywords = json.loads(inner)
+            keywords = json.loads(answer_content)
             if isinstance(keywords, list):
-                keywords = [str(k).strip() for k in keywords if k][:5]
+                keywords = [str(k).strip() for k in keywords if k][:max_keywords]
         except json.JSONDecodeError:
-            # Fallback: split on comma, strip quotes
             keywords = [
-                k.strip().strip('"\'') for k in re.findall(r'["\']([^"\']*)["\']', inner)
-            ][:5]
+                k.strip().strip('"\'') for k in re.findall(r'["\']([^"\']*)["\']', answer_content)
+            ][:max_keywords]
             if not keywords:
-                keywords = [p.strip().strip('"\'') for p in inner.split(",") if p.strip()][:5]
+                keywords = [p.strip().strip('"\'') for p in answer_content.split(",") if p.strip()][:max_keywords]
 
-    # Fallback: comma-separated or plain list
     if not keywords:
         parts = [p.strip().strip('"\'') for p in text.split(",") if p.strip()]
-        keywords = parts[:5]
+        keywords = parts[:max_keywords]
 
-    # Exclude keywords that contain tags ('<' or '>')
-    keywords = [k for k in keywords if "<" not in k and ">" not in k]
-    # Exclude keywords that are greater than 50 characters
-    keywords = [k for k in keywords if len(k) <= 50]
+    keywords = [k for k in keywords if "<" not in k and ">" not in k and len(k) <= 50]
+    result["keywords"] = keywords[:max_keywords]
 
-    return reasoning, keywords
+    return result
 
 
-def _ensure_five_keywords(
+def _parse_reasoning_and_keywords(raw: str, max_keywords: int = 5) -> Tuple[str, List[str]]:
+    """
+    Parse format:
+     <clinical_reasoning>... [Reasoning]: ... </clinical_reasoning>
+     <internal_state>...</internal_state>
+     <current_evidence>...</current_evidence>
+     <search_history>...</search_history>
+     <answer>["k1", "k2", ...]</answer>
+
+    Returns (reasoning_str, keywords_list). Keywords truncated to max_keywords.
+    """
+    parsed = _parse_structured_output(raw, max_keywords)
+    return parsed["reasoning"], parsed["keywords"]
+
+
+def _ensure_n_keywords(
     keywords: List[str],
     task_name: str,
     question: str,
+    n: int,
+    exclude_searched: Optional[set] = None,
 ) -> List[str]:
-    """Ensure exactly 5 keywords; pad with fallbacks if fewer, truncate if more."""
-    if len(keywords) >= 5:
-        return keywords[:5]
+    """Ensure exactly n keywords; pad with fallbacks if fewer, truncate if more.
+    exclude_searched: optional set of lowercased keywords already searched (to avoid repeats).
+    """
+    exclude = exclude_searched or set()
+    keywords = [k for k in keywords if k and k.lower() not in exclude]
+    if len(keywords) >= n:
+        return keywords[:n]
     fallbacks = [task_name] if task_name else []
     if question:
-        # Extract first few meaningful words from question (avoid very short words)
-        words = [w for w in question.split() if len(w) > 3][:5]
+        words = [w for w in question.split() if len(w) > 3][:n]
         fallbacks.extend(words)
-    while len(keywords) < 5 and fallbacks:
+    while len(keywords) < n and fallbacks:
         candidate = fallbacks.pop(0)
-        if candidate and candidate not in keywords:
+        if candidate and candidate not in keywords and candidate.lower() not in exclude:
             keywords.append(candidate)
-    return keywords[:5]
+    return keywords[:n]
 
 
 @dataclass
@@ -146,6 +173,7 @@ class IterativeRetrievalResult:
     """Result of iterative retrieval."""
 
     timeline_str: str
+    timeline_per_iteration: List[str] = field(default_factory=list)  # timeline after each iteration
     iterations_log: List[Dict[str, Any]] = field(default_factory=list)
     all_keywords: List[str] = field(default_factory=list)
     keyword_reasoning: List[str] = field(default_factory=list)
@@ -165,7 +193,7 @@ def run_iterative_retrieval(
     keyword_extraction_template: Optional[str] = None,
 ) -> IterativeRetrievalResult:
     """
-    Run iterative retrieval: fixed iterations, 5 keywords, 5 records per keyword.
+    Run iterative retrieval: fixed iterations, keywords_per_iteration keywords, records_per_keyword per keyword.
 
     No VLM decision; always runs full max_iterations.
     Keywords regenerated each iteration using retrieved timeline as context.
@@ -180,10 +208,12 @@ def run_iterative_retrieval(
     keyword_reasoning_list: List[str] = []
 
     prev_timeline = ""
+    prev_internal_state = ""
     searched_keywords_list: List[str] = []
+    timeline_per_iteration: List[str] = []
 
     for iteration in range(1, max_iterations + 1):
-        # 1. Build prompt with previous iteration's context (patient_timeline + searched_keywords)
+        # 1. Build prompt with previous iteration's context (internal_state, patient_timeline, searched_keywords)
         task_query = question or task_name
         previous_patient_timeline = (
             prev_timeline[:2000] if prev_timeline else "No evidence retrieved yet."
@@ -191,30 +221,37 @@ def run_iterative_retrieval(
         previous_searched_keywords = (
             ", ".join(dict.fromkeys(searched_keywords_list)) if searched_keywords_list else "No previous searches."
         )
-        prompt = kw_tpl.format(
-            task_query=task_query,
-            patient_timeline=previous_patient_timeline,
-            searched_keywords=previous_searched_keywords,
-        )
+        format_kwargs: Dict[str, Any] = {
+            "task_query": task_query,
+            "patient_timeline": previous_patient_timeline,
+            "searched_keywords": previous_searched_keywords,
+            "iteration": iteration,
+        }
+        if "{internal_state}" in kw_tpl:
+            format_kwargs["internal_state"] = prev_internal_state or "None."
+        prompt = kw_tpl.format(**format_kwargs)
 
         reasoning = ""
         try:
             kw_raw = _run_vlm_text_only(
-                vlm_adapter, vlm_model, vlm_processor, prompt, max_tokens=256
+                vlm_adapter, vlm_model, vlm_processor, prompt, max_tokens=512
             )
         except Exception as e:
             logger.warning("Keyword extraction failed: %s, using fallback", e)
             kw_raw = ""
             reasoning = f"Fallback: {e}"
 
-        if kw_raw:
-            reasoning_parsed, keywords = _parse_reasoning_and_keywords(kw_raw)
-            if reasoning_parsed:
-                reasoning = reasoning_parsed
-            keywords = list(dict.fromkeys(keywords))  # unique, preserve order
-            keywords = _ensure_five_keywords(keywords, task_name, question)
-        else:
-            keywords = _ensure_five_keywords([], task_name, question)
+        parsed = _parse_structured_output(kw_raw, keywords_per_iteration)
+        keywords = parsed["keywords"]
+        if parsed["reasoning"]:
+            reasoning = parsed["reasoning"]
+        prev_internal_state = parsed["internal_state"]
+
+        exclude_searched = {k.lower() for k in searched_keywords_list}
+        keywords = list(dict.fromkeys(keywords))
+        keywords = _ensure_n_keywords(
+            keywords, task_name, question, keywords_per_iteration, exclude_searched=exclude_searched
+        )
 
         keyword_reasoning_list.append(reasoning)
         all_keywords_flat.extend(keywords)
@@ -233,8 +270,12 @@ def run_iterative_retrieval(
             num_per_keyword.append(len(res))
             for r in res:
                 rid = r.get("id")
-                if rid and rid not in seen_ids:
-                    seen_ids.add(rid)
+                if rid is not None:
+                    if rid not in seen_ids:
+                        seen_ids.add(rid)
+                        all_results.append(r)
+                        results_this_iter.append(r)
+                else:
                     all_results.append(r)
                     results_this_iter.append(r)
 
@@ -242,6 +283,7 @@ def run_iterative_retrieval(
 
         # 3. Format timeline for next iteration context
         prev_timeline = format_retrieved_events(all_results, exclude_report=False)
+        timeline_per_iteration.append(prev_timeline)
 
         iterations_log.append({
             "iteration": iteration,
@@ -251,11 +293,17 @@ def run_iterative_retrieval(
             "total_unique_so_far": total_unique,
             "keyword_reasoning": reasoning,
             "raw_model_output": kw_raw,
+            "internal_state": parsed["internal_state"],
+            "current_evidence": parsed["current_evidence"],
+            "search_history": parsed["search_history"],
+            "answer": parsed["answer"],
+            "clinical_reasoning": parsed["clinical_reasoning"],
         })
 
     timeline_str = format_retrieved_events(all_results, exclude_report=False)
     return IterativeRetrievalResult(
         timeline_str=timeline_str,
+        timeline_per_iteration=timeline_per_iteration,
         iterations_log=iterations_log,
         all_keywords=list(dict.fromkeys(all_keywords_flat)),
         keyword_reasoning=keyword_reasoning_list,
@@ -295,10 +343,12 @@ def run_iterative_retrieval_batch(
     all_keywords_flat_per_patient: List[List[str]] = [[] for _ in range(n)]
     keyword_reasoning_per_patient: List[List[str]] = [[] for _ in range(n)]
     prev_timeline_per_patient: List[str] = [""] * n
+    prev_internal_state_per_patient: List[str] = [""] * n
     searched_keywords_per_patient: List[List[str]] = [[] for _ in range(n)]
+    timeline_per_iteration_per_patient: List[List[str]] = [[] for _ in range(n)]
 
     for iteration in range(1, max_iterations + 1):
-        # 1. Build prompts for all patients (using previous iteration's patient_timeline + searched_keywords)
+        # 1. Build prompts for all patients (internal_state, patient_timeline, searched_keywords)
         prompts: List[str] = []
         for i in range(n):
             person_id = str(batch_data[i].get("person_id", "")).strip()
@@ -314,11 +364,15 @@ def run_iterative_retrieval_batch(
                 if searched_keywords_per_patient[i]
                 else "No previous searches."
             )
-            prompt = kw_tpl.format(
-                task_query=task_query,
-                patient_timeline=previous_patient_timeline,
-                searched_keywords=previous_searched_keywords,
-            )
+            format_kwargs: Dict[str, Any] = {
+                "task_query": task_query,
+                "patient_timeline": previous_patient_timeline,
+                "searched_keywords": previous_searched_keywords,
+                "iteration": iteration,
+            }
+            if "{internal_state}" in kw_tpl:
+                format_kwargs["internal_state"] = prev_internal_state_per_patient[i] or "None."
+            prompt = kw_tpl.format(**format_kwargs)
             prompts.append(prompt)
 
         # 2. Single VLM batch call
@@ -337,15 +391,16 @@ def run_iterative_retrieval_batch(
             question = str(batch_data[i].get("question", "")).strip()
             kw_raw = kw_raw_list[i] if i < len(kw_raw_list) else ""
 
-            reasoning = ""
-            if kw_raw:
-                reasoning_parsed, keywords = _parse_reasoning_and_keywords(kw_raw)
-                if reasoning_parsed:
-                    reasoning = reasoning_parsed
-                keywords = list(dict.fromkeys(keywords))  # unique, preserve order
-                keywords = _ensure_five_keywords(keywords, task_name, question)
-            else:
-                keywords = _ensure_five_keywords([], task_name, question)
+            parsed = _parse_structured_output(kw_raw, keywords_per_iteration)
+            keywords = parsed["keywords"]
+            reasoning = parsed["reasoning"]
+            prev_internal_state_per_patient[i] = parsed["internal_state"]
+
+            exclude_searched = {k.lower() for k in searched_keywords_per_patient[i]}
+            keywords = list(dict.fromkeys(keywords))
+            keywords = _ensure_n_keywords(
+                keywords, task_name, question, keywords_per_iteration, exclude_searched=exclude_searched
+            )
 
             keyword_reasoning_per_patient[i].append(reasoning)
             all_keywords_flat_per_patient[i].extend(keywords)
@@ -368,8 +423,11 @@ def run_iterative_retrieval_batch(
                 num_per_keyword.append(len(res))
                 for r in res:
                     rid = r.get("id")
-                    if rid and rid not in seen_ids_per_patient[i]:
-                        seen_ids_per_patient[i].add(rid)
+                    if rid is not None:
+                        if rid not in seen_ids_per_patient[i]:
+                            seen_ids_per_patient[i].add(rid)
+                            all_results_per_patient[i].append(r)
+                    else:
                         all_results_per_patient[i].append(r)
 
             total_unique = len(all_results_per_patient[i])
@@ -379,19 +437,25 @@ def run_iterative_retrieval_batch(
                 "all_keywords_so_far": list(dict.fromkeys(searched_keywords_per_patient[i])),
                 "num_results_per_keyword": num_per_keyword,
                 "total_unique_so_far": total_unique,
-                # "keyword_reasoning": reasoning,
                 "raw_model_output": kw_raw,
+                "internal_state": parsed["internal_state"],
+                "current_evidence": parsed["current_evidence"],
+                "search_history": parsed["search_history"],
+                "answer": parsed["answer"],
+                "clinical_reasoning": parsed["clinical_reasoning"],
             })
 
-            # Update timeline for next iteration
+            # Update timeline for next iteration (exclude_report=False to include all BM25 hits)
             prev_timeline_per_patient[i] = format_retrieved_events(
-                all_results_per_patient[i], exclude_report=True
+                all_results_per_patient[i], exclude_report=False
             )
+            timeline_per_iteration_per_patient[i].append(prev_timeline_per_patient[i])
 
-    # Build results
+    # Build results (exclude_report=False to include all BM25 hits in timeline)
     return [
         IterativeRetrievalResult(
-            timeline_str=format_retrieved_events(all_results_per_patient[i], exclude_report=True),
+            timeline_str=format_retrieved_events(all_results_per_patient[i], exclude_report=False),
+            timeline_per_iteration=timeline_per_iteration_per_patient[i],
             iterations_log=iterations_log_per_patient[i],
             all_keywords=list(dict.fromkeys(all_keywords_flat_per_patient[i])),
             keyword_reasoning=keyword_reasoning_per_patient[i],

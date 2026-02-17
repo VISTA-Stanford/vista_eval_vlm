@@ -5,13 +5,18 @@ For constrained decoding: model output is always binary "Yes" or "No", so we map
 to the label without extraction or cleaning.
 Uses the same result file discovery as final_metrics.py (config tasks, models, experiments).
 Output: figures/results_stats/constrained_all_model_response.csv with columns model_name, task,
-experiment, index, person_id (if present in source), model_response, predicted_label, ground_truth.
+experiment, index, person_id (if present in source), model_response, predicted_label, ground_truth,
+logprob_yes (logprob of "Yes" token), logprob_no (logprob of "No" token), and related fields.
 """
 
 import json
+import math
+import warnings
 from pathlib import Path
 
 import pandas as pd
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 from results.results_analyzer import map_label_to_answer
 from results.final_metrics import (
@@ -25,19 +30,38 @@ EXPERIMENT_DISPLAY_NAMES = {
     "no_timeline": "image_only",
     "no_report": "image_and_timeline",
     "report": "report_and_timeline",
+    "all_vb_timeline_only": "timeline_only",
+    "all_vb_image_only": "image_only",
 }
 
 
-def extract_response_logprob(log_probs_str, model_response):
+def complementary_logprob(logp):
     """
-    Extract the log probability of the model_response token from the log_probs JSON.
-    For binary Yes/No, we find the token whose decoded_token matches model_response.
-    Falls back to cumulative_logprob when available (single-token output).
+    Given log P(A), return log(1 - P(A)) = log(1 - exp(logp)).
+    Assumes P(A) + P(¬A) = 1. Handles -inf (exp=0) -> returns 0.
     """
-    if pd.isna(model_response) or not str(model_response).strip():
+    if logp is None:
         return None
-    response_str = str(model_response).strip().lower()
+    try:
+        p = math.exp(logp)
+        if p >= 1:
+            return float("-inf")
+        if p <= 0:
+            return 0.0
+        return math.log(1 - p)
+    except (OverflowError, ValueError):
+        return None
+
+
+def extract_logprob_for_token(log_probs_str, token):
+    """
+    Extract the log probability of a specific token (e.g. "Yes" or "No") from the log_probs JSON.
+    Searches through all positions and returns the first matching token's logprob.
+    """
     if not log_probs_str or (isinstance(log_probs_str, float) and pd.isna(log_probs_str)):
+        return None
+    token_str = str(token).strip().lower()
+    if not token_str:
         return None
     try:
         data = json.loads(log_probs_str)
@@ -49,12 +73,28 @@ def extract_response_logprob(log_probs_str, model_response):
             for entry in pos_data:
                 if isinstance(entry, dict):
                     decoded = entry.get("decoded_token", "")
-                    if decoded and str(decoded).strip().lower() == response_str:
+                    if decoded and str(decoded).strip().lower() == token_str:
                         lp = entry.get("logprob")
-                        return float(lp) if lp is not None else None
+                        if lp is None:
+                            return None
+                        try:
+                            return float(lp)
+                        except (TypeError, ValueError):
+                            return None
         return None
     except (json.JSONDecodeError, TypeError):
         return None
+
+
+def extract_response_logprob(log_probs_str, model_response):
+    """
+    Extract the log probability of the model_response token from the log_probs JSON.
+    For binary Yes/No, we find the token whose decoded_token matches model_response.
+    Falls back to cumulative_logprob when available (single-token output).
+    """
+    if pd.isna(model_response) or not str(model_response).strip():
+        return None
+    return extract_logprob_for_token(log_probs_str, model_response)
 
 
 def map_yes_no_to_label(response, mapping):
@@ -168,6 +208,27 @@ def main(config_path=None, output_path=None):
 
                 combined["response_log_prob"] = combined.apply(get_response_logprob, axis=1)
 
+                # Extract logprobs for "Yes" and "No" tokens from log_probs JSON
+                if "log_probs" in combined.columns:
+                    combined["logprob_yes"] = combined["log_probs"].apply(
+                        lambda x: extract_logprob_for_token(x, "Yes")
+                    )
+                    combined["logprob_no"] = combined["log_probs"].apply(
+                        lambda x: extract_logprob_for_token(x, "No")
+                    )
+                    # Fill missing one from the other (P(Yes) + P(No) = 1)
+                    mask_yes_missing = combined["logprob_yes"].isna() & combined["logprob_no"].notna()
+                    mask_no_missing = combined["logprob_no"].isna() & combined["logprob_yes"].notna()
+                    combined.loc[mask_yes_missing, "logprob_yes"] = combined.loc[
+                        mask_yes_missing, "logprob_no"
+                    ].apply(complementary_logprob)
+                    combined.loc[mask_no_missing, "logprob_no"] = combined.loc[
+                        mask_no_missing, "logprob_yes"
+                    ].apply(complementary_logprob)
+                else:
+                    combined["logprob_yes"] = None
+                    combined["logprob_no"] = None
+
                 chunk = pd.DataFrame({
                     "model_name": model_name,
                     "task": task_name,
@@ -178,9 +239,10 @@ def main(config_path=None, output_path=None):
                     "predicted_label": combined["predicted_label"],
                     "ground_truth": combined["ground_truth"],
                     "ground_truth_label": combined["ground_truth_label"],
-                    "cumulative_logprob": combined["cumulative_logprob"] if "cumulative_logprob" in combined.columns else None,
-                    "log_probs": combined["log_probs"] if "log_probs" in combined.columns else None,
-                    "response_log_prob": combined["response_log_prob"] if "response_log_prob" in combined.columns else None,
+                    "log_prob_response": combined["cumulative_logprob"] if "cumulative_logprob" in combined.columns else None,
+                    # "log_probs": combined["log_probs"] if "log_probs" in combined.columns else None,
+                    "logprob_yes": combined["logprob_yes"],
+                    "logprob_no": combined["logprob_no"],
                 })
                 out_chunks.append(chunk)
 

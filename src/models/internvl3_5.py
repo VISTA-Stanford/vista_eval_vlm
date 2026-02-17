@@ -18,11 +18,14 @@ class InternVL35Adapter(BaseVLMAdapter):
         from huggingface_hub import snapshot_download
 
         temp_dir = tempfile.mkdtemp(prefix="internvl_patched_")
-        model_path = snapshot_download(
-            self.model_name,
+        snapshot_kwargs = dict(
+            repo_id=self.model_name,
             local_dir=temp_dir,
             local_dir_use_symlinks=True,  # Symlinks to cache; only config.json is patched
         )
+        if self.cache_dir:
+            snapshot_kwargs["cache_dir"] = self.cache_dir
+        model_path = snapshot_download(**snapshot_kwargs)
 
         config_path = os.path.join(model_path, "config.json")
         with open(config_path, "r") as f:
@@ -44,24 +47,33 @@ class InternVL35Adapter(BaseVLMAdapter):
 
         print(f"⚡ Patched InternVL config: {original_max} -> {target_seq_len} (factor={factor:.2f})")
 
-        llm = LLM(
-            model=model_path,
-            tokenizer=self.model_name,
-            max_model_len=target_seq_len,
-            rope_scaling={"type": "dynamic", "factor": round(factor, 2)},
-            dtype="bfloat16",
-            trust_remote_code=True,
-            gpu_memory_utilization=0.85,
-            enable_chunked_prefill=True,
-            enable_prefix_caching=False,
-            mm_processor_cache_gb=0,
-            limit_mm_per_prompt={"image": 100, "video": 0},
-            enforce_eager=True,  # Bypass torch.compile cache compiled with 40960
-        )
+        try:
+            llm_kwargs = dict(
+                model=model_path,
+                tokenizer=self.model_name,
+                max_model_len=target_seq_len,
+                rope_scaling={"type": "dynamic", "factor": round(factor, 2)},
+                dtype="bfloat16",
+                trust_remote_code=True,
+                gpu_memory_utilization=0.85,
+                enable_chunked_prefill=True,
+                enable_prefix_caching=False,
+                mm_processor_cache_gb=0,
+                limit_mm_per_prompt={"image": 100, "video": 0},
+                enforce_eager=True,  # Bypass torch.compile cache compiled with 40960
+            )
+            if self.cache_dir:
+                llm_kwargs["download_dir"] = self.cache_dir
+                llm_kwargs["hf_overrides"] = {"cache_dir": self.cache_dir}
+            llm = LLM(**llm_kwargs)
+        finally:
+            if os.path.exists(config_path):
+                os.remove(config_path)
 
         processor = AutoProcessor.from_pretrained(
             self.model_name,
             trust_remote_code=True,
+            cache_dir=self.cache_dir,
         )
 
         if hasattr(processor, "tokenizer") and processor.tokenizer is not None:

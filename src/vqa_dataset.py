@@ -122,8 +122,8 @@ class PromptDataset(Dataset):
         img = None
         image_path = row.get('image_path', None)
         
-        # Skip image loading for 'no_image', 'report', 'timeline_only', and 'retrieved_timeline' experiments
-        if self.experiment in ('no_image', 'report', 'timeline_only', 'retrieved_timeline'):
+        # Skip image loading for 'no_image', 'report', 'timeline_only', 'all_vb_timeline_only', and 'retrieved_timeline' experiments
+        if self.experiment in ('no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', 'retrieved_timeline_per_iteration'):
             img = None
         else:
             # First check for image_path (existing behavior)
@@ -219,7 +219,8 @@ class PromptDataset(Dataset):
                                     img = img_list
                                 else:
                                     img = None
-                            elif self.experiment == 'no_timeline':
+                            elif self.experiment in ('no_timeline', 'all_vb_image_only'):
+                                # Both use 50 axial slices (image-only, no patient timeline)
                                 if len(img_data.shape) > 2:
                                     depth = img_data.shape[2]
                                     img_list = []
