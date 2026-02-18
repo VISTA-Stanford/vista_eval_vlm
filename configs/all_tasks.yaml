@@ -1,7 +1,6 @@
 paths:
   base_dir: "/home/rdcunha/vista_project/vista_bench"
-  results_dir: "/home/rdcunha/vista_project/results_retrieval_v3"
-  # results_dir: "/home/rdcunha/vista_project/results_constrained_decoding_v4"
+  results_dir: "/home/rdcunha/vista_project/results_retrieval_v8"
   ct_dir: "/data/fries/datasets/vista_bench_ryan/downloaded_ct_scans/chaudhari_lab/ct_data/ct_scans/vista/nov25"
   valid_tasks: "tasks/valid_tasks_v1_2.json"
   prompts: "tasks/prompts_by_task.json"
@@ -36,11 +35,15 @@ tasks:
   # - early_stage_management_answer
   # CVPR task
   - has_recurrence_1_yr
-  - has_recurrence_2_yr
   - progression_recurrence_free_survival_1_yr
-  - progression_recurrence_free_survival_2_yr
   - has_progression_nonrecurrence_1_yr
-  - has_progression_nonrecurrence_2_yr
+  - died_of_cancer_1_yr
+  - died_any_cause_1_yr
+  # - has_recurrence_2_yr
+  # - progression_recurrence_free_survival_2_yr
+  # - has_progression_nonrecurrence_2_yr
+  # - died_of_cancer_2_yr
+  # - died_any_cause_2_yr
 
   # - progression_assessment_discussed
   # - pneumonitis_infection_discussed
@@ -60,10 +63,10 @@ tasks:
   # - died_any_cause_2_yr
 
 experiments:
-  # - no_image # no image
+  - no_image # no image
   # - axial_1_image # middle axial image
   # - all_image # middle image from each view
-  # - axial_all_image # 10 axial images
+  - axial_all_image # 50 axial images
   # - sagittal_all_image # 10 sagittal images
   # - no_timeline # image
   # - no_report # timeline + image
@@ -73,10 +76,11 @@ experiments:
   # - report # timeline + report
   # - retrieved_timeline # retrieved timeline
   - retrieved_timeline_per_iteration
+  # - retrieved_timeline_with_image # retrieved timeline per iteration + 50 axial slices
 
 # Retrieval (for retrieved_timeline experiment)
 retrieval:
-  enabled: false
+  enabled: true
   corpus_dir: "/data/fries/datasets/vista_bench_ryan/thoracic_cohort_lumia"
   cache_dir: "/data/fries/users/rdcunha/bm25_cache"
   max_iterations: 10
@@ -84,20 +88,22 @@ retrieval:
   records_per_keyword: 5
   retrieval_batch_size: 20  # patients per VLM batch (use 1 for sequential)
   use_time_filter: true
-  months_before: 6
+  months_before: 24
   save_iterations_log: true
   iterations_log_dir: null  # default: {results_dir}/retrieval_logs/...
   max_rows: null            # optional, for dev
   eval_per_iteration: true   # Enable per-iteration experiment (use retrieved_timeline_per_iteration in experiments)
   save_timeline_cache: true  # Save parquet for reuse (per-iteration timelines)
-  use_timeline_cache: false  # Load from cache instead of running retrieval (for inference-only runs)
+  use_timeline_cache: true  # Load from cache instead of running retrieval (for inference-only runs)
+  summarize_timeline_for_context: false  # VLM summary of patient timeline in retrieval
+  timeline_summary_max_chars: 8000  # Max chars for summarized timeline
 
 # Timeline truncation configuration
 # Events are identified by the pattern: [YYYY-MM-DD HH:MM] |
 timeline_truncation:
   mode: "last_k_events"  # Options: "max_chars" or "last_k_events"
   # max_chars: 5000     # Used when mode is "max_chars"
-  k: 55             # Used when mode is "last_k_events"
+  k: 100             # Used when mode is "last_k_events"
 
 # CSV subsampling configuration
 # If true, use _subsampled.csv files instead of regular .csv files
@@ -106,4 +112,4 @@ subsample: true
 # Weill eval: which GPU nodes to use (0-7). Used by eval/weill.sh.
 # Override with WEILL_GPUS env or command-line args if needed.
 weill:
-  gpu_nodes: [3,4,5,6,7]
+  gpu_nodes: [1,2,5,6,7]

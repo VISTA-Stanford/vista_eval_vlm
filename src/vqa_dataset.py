@@ -63,7 +63,7 @@ class PromptDataset(Dataset):
             df: Dataframe containing the data.
             prompt_col: The column name to use for the text prompt.
             add_options: Whether to append options to the prompt.
-            experiment: Experiment type - 'no_image', 'axial_1_image', 'all_image', 'axial_all_image', 'sagittal_all_image', 'no_timeline', 'no_report', 'timeline_only', or 'report'
+            experiment: Experiment type - 'no_image', 'axial_1_image', 'all_image', 'axial_all_image', 'sagittal_all_image', 'no_timeline', 'no_report', 'timeline_only', 'report', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image'
             storage_client: GCP Storage client for loading NIfTI files from bucket (used when file not under ct_dir).
             model_type: Model type string (e.g., 'gemma3') to determine preprocessing.
             ct_dir: Optional path from config paths.ct_dir. If set and nifti_path (split to filename) exists under ct_dir, load from disk; else use GCP.
@@ -122,7 +122,8 @@ class PromptDataset(Dataset):
         img = None
         image_path = row.get('image_path', None)
         
-        # Skip image loading for 'no_image', 'report', 'timeline_only', 'all_vb_timeline_only', and 'retrieved_timeline' experiments
+        # Skip image loading for 'no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', and 'retrieved_timeline_per_iteration' experiments
+        # (retrieved_timeline_with_image loads 50 axial slices like axial_all_image)
         if self.experiment in ('no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', 'retrieved_timeline_per_iteration'):
             img = None
         else:
@@ -191,11 +192,12 @@ class PromptDataset(Dataset):
                                     axial_slice = img_data[:, :, axial_middle]
                                     img_list.append(self._process_ct_slice(axial_slice))
                                 img = img_list if img_list else None
-                            elif self.experiment == 'axial_all_image':
+                            elif self.experiment in ('axial_all_image', 'retrieved_timeline_with_image'):
+                                # 50 axial slices (same sampling as axial_all_image)
                                 if len(img_data.shape) > 2:
                                     depth = img_data.shape[2]
                                     img_list = []
-                                    for i in range(10):
+                                    for i in range(50):
                                         position = i * 0.1
                                         index = int(position * (depth - 1))
                                         if index >= depth:

@@ -105,7 +105,7 @@ def truncate_timeline(text, truncation_config=None) -> str:
 
     elif mode == 'last_k_events':
         initial_k = truncation_config.get('k', 10)
-        safety_max_chars = truncation_config.get('max_chars', 250000)
+        safety_max_chars = truncation_config.get('max_chars', 220000)
 
         pattern = r'\[(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}\]\s*\|'
         matches = list(re.finditer(pattern, text_str))

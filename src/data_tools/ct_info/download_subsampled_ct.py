@@ -1,5 +1,4 @@
 import os
-from tkinter import FALSE
 import pandas as pd
 import yaml
 import csv
@@ -14,6 +13,7 @@ csv.field_size_limit(sys.maxsize)
 BQ_DATA_DIR = "bigquery_data_2_3"
 CT_COVERAGE_PERSON_IDS = "ct_coverage_all_vb/person_ids.csv"
 DEFAULT_DOWNLOAD_DIR_CT_COVERAGE = "/data/fries/datasets/vista_bench_ryan/downloaded_ct_scans"
+RETRIEVAL_SUBSAMPLE_50_CSV = "v1_2/progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr/retrieval_subsample_50.csv"
 
 
 def _resolve_bq_file(bq_dir: Path, table_name: str) -> Path | None:
@@ -23,6 +23,31 @@ def _resolve_bq_file(bq_dir: Path, table_name: str) -> Path | None:
         if p.exists():
             return p
     return None
+
+
+def _load_nifti_paths_from_retrieval_csv(csv_path: Path) -> pd.DataFrame:
+    """
+    Load person_id and nifti_path directly from a retrieval-style CSV that already
+    contains both columns. Returns DataFrame with columns: path, person_id, task.
+    Deduplicates by path (unique person_ids may share the same nifti_path across rows).
+    """
+    df = pd.read_csv(csv_path, sep=None, engine="python", on_bad_lines="warn")
+    person_id_col = next((c for c in df.columns if "person_id" in c.lower()), None)
+    nifti_path_col = next((c for c in df.columns if c.lower() == "nifti_path"), None)
+    if not nifti_path_col:
+        nifti_path_col = next((c for c in df.columns if c.lower() == "local_path"), None)
+    if not person_id_col or not nifti_path_col:
+        raise ValueError(
+            f"CSV must have 'person_id' and 'nifti_path' (or 'local_path') columns: {csv_path}"
+        )
+    df = df[[person_id_col, nifti_path_col]].rename(
+        columns={nifti_path_col: "path", person_id_col: "person_id"}
+    )
+    df = df.dropna(subset=["path"])
+    df["path"] = df["path"].astype(str).str.strip()
+    df = df[df["path"] != ""]
+    df["task"] = csv_path.parent.name  # e.g. progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr
+    return df.drop_duplicates(subset=["path"])
 
 
 def _load_nifti_paths_from_person_ids(
@@ -91,7 +116,8 @@ def download_ct_scans(base_path='/home/rdcunha/vista_project/vista_bench',
                       config_path=None,
                       download_base_dir='/home/rdcunha/vista_project/downloaded_ct_scans',
                       file_suffix='_subsampled',
-                      person_ids_csv=None):
+                      person_ids_csv=None,
+                      retrieval_subsample_csv=None):
     """
     Checks or downloads NIfTI files from GCP, reporting Task and Person ID.
     Finds all CSV files with the specified suffix and processes them.
@@ -101,6 +127,8 @@ def download_ct_scans(base_path='/home/rdcunha/vista_project/vista_bench',
     file_suffix: Suffix to look for in CSV filenames (e.g., '_subsampled' or '_all_ct'). Default: '_subsampled'.
     person_ids_csv: If provided, read person_ids from this file and look up nifti_path from bigquery_data_2_3.
                     Uses download_base_dir=/data/fries/datasets/vista_bench_ryan/downloaded_ct_scans.
+    retrieval_subsample_csv: If provided, read person_id and nifti_path directly from this CSV (e.g.
+                    retrieval_subsample_50.csv). Skips bigquery lookup. Downloads only missing files.
     """
     client = storage.Client()
     bucket = client.bucket(bucket_name)
@@ -110,8 +138,25 @@ def download_ct_scans(base_path='/home/rdcunha/vista_project/vista_bench',
         print(f"Error: Base directory {base_path} not found.")
         return
 
+    # Mode: retrieval_subsample_csv (CSV with person_id + nifti_path, e.g. retrieval_subsample_50.csv)
+    if retrieval_subsample_csv is not None:
+        retrieval_path = Path(retrieval_subsample_csv)
+        if not retrieval_path.is_absolute():
+            retrieval_path = base_dir / retrieval_path
+        if not retrieval_path.exists():
+            print(f"Error: Retrieval subsample CSV not found: {retrieval_path}")
+            return
+        download_base_dir = DEFAULT_DOWNLOAD_DIR_CT_COVERAGE
+        print(f"Mode: Retrieval subsample (person_id + nifti_path from {retrieval_path.name})")
+        print(f"Download dir: {download_base_dir}")
+        try:
+            unique_df = _load_nifti_paths_from_retrieval_csv(retrieval_path)
+        except Exception as e:
+            print(f"Error loading retrieval CSV: {e}")
+            return
+        print(f"Loaded {len(unique_df)} unique nifti paths for {unique_df['person_id'].nunique()} person_ids")
     # Mode: person_ids_csv (CT coverage all VB)
-    if person_ids_csv is not None:
+    elif person_ids_csv is not None:
         person_ids_path = Path(person_ids_csv)
         if not person_ids_path.is_absolute():
             person_ids_path = base_dir / person_ids_path
@@ -319,7 +364,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--person-ids-csv",
         default=None,
-        help=f"Use person_ids from this file (e.g. {CT_COVERAGE_PERSON_IDS}), look up nifti_path from bigquery_data_2_3, download to {DEFAULT_DOWNLOAD_DIR_CT_COVERAGE}. Default when not set: use {CT_COVERAGE_PERSON_IDS}.",
+        help=f"Use person_ids from this file (e.g. {CT_COVERAGE_PERSON_IDS}), look up nifti_path from bigquery_data_2_3, download to {DEFAULT_DOWNLOAD_DIR_CT_COVERAGE}.",
+    )
+    parser.add_argument(
+        "--retrieval-subsample-csv",
+        default=RETRIEVAL_SUBSAMPLE_50_CSV,
+        help=f"Use person_id and nifti_path from this CSV (default: {RETRIEVAL_SUBSAMPLE_50_CSV}). Downloads CT scans for unique person_ids. Ignored if --legacy or --person-ids-csv is set.",
     )
     parser.add_argument(
         "--legacy",
@@ -334,7 +384,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        default=True,
+        default=False,
         help="Only report, do not download (default: True)",
     )
     parser.add_argument(
@@ -346,15 +396,23 @@ if __name__ == "__main__":
 
     if args.legacy:
         person_ids_csv = None
-    else:
-        person_ids_csv = args.person_ids_csv or CT_COVERAGE_PERSON_IDS
-        if person_ids_csv and not Path(person_ids_csv).is_absolute():
+        retrieval_subsample_csv = None
+    elif args.person_ids_csv:
+        person_ids_csv = args.person_ids_csv
+        if not Path(person_ids_csv).is_absolute():
             person_ids_csv = str(Path(args.base_path) / person_ids_csv)
+        retrieval_subsample_csv = None
+    else:
+        person_ids_csv = None
+        retrieval_subsample_csv = args.retrieval_subsample_csv
+        if retrieval_subsample_csv and not Path(retrieval_subsample_csv).is_absolute():
+            retrieval_subsample_csv = str(Path(args.base_path) / retrieval_subsample_csv)
 
     download_ct_scans(
         base_path=args.base_path,
-        dry_run=True,
+        dry_run=not args.download,
         config_path="/home/rdcunha/vista_project/vista_eval_vlm/configs/all_tasks.yaml",
         file_suffix="_subsampled",
         person_ids_csv=person_ids_csv,
+        retrieval_subsample_csv=retrieval_subsample_csv,
     )

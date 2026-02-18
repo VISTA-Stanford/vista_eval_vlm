@@ -149,10 +149,10 @@ class TaskOrchestrator:
             # - all other experiments: use *_subsampled.csv and require patient timeline merge
             needs_report_timeline = any(e in ('no_report', 'timeline_only', 'report') for e in experiments)
             needs_no_timeline = 'no_timeline' in experiments
-            needs_retrieved_timeline = any(e in ('retrieved_timeline', 'retrieved_timeline_per_iteration') for e in experiments)
+            needs_retrieved_timeline = any(e in ('retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image') for e in experiments)
             needs_all_vb_timeline = 'all_vb_timeline_only' in experiments
             needs_all_vb_image = 'all_vb_image_only' in experiments
-            needs_normal = any(e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'all_vb_timeline_only', 'all_vb_image_only') for e in experiments)
+            needs_normal = any(e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image', 'all_vb_timeline_only', 'all_vb_image_only') for e in experiments)
 
             loaded_normal = self._load_task_data(task_info, use_no_report_csv=False, require_timeline=True) if needs_normal else None
             loaded_no_report = self._load_task_data(task_info, use_no_report_csv=True, require_timeline=True) if needs_report_timeline else None
@@ -170,7 +170,7 @@ class TaskOrchestrator:
                     loaded = loaded_all_vb_timeline
                 elif experiment in ('no_report', 'timeline_only', 'report'):
                     loaded = loaded_no_report
-                elif experiment in ('retrieved_timeline', 'retrieved_timeline_per_iteration'):
+                elif experiment in ('retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image'):
                     loaded = loaded_retrieval
                 else:
                     loaded = loaded_normal
@@ -551,7 +551,7 @@ class TaskOrchestrator:
         out_file = save_dir / f"{task_name}_results_{experiment}.csv"
 
         # Overwrite (don't resume) for retrieved_timeline experiments
-        if experiment in ("retrieved_timeline", "retrieved_timeline_per_iteration"):
+        if experiment in ("retrieved_timeline", "retrieved_timeline_per_iteration", "retrieved_timeline_with_image"):
             out_file.unlink(missing_ok=True)
 
         existing_indices = set()
@@ -628,6 +628,8 @@ class TaskOrchestrator:
                         max_iterations=rc.get("max_iterations", 3),
                         keywords_per_iteration=rc.get("keywords_per_iteration", 5),
                         records_per_keyword=rc.get("records_per_keyword", 5),
+                        summarize_timeline_for_context=rc.get("summarize_timeline_for_context", False),
+                        timeline_summary_max_chars=rc.get("timeline_summary_max_chars", 4000),
                     )
                     for (_, row), result in zip(batch_rows, results):
                         combined = truncate_timeline(result.timeline_str, truncation_config)
@@ -652,13 +654,14 @@ class TaskOrchestrator:
                                 "answer": log_entry.get("answer", ""),
                                 "clinical_reasoning": log_entry.get("clinical_reasoning", ""),
                                 "raw_model_output": log_entry.get("raw_model_output", ""),
+                                "summary_patient_timeline": log_entry.get("summary_patient_timeline", ""),
                             })
                     if log_rows:
                         pd.DataFrame(log_rows).to_csv(csv_log_path, mode="w", index=False)
-            elif experiment == 'retrieved_timeline_per_iteration':
+            elif experiment in ('retrieved_timeline_per_iteration', 'retrieved_timeline_with_image'):
                 if self.retriever is None:
                     raise ValueError(
-                        "retrieved_timeline_per_iteration experiment requires retrieval.enabled=true in config"
+                        f"{experiment} experiment requires retrieval.enabled=true in config"
                     )
                 from retrieval import run_iterative_retrieval_batch
                 rc = self.retrieval_cfg
@@ -725,6 +728,8 @@ class TaskOrchestrator:
                             max_iterations=max_iterations,
                             keywords_per_iteration=rc.get("keywords_per_iteration", 5),
                             records_per_keyword=rc.get("records_per_keyword", 5),
+                            summarize_timeline_for_context=rc.get("summarize_timeline_for_context", False),
+                            timeline_summary_max_chars=rc.get("timeline_summary_max_chars", 4000),
                         )
                         for (_, row), result in zip(batch_rows, results):
                             all_results.append((row, result))
@@ -769,6 +774,7 @@ class TaskOrchestrator:
                                     "answer": log_entry.get("answer", ""),
                                     "clinical_reasoning": log_entry.get("clinical_reasoning", ""),
                                     "raw_model_output": log_entry.get("raw_model_output", ""),
+                                    "summary_patient_timeline": log_entry.get("summary_patient_timeline", ""),
                                 })
                         if log_rows:
                             pd.DataFrame(log_rows).to_csv(csv_log_path, mode="w", index=False)
@@ -856,8 +862,14 @@ class TaskOrchestrator:
                     else:
                         res_row['used_image'] = 0
                     
-                    if experiment == 'retrieved_timeline_per_iteration':
+                    if experiment in ('retrieved_timeline_per_iteration', 'retrieved_timeline_with_image'):
                         res_row['input_token_length'] = self._count_prompt_tokens(item.get('question', ''))
+                        # Add image token count for retrieved_timeline_with_image (50 axial slices)
+                        if experiment == 'retrieved_timeline_with_image':
+                            image = item.get('image', None)
+                            if image is not None:
+                                num_images = len(image) if isinstance(image, list) else 1
+                                res_row['input_token_length'] += num_images * 256  # Approx tokens per image for VLMs
                     
                     if experiment == 'no_image' and timeline_col and timeline_col in item['raw_row']:
                         timeline_text = item['raw_row'][timeline_col]

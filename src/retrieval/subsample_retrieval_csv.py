@@ -13,6 +13,10 @@ RETRIEVAL_TASKS = [
     "progression_recurrence_free_survival_2_yr",
     "has_progression_nonrecurrence_1_yr",
     "has_progression_nonrecurrence_2_yr",
+    "died_of_cancer_1_yr",
+    "died_of_cancer_2_yr",
+    "died_any_cause_1_yr",
+    "died_any_cause_2_yr",
 ]
 
 # Columns that must be present (non-null, non-empty) for a person_id to be valid

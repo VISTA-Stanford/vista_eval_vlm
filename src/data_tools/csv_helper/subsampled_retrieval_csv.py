@@ -177,7 +177,7 @@ def run(
                     embed_times = pd.to_datetime(
                         df_out["embed_time"], errors="coerce"
                     )
-                    start_times = embed_times - pd.DateOffset(months=6)
+                    start_times = embed_times - pd.DateOffset(months=24)
                     new_strings = []
                     for i, row in df_out.iterrows():
                         subject_id = row["person_id"]

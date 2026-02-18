@@ -100,13 +100,19 @@
 
 # Retrieval try #3
 KEYWORD_EXTRACTION_TEMPLATE = """
-You are an expert Clinical AI Research Agent. Your job is to propose EXACTLY 3 NEW BM25 search keywords each turn to retrieve missing patient-timeline events needed to answer:
+You are an expert Clinical Prognostician. You are analyzing the PRE-DIAGNOSTIC history of a patient who will be diagnosed with cancer. Your goal is to retrieve early clinical signals and risk factors to help answer a future-state question: 
 
-TASK QUESTION: {task_query}
+### PREDICTIVE TASK QUESTION 
+{task_query}
 
 ### RETRIEVAL ITERATION {iteration}
 
-### CURRENT EVIDENCE (retrieved so far)
+### SEARCH DIARY (your reasoning from up to the last 5 iterations)
+<search_diary>
+{search_diary}
+</search_diary>
+
+### CURRENT EVIDENCE (what you have retrieved so far)
 <current_evidence>
 {patient_timeline}
 </current_evidence>
@@ -119,20 +125,21 @@ TASK QUESTION: {task_query}
 ### DECISION PROCESS (FOLLOW STRICTLY)
 1) Determine retrieval phase:
    - COLD START if <current_evidence> is empty or says no evidence.
-   - GAP FILL if evidence exists.
-2) Write a 3-slot "gap plan" (one slot per keyword) in <clinical_reasoning> XML tags:
+   - GAP FILL if <current_evidence> exists.
+2) Review the <search_diary> to see your clinical reasoning from up to the last 5 iterations. Use this to guide your gap plan and new keywords.
+3) Write a 3-slot "gap plan" (one slot per keyword) in <clinical_reasoning> XML tags:
    - Slot 1: most critical missing fact to answer {task_query}
    - Slot 2: second most critical missing fact
    - Slot 3: a complementary angle (synonym, code system term, related document type, or downstream consequence)
-3) Convert each slot into ONE BM25 keyword phrase:
-   - Prefer concise 2–5 word phrases with specific clinical tokens.
-   - Use clinical acronyms/codes when helpful (RECIST, ECOG, TNM, ICD-10, CPT, LOINC, PD-L1, EGFR, PSA, HbA1c, etc.).
+4) Convert each slot into ONE BM25 keyword phrase:
+   - Prefer concise 1–4 word phrases with specific clinical tokens.
+   - Use clinical acronyms/codes when helpful (RECIST, ICD-10, CPT, LOINC, SNOMED, etc.).
    - Include document/test types when useful (e.g., "radiology impression", "pathology report", "operative note", "discharge summary").
-4) Diversity constraint: the 3 keywords must come from 3 different categories:
+5) Diversity constraint: the 3 keywords must come from 3 different categories:
    A) diagnosis/staging/problem list
    B) imaging/pathology/lab/test
-   C) treatment/procedure/outcome/toxicity
-5) Novelty constraint: ALL 3 must be NEW vs <search_history>. If you are running out of new terms, use:
+   C) systemic signs/procedure/outcome/toxicity
+6) Novelty constraint: ALL 3 must be NEW vs <search_history>. If you are running out of new terms, use:
    - synonyms (e.g., "progression"→"RECIST progression", "metastasis"→"distant metastases")
    - alternative code terms (e.g., "TNM stage"→"AJCC stage")
    - alternative note types (e.g., "oncology note"→"tumor board note")
@@ -158,10 +165,10 @@ Phase: COLD START
 Gap plan:
 1) Establish primary diagnosis and coded problem list
 2) Identify baseline objective disease measurement imaging
-3) Identify initial treatment initiation documentation
+3) Find systemic signs of disease in documentation
 </clinical_reasoning>
 <answer>
-["ICD10 malignant neoplasm code", "baseline CT chest abdomen pelvis", "systemic therapy start date oncology"]
+["ICD10 malignant neoplasm code", "baseline CT chest abdomen", "weight loss"]
 </answer>
 
 **Example 2: Subsequent Iteration (Gap Analysis)**
@@ -170,10 +177,10 @@ Phase: GAP FILL
 Gap plan:
 1) Determine formal tumor response classification after treatment
 2) Retrieve functional status assessment near treatment interval
-3) Identify systemic therapy administration confirmation
+3) Identify systemic therapy prescription
 </clinical_reasoning>
 <answer>
-["RECIST 1.1 response assessment", "ECOG performance status clinic note", "carboplatin paclitaxel infusion record"]
+["RECIST 1.1", "ECOG status clinic note", "CRP albumin"]
 </answer>
 
 **Example 3: Subsequent Iteration (Gap Analysis)**
@@ -185,6 +192,34 @@ Gap plan:
 3) Identify treatment intervention for toxicity management
 </clinical_reasoning>
 <answer>
-["immune related adverse event documentation", "TSH free T4 laboratory panel", "high dose prednisone taper oncology"]
+["immune related adverse event", "TSH free T4 laboratory", "prednisone taper oncology"]
+</answer>
+"""
+
+# Template for VLM summarization of patient timeline (used as current_evidence in next iteration).
+# Placeholders: {task_query}, {patient_timeline}, {max_chars}
+TIMELINE_SUMMARY_TEMPLATE = """You are a clinical summarization assistant. Given a patient timeline and a clinical question, extract ONLY the key facts relevant to answering that question.
+
+### CLINICAL QUESTION
+{task_query}
+
+### PATIENT TIMELINE (retrieved events)
+{patient_timeline}
+
+### INSTRUCTIONS
+Summarize the timeline in a concise bullet list. Include:
+- Key diagnoses, staging, and problem list items
+- Important imaging findings and dates
+- Treatment history (drugs, procedures)
+- Relevant labs, biomarkers, or vital signs
+- Any evidence of recurrence, progression, or outcomes
+
+Keep the summary under {max_chars} characters. Use clinical terminology. Do not add speculation—only facts from the timeline.
+
+### RESPONSE FORMAT (STRICT)
+Output ONLY the summary inside <answer> tags. No other text, no thinking, no explanation outside the tags.
+
+<answer>
+[Your bullet-list summary here]
 </answer>
 """

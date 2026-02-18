@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from retrieval.format_events import format_retrieved_events
-from retrieval.keyword_prompts import KEYWORD_EXTRACTION_TEMPLATE
+from retrieval.keyword_prompts import KEYWORD_EXTRACTION_TEMPLATE, TIMELINE_SUMMARY_TEMPLATE
 
 if TYPE_CHECKING:
     from retrieval.local_retriever import LocalPatientRetriever
@@ -24,7 +24,7 @@ def _run_vlm_text_only(
     model: Any,
     processor: Any,
     prompt: str,
-    max_tokens: int = 256,
+    max_tokens: int = 1024,
 ) -> str:
     """
     Run VLM inference with text-only prompt (no image).
@@ -43,7 +43,7 @@ def _run_vlm_batch(
     model: Any,
     processor: Any,
     prompts: List[str],
-    max_tokens: int = 256,
+    max_tokens: int = 1024,
 ) -> List[str]:
     """
     Run VLM inference with a batch of text-only prompts.
@@ -59,12 +59,111 @@ def _run_vlm_batch(
     return [str(o).strip() if o is not None else "" for o in outputs]
 
 
+def _summarize_timeline_for_context(
+    adapter: Any,
+    model: Any,
+    processor: Any,
+    timeline_str: str,
+    task_query: str,
+    max_chars: int = 4000,
+    summary_template: Optional[str] = None,
+) -> str:
+    """
+    Summarize a patient timeline for use as current_evidence in the next retrieval iteration.
+    Returns summarized string, or original timeline on failure.
+    """
+    if not timeline_str or not timeline_str.strip():
+        return timeline_str
+    tpl = summary_template or TIMELINE_SUMMARY_TEMPLATE
+    prompt = tpl.format(
+        task_query=task_query,
+        patient_timeline=timeline_str[:200000],
+        max_chars=max_chars,
+    )
+    try:
+        out = _run_vlm_text_only(adapter, model, processor, prompt, max_tokens=1024)
+        if out and out.strip():
+            extracted = _extract_answer(out)
+            if extracted and extracted.strip():
+                return extracted.strip()[:max_chars * 2]  # allow some overflow
+            return out.strip()[:max_chars * 2]  # fallback if no <answer> tag
+    except Exception as e:
+        logger.warning("Timeline summarization failed: %s, using raw timeline", e)
+    return timeline_str[:200000]
+
+
+def _summarize_timeline_for_context_batch(
+    adapter: Any,
+    model: Any,
+    processor: Any,
+    timelines: List[str],
+    task_queries: List[str],
+    max_chars: int = 4000,
+    summary_template: Optional[str] = None,
+) -> List[str]:
+    """
+    Batch summarize patient timelines for use as current_evidence.
+    Returns list of summarized strings (or original on failure), same length as input.
+    Skips summarization for empty or "No evidence retrieved yet." timelines.
+    """
+    if not timelines:
+        return []
+    EMPTY_MARKER = "No evidence retrieved yet."
+    to_summarize = [
+        (i, t, q)
+        for i, (t, q) in enumerate(zip(timelines, task_queries))
+        if t and t.strip() and t.strip() != EMPTY_MARKER
+    ]
+    if not to_summarize:
+        return list(timelines)
+    tpl = summary_template or TIMELINE_SUMMARY_TEMPLATE
+    indices, t_vals, q_vals = zip(*to_summarize)
+    prompts = [
+        tpl.format(task_query=q, patient_timeline=t[:200000], max_chars=max_chars)
+        for t, q in zip(t_vals, q_vals)
+    ]
+    result = list(timelines)
+    try:
+        outputs = _run_vlm_batch(adapter, model, processor, prompts, max_tokens=1024)
+        for idx, out in zip(indices, outputs):
+            if out and out.strip():
+                extracted = _extract_answer(out)
+                if extracted and extracted.strip():
+                    result[idx] = extracted.strip()[:max_chars * 2]
+                else:
+                    result[idx] = out.strip()[:max_chars * 2]  # fallback if no <answer> tag
+            # else keep original
+    except Exception as e:
+        logger.warning("Batch timeline summarization failed: %s, using raw timelines", e)
+    return result
+
+
 def _extract_tag(text: str, tag: str) -> str:
     """Extract content from <tag>...</tag>. Returns empty string if not found."""
     if not text:
         return ""
     match = re.search(
         rf"<{tag}\s*>(.+?)</{tag}\s*>",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _extract_answer(text: str) -> str:
+    """
+    Extract content from <answer>...</answer>. If closing tag is missing,
+    extract everything after <answer> to end of text.
+    """
+    if not text:
+        return ""
+    # Normal case: both tags present
+    content = _extract_tag(text, "answer")
+    if content:
+        return content
+    # Fallback: <answer> present but </answer> missing - extract rest after <answer>
+    match = re.search(
+        r"<answer\s*>(.+)",
         text,
         re.IGNORECASE | re.DOTALL,
     )
@@ -95,7 +194,7 @@ def _parse_structured_output(raw: str, max_keywords: int = 5) -> Dict[str, Any]:
     result["internal_state"] = _extract_tag(text, "internal_state")
     result["current_evidence"] = _extract_tag(text, "current_evidence")
     result["search_history"] = _extract_tag(text, "search_history")
-    answer_content = _extract_tag(text, "answer")
+    answer_content = _extract_answer(text)
     result["answer"] = answer_content
     result["clinical_reasoning"] = _extract_tag(text, "clinical_reasoning")
 
@@ -126,21 +225,6 @@ def _parse_structured_output(raw: str, max_keywords: int = 5) -> Dict[str, Any]:
     result["keywords"] = keywords[:max_keywords]
 
     return result
-
-
-def _parse_reasoning_and_keywords(raw: str, max_keywords: int = 5) -> Tuple[str, List[str]]:
-    """
-    Parse format:
-     <clinical_reasoning>... [Reasoning]: ... </clinical_reasoning>
-     <internal_state>...</internal_state>
-     <current_evidence>...</current_evidence>
-     <search_history>...</search_history>
-     <answer>["k1", "k2", ...]</answer>
-
-    Returns (reasoning_str, keywords_list). Keywords truncated to max_keywords.
-    """
-    parsed = _parse_structured_output(raw, max_keywords)
-    return parsed["reasoning"], parsed["keywords"]
 
 
 def _ensure_n_keywords(
@@ -191,6 +275,8 @@ def run_iterative_retrieval(
     keywords_per_iteration: int = 5,
     records_per_keyword: int = 5,
     keyword_extraction_template: Optional[str] = None,
+    summarize_timeline_for_context: bool = False,
+    timeline_summary_max_chars: int = 4000,
 ) -> IterativeRetrievalResult:
     """
     Run iterative retrieval: fixed iterations, keywords_per_iteration keywords, records_per_keyword per keyword.
@@ -211,22 +297,37 @@ def run_iterative_retrieval(
     prev_internal_state = ""
     searched_keywords_list: List[str] = []
     timeline_per_iteration: List[str] = []
+    clinical_reasoning_history: List[str] = []
 
     for iteration in range(1, max_iterations + 1):
         # 1. Build prompt with previous iteration's context (internal_state, patient_timeline, searched_keywords)
         task_query = question or task_name
-        previous_patient_timeline = (
-            prev_timeline[:2000] if prev_timeline else "No evidence retrieved yet."
-        )
+        raw_timeline = prev_timeline[:200000] if prev_timeline else "No evidence retrieved yet."
+        if summarize_timeline_for_context and prev_timeline and prev_timeline.strip():
+            previous_patient_timeline = _summarize_timeline_for_context(
+                vlm_adapter, vlm_model, vlm_processor,
+                raw_timeline, task_query, max_chars=timeline_summary_max_chars,
+            )
+        else:
+            previous_patient_timeline = raw_timeline
         previous_searched_keywords = (
             ", ".join(dict.fromkeys(searched_keywords_list)) if searched_keywords_list else "No previous searches."
         )
+        # search_diary: up to last 5 iterations of clinical_reasoning (empty on first iteration)
+        last_5_reasoning = clinical_reasoning_history[-5:] if clinical_reasoning_history else []
+        search_diary_parts = [
+            f"--- Iteration {j} ---\n{cr}" for j, cr in enumerate(last_5_reasoning, start=iteration - len(last_5_reasoning))
+        ]
+        search_diary = "\n\n".join(search_diary_parts) if search_diary_parts else "(none yet)"
+
         format_kwargs: Dict[str, Any] = {
             "task_query": task_query,
             "patient_timeline": previous_patient_timeline,
             "searched_keywords": previous_searched_keywords,
             "iteration": iteration,
         }
+        if "{search_diary}" in kw_tpl:
+            format_kwargs["search_diary"] = search_diary
         if "{internal_state}" in kw_tpl:
             format_kwargs["internal_state"] = prev_internal_state or "None."
         prompt = kw_tpl.format(**format_kwargs)
@@ -234,7 +335,7 @@ def run_iterative_retrieval(
         reasoning = ""
         try:
             kw_raw = _run_vlm_text_only(
-                vlm_adapter, vlm_model, vlm_processor, prompt, max_tokens=512
+                vlm_adapter, vlm_model, vlm_processor, prompt, max_tokens=1024
             )
         except Exception as e:
             logger.warning("Keyword extraction failed: %s, using fallback", e)
@@ -246,6 +347,8 @@ def run_iterative_retrieval(
         if parsed["reasoning"]:
             reasoning = parsed["reasoning"]
         prev_internal_state = parsed["internal_state"]
+        if parsed["clinical_reasoning"]:
+            clinical_reasoning_history.append(parsed["clinical_reasoning"])
 
         exclude_searched = {k.lower() for k in searched_keywords_list}
         keywords = list(dict.fromkeys(keywords))
@@ -282,8 +385,9 @@ def run_iterative_retrieval(
         total_unique = len(all_results)
 
         # 3. Format timeline for next iteration context
-        prev_timeline = format_retrieved_events(all_results, exclude_report=False)
-        timeline_per_iteration.append(prev_timeline)
+        # Short version (no VALUE content) for model prompt; full version for logging
+        prev_timeline = format_retrieved_events(all_results, exclude_report=False, exclude_value=True)
+        timeline_per_iteration.append(format_retrieved_events(all_results, exclude_report=False))
 
         iterations_log.append({
             "iteration": iteration,
@@ -298,6 +402,7 @@ def run_iterative_retrieval(
             "search_history": parsed["search_history"],
             "answer": parsed["answer"],
             "clinical_reasoning": parsed["clinical_reasoning"],
+            "summary_patient_timeline": previous_patient_timeline if summarize_timeline_for_context else "",
         })
 
     timeline_str = format_retrieved_events(all_results, exclude_report=False)
@@ -321,6 +426,8 @@ def run_iterative_retrieval_batch(
     keywords_per_iteration: int = 5,
     records_per_keyword: int = 5,
     keyword_extraction_template: Optional[str] = None,
+    summarize_timeline_for_context: bool = False,
+    timeline_summary_max_chars: int = 4000,
 ) -> List[IterativeRetrievalResult]:
     """
     Run iterative retrieval for a batch of patients. Batches VLM keyword extraction
@@ -346,30 +453,54 @@ def run_iterative_retrieval_batch(
     prev_internal_state_per_patient: List[str] = [""] * n
     searched_keywords_per_patient: List[List[str]] = [[] for _ in range(n)]
     timeline_per_iteration_per_patient: List[List[str]] = [[] for _ in range(n)]
+    clinical_reasoning_history_per_patient: List[List[str]] = [[] for _ in range(n)]
 
     for iteration in range(1, max_iterations + 1):
-        # 1. Build prompts for all patients (internal_state, patient_timeline, searched_keywords)
+        # 1. Build prompts for all patients (internal_state, patient_timeline, searched_keywords, search_diary)
+        # Compute previous_patient_timeline per patient (optionally summarized)
+        raw_timelines = [
+            prev_timeline_per_patient[i][:200000] if prev_timeline_per_patient[i] else "No evidence retrieved yet."
+            for i in range(n)
+        ]
+        task_queries = [
+            str(batch_data[i].get("question", "")).strip() or task_name
+            for i in range(n)
+        ]
+        if summarize_timeline_for_context and any(t and t.strip() and t.strip() != "No evidence retrieved yet." for t in raw_timelines):
+            previous_timelines = _summarize_timeline_for_context_batch(
+                vlm_adapter, vlm_model, vlm_processor,
+                raw_timelines, task_queries,
+                max_chars=timeline_summary_max_chars,
+            )
+        else:
+            previous_timelines = raw_timelines
+
         prompts: List[str] = []
         for i in range(n):
             person_id = str(batch_data[i].get("person_id", "")).strip()
             question = str(batch_data[i].get("question", "")).strip()
             task_query = question or task_name
-            previous_patient_timeline = (
-                prev_timeline_per_patient[i][:2000]
-                if prev_timeline_per_patient[i]
-                else "No evidence retrieved yet."
-            )
+            previous_patient_timeline = previous_timelines[i]
             previous_searched_keywords = (
                 ", ".join(dict.fromkeys(searched_keywords_per_patient[i]))
                 if searched_keywords_per_patient[i]
                 else "No previous searches."
             )
+            # search_diary: up to last 5 iterations of clinical_reasoning (empty on first iteration)
+            last_5_reasoning = clinical_reasoning_history_per_patient[i][-5:] if clinical_reasoning_history_per_patient[i] else []
+            search_diary_parts = [
+                f"--- Iteration {j} ---\n{cr}" for j, cr in enumerate(last_5_reasoning, start=iteration - len(last_5_reasoning))
+            ]
+            search_diary = "\n\n".join(search_diary_parts) if search_diary_parts else "(none yet)"
+
             format_kwargs: Dict[str, Any] = {
                 "task_query": task_query,
                 "patient_timeline": previous_patient_timeline,
                 "searched_keywords": previous_searched_keywords,
                 "iteration": iteration,
             }
+            if "{search_diary}" in kw_tpl:
+                format_kwargs["search_diary"] = search_diary
             if "{internal_state}" in kw_tpl:
                 format_kwargs["internal_state"] = prev_internal_state_per_patient[i] or "None."
             prompt = kw_tpl.format(**format_kwargs)
@@ -379,7 +510,7 @@ def run_iterative_retrieval_batch(
         try:
             kw_raw_list = _run_vlm_batch(
                 vlm_adapter, vlm_model, vlm_processor,
-                prompts, max_tokens=512
+                prompts, max_tokens=1024
             )
         except Exception as e:
             logger.warning("Batch keyword extraction failed: %s, using fallback", e)
@@ -395,6 +526,8 @@ def run_iterative_retrieval_batch(
             keywords = parsed["keywords"]
             reasoning = parsed["reasoning"]
             prev_internal_state_per_patient[i] = parsed["internal_state"]
+            if parsed["clinical_reasoning"]:
+                clinical_reasoning_history_per_patient[i].append(parsed["clinical_reasoning"])
 
             exclude_searched = {k.lower() for k in searched_keywords_per_patient[i]}
             keywords = list(dict.fromkeys(keywords))
@@ -443,13 +576,17 @@ def run_iterative_retrieval_batch(
                 "search_history": parsed["search_history"],
                 "answer": parsed["answer"],
                 "clinical_reasoning": parsed["clinical_reasoning"],
+                "summary_patient_timeline": previous_timelines[i] if summarize_timeline_for_context else "",
             })
 
-            # Update timeline for next iteration (exclude_report=False to include all BM25 hits)
+            # Update timeline for next iteration: short version (no VALUE) for model prompt,
+            # full version for logging
             prev_timeline_per_patient[i] = format_retrieved_events(
-                all_results_per_patient[i], exclude_report=False
+                all_results_per_patient[i], exclude_report=False, exclude_value=True
             )
-            timeline_per_iteration_per_patient[i].append(prev_timeline_per_patient[i])
+            timeline_per_iteration_per_patient[i].append(
+                format_retrieved_events(all_results_per_patient[i], exclude_report=False)
+            )
 
     # Build results (exclude_report=False to include all BM25 hits in timeline)
     return [
