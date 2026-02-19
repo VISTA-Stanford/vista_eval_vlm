@@ -149,10 +149,10 @@ class TaskOrchestrator:
             # - all other experiments: use *_subsampled.csv and require patient timeline merge
             needs_report_timeline = any(e in ('no_report', 'timeline_only', 'report') for e in experiments)
             needs_no_timeline = 'no_timeline' in experiments
-            needs_retrieved_timeline = any(e in ('retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image') for e in experiments)
+            needs_retrieved_timeline = any(e in ('retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image') for e in experiments)
             needs_all_vb_timeline = 'all_vb_timeline_only' in experiments
             needs_all_vb_image = 'all_vb_image_only' in experiments
-            needs_normal = any(e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image', 'all_vb_timeline_only', 'all_vb_image_only') for e in experiments)
+            needs_normal = any(e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image', 'all_vb_timeline_only', 'all_vb_image_only') for e in experiments)
 
             loaded_normal = self._load_task_data(task_info, use_no_report_csv=False, require_timeline=True) if needs_normal else None
             loaded_no_report = self._load_task_data(task_info, use_no_report_csv=True, require_timeline=True) if needs_report_timeline else None
@@ -170,7 +170,7 @@ class TaskOrchestrator:
                     loaded = loaded_all_vb_timeline
                 elif experiment in ('no_report', 'timeline_only', 'report'):
                     loaded = loaded_no_report
-                elif experiment in ('retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image'):
+                elif experiment in ('retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image'):
                     loaded = loaded_retrieval
                 else:
                     loaded = loaded_normal
@@ -551,7 +551,7 @@ class TaskOrchestrator:
         out_file = save_dir / f"{task_name}_results_{experiment}.csv"
 
         # Overwrite (don't resume) for retrieved_timeline experiments
-        if experiment in ("retrieved_timeline", "retrieved_timeline_per_iteration", "retrieved_timeline_with_image"):
+        if experiment in ("retrieved_timeline", "retrieved_timeline_per_iteration", "retrieved_timeline_per_iteration_summarization", "retrieved_timeline_with_image"):
             out_file.unlink(missing_ok=True)
 
         existing_indices = set()
@@ -658,7 +658,7 @@ class TaskOrchestrator:
                             })
                     if log_rows:
                         pd.DataFrame(log_rows).to_csv(csv_log_path, mode="w", index=False)
-            elif experiment in ('retrieved_timeline_per_iteration', 'retrieved_timeline_with_image'):
+            elif experiment in ('retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image'):
                 if self.retriever is None:
                     raise ValueError(
                         f"{experiment} experiment requires retrieval.enabled=true in config"
@@ -681,8 +681,20 @@ class TaskOrchestrator:
                     Path(iterations_log_dir).mkdir(parents=True, exist_ok=True)
 
                 rows_list = list(df_exp.iterrows())
+                use_vlm_summary_for_all_iters = experiment == "retrieved_timeline_per_iteration_summarization"
                 if use_timeline_cache and cache_path.exists():
                     cache_df = pd.read_parquet(cache_path)
+                    summary_df = None
+                    if use_vlm_summary_for_all_iters:
+                        csv_log_path = Path(iterations_log_dir) / "retrieval_keywords.csv"
+                        if csv_log_path.exists():
+                            try:
+                                kw_df = pd.read_csv(csv_log_path)
+                                if "summary_patient_timeline" in kw_df.columns and "person_id" in kw_df.columns and "iteration" in kw_df.columns:
+                                    summary_df = kw_df[["person_id", "iteration", "summary_patient_timeline"]].copy()
+                                    summary_df["person_id"] = summary_df["person_id"].astype(str)
+                            except Exception:
+                                pass
                     expanded_rows = []
                     for idx, row in rows_list:
                         row_dict = row.to_dict()
@@ -693,11 +705,29 @@ class TaskOrchestrator:
                         ].sort_values("iteration")
                         for _, cr in cache_rows.iterrows():
                             new_row = dict(row_dict)
-                            new_row["iteration"] = int(cr["iteration"])
+                            iter_num = int(cr["iteration"])
                             timeline = cr["timeline"]
-                            combined = truncate_timeline(timeline, truncation_config)
+                            if use_vlm_summary_for_all_iters and summary_df is not None:
+                                # summary_patient_timeline for iter N in CSV = summary of timeline after iter N-1
+                                # (used as context for keyword extraction at iter N; same as prompt at iter N)
+                                match = summary_df[
+                                    (summary_df["person_id"] == str(row["person_id"]))
+                                    & (summary_df["iteration"] == iter_num)
+                                ]
+                                if not match.empty:
+                                    summ = match.iloc[0]["summary_patient_timeline"]
+                                    if pd.notna(summ) and str(summ).strip():
+                                        timeline_for_prompt = str(summ).strip()
+                                    else:
+                                        timeline_for_prompt = timeline
+                                else:
+                                    timeline_for_prompt = timeline
+                            else:
+                                timeline_for_prompt = timeline
+                            combined = truncate_timeline(timeline_for_prompt, truncation_config)
                             new_row["dynamic_prompt"] = base_prompt_template.replace("[PATIENT_TIMELINE]", combined)
                             new_row["unique_events"] = int(cr.get("unique_events", count_timeline_events(timeline)))
+                            new_row["iteration"] = iter_num
                             expanded_rows.append(new_row)
                     df_exp = pd.DataFrame(expanded_rows)
                 else:
@@ -735,21 +765,58 @@ class TaskOrchestrator:
                             all_results.append((row, result))
                     expanded_rows = []
                     cache_rows = []
-                    for row, result in all_results:
+                    summaries_by_patient_iter = {}
+                    if use_vlm_summary_for_all_iters:
+                        # Run VLM summarization on full timeline (with report+note) for each iteration
+                        from retrieval.iterative_retrieval import _summarize_timeline_for_context_batch
+                        timeline_summary_max_chars = rc.get("timeline_summary_max_chars", 20000)
+                        for iter_num in tqdm(range(1, max_iterations + 1), desc="VLM summarization"):
+                            timelines = []
+                            task_queries = []
+                            for row, result in all_results:
+                                if iter_num <= len(result.timeline_per_iteration):
+                                    timelines.append(result.timeline_per_iteration[iter_num - 1])
+                                    task_queries.append(str(row.get("question", row.get("label_description", "")) or task_name))
+                                else:
+                                    timelines.append("No evidence retrieved yet.")
+                                    task_queries.append(task_name)
+                            if timelines:
+                                summaries = _summarize_timeline_for_context_batch(
+                                    self.adapter, self.model, self.processor,
+                                    timelines, task_queries,
+                                    max_chars=timeline_summary_max_chars,
+                                )
+                                for patient_idx, summ in enumerate(summaries):
+                                    summaries_by_patient_iter[(patient_idx, iter_num)] = summ
+                    for patient_idx, (row, result) in enumerate(all_results):
                         row_dict = row.to_dict()
                         orig_index = row_dict.get("index", row.name)
-                        for iter_num, timeline in enumerate(result.timeline_per_iteration, start=1):
+                        timelines_full = result.timeline_per_iteration
+                        iterations_log = result.iterations_log
+                        for iter_num, timeline in enumerate(timelines_full, start=1):
                             new_row = dict(row_dict)
                             new_row["iteration"] = iter_num
-                            combined = truncate_timeline(timeline, truncation_config)
+                            if use_vlm_summary_for_all_iters and (patient_idx, iter_num) in summaries_by_patient_iter:
+                                timeline_for_prompt = summaries_by_patient_iter[(patient_idx, iter_num)]
+                            else:
+                                timeline_for_prompt = timeline
+                            combined = truncate_timeline(timeline_for_prompt, truncation_config)
                             new_row["dynamic_prompt"] = base_prompt_template.replace("[PATIENT_TIMELINE]", combined)
                             new_row["unique_events"] = count_timeline_events(timeline)
                             expanded_rows.append(new_row)
+                            # summary_patient_timeline for prompt at iter N: summary of timeline after iter N
+                            # = log[N+1].summary (log entry N+1 has summary of timeline after iter N)
+                            summary_pt = ""
+                            if iterations_log:
+                                log_idx = min(iter_num, len(iterations_log) - 1)
+                                summary_pt = iterations_log[log_idx].get("summary_patient_timeline", "") or ""
                             cache_rows.append({
                                 "person_id": str(row["person_id"]),
                                 "index": orig_index,
                                 "iteration": iter_num,
                                 "timeline": timeline,
+                                "timeline_summarized": None,
+                                "summary_patient_timeline": summary_pt if summary_pt else None,
                                 "unique_events": count_timeline_events(timeline),
                             })
                     df_exp = pd.DataFrame(expanded_rows)
@@ -862,7 +929,7 @@ class TaskOrchestrator:
                     else:
                         res_row['used_image'] = 0
                     
-                    if experiment in ('retrieved_timeline_per_iteration', 'retrieved_timeline_with_image'):
+                    if experiment in ('retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image'):
                         res_row['input_token_length'] = self._count_prompt_tokens(item.get('question', ''))
                         # Add image token count for retrieved_timeline_with_image (50 axial slices)
                         if experiment == 'retrieved_timeline_with_image':

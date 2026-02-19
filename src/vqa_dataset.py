@@ -124,7 +124,7 @@ class PromptDataset(Dataset):
         
         # Skip image loading for 'no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', and 'retrieved_timeline_per_iteration' experiments
         # (retrieved_timeline_with_image loads 50 axial slices like axial_all_image)
-        if self.experiment in ('no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', 'retrieved_timeline_per_iteration'):
+        if self.experiment in ('no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization'):
             img = None
         else:
             # First check for image_path (existing behavior)
@@ -197,7 +197,7 @@ class PromptDataset(Dataset):
                                 if len(img_data.shape) > 2:
                                     depth = img_data.shape[2]
                                     img_list = []
-                                    for i in range(50):
+                                    for i in range(30):
                                         position = i * 0.1
                                         index = int(position * (depth - 1))
                                         if index >= depth:

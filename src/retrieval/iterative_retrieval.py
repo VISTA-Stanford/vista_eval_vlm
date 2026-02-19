@@ -77,7 +77,7 @@ def _summarize_timeline_for_context(
     tpl = summary_template or TIMELINE_SUMMARY_TEMPLATE
     prompt = tpl.format(
         task_query=task_query,
-        patient_timeline=timeline_str[:200000],
+        patient_timeline=timeline_str,
         max_chars=max_chars,
     )
     try:
@@ -89,7 +89,7 @@ def _summarize_timeline_for_context(
             return out.strip()[:max_chars * 2]  # fallback if no <answer> tag
     except Exception as e:
         logger.warning("Timeline summarization failed: %s, using raw timeline", e)
-    return timeline_str[:200000]
+    return timeline_str
 
 
 def _summarize_timeline_for_context_batch(
@@ -119,7 +119,7 @@ def _summarize_timeline_for_context_batch(
     tpl = summary_template or TIMELINE_SUMMARY_TEMPLATE
     indices, t_vals, q_vals = zip(*to_summarize)
     prompts = [
-        tpl.format(task_query=q, patient_timeline=t[:200000], max_chars=max_chars)
+        tpl.format(task_query=q, patient_timeline=t, max_chars=max_chars)
         for t, q in zip(t_vals, q_vals)
     ]
     result = list(timelines)
@@ -258,6 +258,7 @@ class IterativeRetrievalResult:
 
     timeline_str: str
     timeline_per_iteration: List[str] = field(default_factory=list)  # timeline after each iteration
+    timeline_per_iteration_summarized: List[str] = field(default_factory=list)  # short version (no VALUE) per iteration
     iterations_log: List[Dict[str, Any]] = field(default_factory=list)
     all_keywords: List[str] = field(default_factory=list)
     keyword_reasoning: List[str] = field(default_factory=list)
@@ -297,12 +298,13 @@ def run_iterative_retrieval(
     prev_internal_state = ""
     searched_keywords_list: List[str] = []
     timeline_per_iteration: List[str] = []
+    timeline_per_iteration_summarized: List[str] = []
     clinical_reasoning_history: List[str] = []
 
     for iteration in range(1, max_iterations + 1):
         # 1. Build prompt with previous iteration's context (internal_state, patient_timeline, searched_keywords)
         task_query = question or task_name
-        raw_timeline = prev_timeline[:200000] if prev_timeline else "No evidence retrieved yet."
+        raw_timeline = prev_timeline if prev_timeline else "No evidence retrieved yet."
         if summarize_timeline_for_context and prev_timeline and prev_timeline.strip():
             previous_patient_timeline = _summarize_timeline_for_context(
                 vlm_adapter, vlm_model, vlm_processor,
@@ -316,7 +318,7 @@ def run_iterative_retrieval(
         # search_diary: up to last 5 iterations of clinical_reasoning (empty on first iteration)
         last_5_reasoning = clinical_reasoning_history[-5:] if clinical_reasoning_history else []
         search_diary_parts = [
-            f"--- Iteration {j} ---\n{cr}" for j, cr in enumerate(last_5_reasoning, start=iteration - len(last_5_reasoning))
+            f"--- Retrieval Iteration {j} Reasoning ---\n{cr}" for j, cr in enumerate(last_5_reasoning, start=iteration - len(last_5_reasoning))
         ]
         search_diary = "\n\n".join(search_diary_parts) if search_diary_parts else "(none yet)"
 
@@ -386,8 +388,11 @@ def run_iterative_retrieval(
 
         # 3. Format timeline for next iteration context
         # Short version (no VALUE content) for model prompt; full version for logging
-        prev_timeline = format_retrieved_events(all_results, exclude_report=False, exclude_value=True)
-        timeline_per_iteration.append(format_retrieved_events(all_results, exclude_report=False))
+        full_timeline = format_retrieved_events(all_results, exclude_report=False)
+        short_timeline = format_retrieved_events(all_results, exclude_report=False, exclude_value=True)
+        prev_timeline = short_timeline
+        timeline_per_iteration.append(full_timeline)
+        timeline_per_iteration_summarized.append(full_timeline)
 
         iterations_log.append({
             "iteration": iteration,
@@ -409,6 +414,7 @@ def run_iterative_retrieval(
     return IterativeRetrievalResult(
         timeline_str=timeline_str,
         timeline_per_iteration=timeline_per_iteration,
+        timeline_per_iteration_summarized=timeline_per_iteration_summarized,
         iterations_log=iterations_log,
         all_keywords=list(dict.fromkeys(all_keywords_flat)),
         keyword_reasoning=keyword_reasoning_list,
@@ -453,13 +459,14 @@ def run_iterative_retrieval_batch(
     prev_internal_state_per_patient: List[str] = [""] * n
     searched_keywords_per_patient: List[List[str]] = [[] for _ in range(n)]
     timeline_per_iteration_per_patient: List[List[str]] = [[] for _ in range(n)]
+    timeline_per_iteration_summarized_per_patient: List[List[str]] = [[] for _ in range(n)]
     clinical_reasoning_history_per_patient: List[List[str]] = [[] for _ in range(n)]
 
     for iteration in range(1, max_iterations + 1):
         # 1. Build prompts for all patients (internal_state, patient_timeline, searched_keywords, search_diary)
         # Compute previous_patient_timeline per patient (optionally summarized)
         raw_timelines = [
-            prev_timeline_per_patient[i][:200000] if prev_timeline_per_patient[i] else "No evidence retrieved yet."
+            prev_timeline_per_patient[i] if prev_timeline_per_patient[i] else "No evidence retrieved yet."
             for i in range(n)
         ]
         task_queries = [
@@ -489,7 +496,7 @@ def run_iterative_retrieval_batch(
             # search_diary: up to last 5 iterations of clinical_reasoning (empty on first iteration)
             last_5_reasoning = clinical_reasoning_history_per_patient[i][-5:] if clinical_reasoning_history_per_patient[i] else []
             search_diary_parts = [
-                f"--- Iteration {j} ---\n{cr}" for j, cr in enumerate(last_5_reasoning, start=iteration - len(last_5_reasoning))
+                f"--- Retrieval Iteration {j} Reasoning ---\n{cr}" for j, cr in enumerate(last_5_reasoning, start=iteration - len(last_5_reasoning))
             ]
             search_diary = "\n\n".join(search_diary_parts) if search_diary_parts else "(none yet)"
 
@@ -581,18 +588,20 @@ def run_iterative_retrieval_batch(
 
             # Update timeline for next iteration: short version (no VALUE) for model prompt,
             # full version for logging
-            prev_timeline_per_patient[i] = format_retrieved_events(
-                all_results_per_patient[i], exclude_report=False, exclude_value=True
+            full_timeline = format_retrieved_events(all_results_per_patient[i], exclude_report=False)
+            short_timeline = format_retrieved_events(
+                all_results_per_patient[i], exclude_report=False, exclude_value=False
             )
-            timeline_per_iteration_per_patient[i].append(
-                format_retrieved_events(all_results_per_patient[i], exclude_report=False)
-            )
+            prev_timeline_per_patient[i] = short_timeline
+            timeline_per_iteration_per_patient[i].append(full_timeline)
+            timeline_per_iteration_summarized_per_patient[i].append(full_timeline)
 
     # Build results (exclude_report=False to include all BM25 hits in timeline)
     return [
         IterativeRetrievalResult(
             timeline_str=format_retrieved_events(all_results_per_patient[i], exclude_report=False),
             timeline_per_iteration=timeline_per_iteration_per_patient[i],
+            timeline_per_iteration_summarized=timeline_per_iteration_summarized_per_patient[i],
             iterations_log=iterations_log_per_patient[i],
             all_keywords=list(dict.fromkeys(all_keywords_flat_per_patient[i])),
             keyword_reasoning=keyword_reasoning_per_patient[i],

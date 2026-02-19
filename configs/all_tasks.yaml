@@ -1,6 +1,6 @@
 paths:
   base_dir: "/home/rdcunha/vista_project/vista_bench"
-  results_dir: "/home/rdcunha/vista_project/results_retrieval_v8"
+  results_dir: "/home/rdcunha/vista_project/results_retrieval_v14"
   ct_dir: "/data/fries/datasets/vista_bench_ryan/downloaded_ct_scans/chaudhari_lab/ct_data/ct_scans/vista/nov25"
   valid_tasks: "tasks/valid_tasks_v1_2.json"
   prompts: "tasks/prompts_by_task.json"
@@ -37,8 +37,8 @@ tasks:
   - has_recurrence_1_yr
   - progression_recurrence_free_survival_1_yr
   - has_progression_nonrecurrence_1_yr
-  - died_of_cancer_1_yr
-  - died_any_cause_1_yr
+  # - died_of_cancer_1_yr
+  # - died_any_cause_1_yr
   # - has_recurrence_2_yr
   # - progression_recurrence_free_survival_2_yr
   # - has_progression_nonrecurrence_2_yr
@@ -63,10 +63,10 @@ tasks:
   # - died_any_cause_2_yr
 
 experiments:
-  - no_image # no image
+  # - no_image # no image
   # - axial_1_image # middle axial image
   # - all_image # middle image from each view
-  - axial_all_image # 50 axial images
+  # - axial_all_image # 50 axial images
   # - sagittal_all_image # 10 sagittal images
   # - no_timeline # image
   # - no_report # timeline + image
@@ -76,6 +76,7 @@ experiments:
   # - report # timeline + report
   # - retrieved_timeline # retrieved timeline
   - retrieved_timeline_per_iteration
+  - retrieved_timeline_per_iteration_summarization  # summarized timeline
   # - retrieved_timeline_with_image # retrieved timeline per iteration + 50 axial slices
 
 # Retrieval (for retrieved_timeline experiment)
@@ -95,8 +96,8 @@ retrieval:
   eval_per_iteration: true   # Enable per-iteration experiment (use retrieved_timeline_per_iteration in experiments)
   save_timeline_cache: true  # Save parquet for reuse (per-iteration timelines)
   use_timeline_cache: true  # Load from cache instead of running retrieval (for inference-only runs)
-  summarize_timeline_for_context: false  # VLM summary of patient timeline in retrieval
-  timeline_summary_max_chars: 8000  # Max chars for summarized timeline
+  summarize_timeline_for_context: true  # VLM summary of patient timeline in retrieval
+  timeline_summary_max_chars: 20000  # Max chars for summarized timeline
 
 # Timeline truncation configuration
 # Events are identified by the pattern: [YYYY-MM-DD HH:MM] |
@@ -112,4 +113,4 @@ subsample: true
 # Weill eval: which GPU nodes to use (0-7). Used by eval/weill.sh.
 # Override with WEILL_GPUS env or command-line args if needed.
 weill:
-  gpu_nodes: [1,2,5,6,7]
+  gpu_nodes: [3,4,5,6,7]

@@ -2,6 +2,7 @@
 Format meds_mcp search results into patient_string-style timeline format.
 """
 
+import re
 import datetime
 import logging
 from typing import Any, Dict, List, Optional
@@ -107,3 +108,13 @@ def format_retrieved_events(
     # Sort by timestamp
     lines.sort(key=lambda x: x[1])
     return "\n".join(l[0] for l in lines) if lines else "No clinical events found for this period."
+
+
+def strip_value_from_timeline(timeline: str) -> str:
+    """
+    Remove VALUE: ... from each line of a formatted timeline.
+    Used to derive summarized (short) version from full timeline when loading from cache.
+    """
+    if not timeline or not str(timeline).strip():
+        return timeline
+    return re.sub(r"\s*\|\s*VALUE:.*$", "", str(timeline), flags=re.MULTILINE).rstrip()

@@ -107,15 +107,17 @@ You are an expert Clinical Prognostician. You are analyzing the PRE-DIAGNOSTIC h
 
 ### RETRIEVAL ITERATION {iteration}
 
+### CURRENT EVIDENCE (a summary of what you have retrieved so far from the patient timeline)
+<current_evidence>
+{patient_timeline}
+</current_evidence>
+
+
 ### SEARCH DIARY (your reasoning from up to the last 5 iterations)
 <search_diary>
 {search_diary}
 </search_diary>
 
-### CURRENT EVIDENCE (what you have retrieved so far)
-<current_evidence>
-{patient_timeline}
-</current_evidence>
 
 ### SEARCH HISTORY (already used; DO NOT repeat)
 <search_history>
@@ -209,12 +211,13 @@ TIMELINE_SUMMARY_TEMPLATE = """You are a clinical summarization assistant. Given
 ### INSTRUCTIONS
 Summarize the timeline in a concise bullet list. Include:
 - Key diagnoses, staging, and problem list items
-- Important imaging findings and dates
+- Important imaging findings and dates (include radiology report content when present)
 - Treatment history (drugs, procedures)
 - Relevant labs, biomarkers, or vital signs
+- Clinical notes and note content (VALUE fields) when relevant to the question
 - Any evidence of recurrence, progression, or outcomes
 
-Keep the summary under {max_chars} characters. Use clinical terminology. Do not add speculation—only facts from the timeline.
+Give a brief summary of the timeline (under {max_chars} characters). Use clinical terminology. Do not add speculation—only facts from the timeline. Preserve key details from reports and notes.
 
 ### RESPONSE FORMAT (STRICT)
 Output ONLY the summary inside <answer> tags. No other text, no thinking, no explanation outside the tags.
