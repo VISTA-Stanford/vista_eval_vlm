@@ -16,10 +16,7 @@ from results.results_analyzer import is_answer_correct, map_label_to_answer
 
 # Experiments that include CT scan slices (no_image excluded)
 CT_EXPERIMENTS = [
-    'axial_1_image',      # 1 middle axial slice
-    'all_image',          # 3 slices: sagittal, coronal, axial middle
     'axial_all_image',    # 10 axial slices
-    # 'sagittal_all_image', # 10 sagittal slices
     'no_timeline',        # 100 axial slices
     'no_report',          # 50 axial slices
 ]
@@ -183,34 +180,13 @@ def _extract_slices_for_experiment(img_data, experiment):
     from vista_run.utils.utils_inference import normalize_slice
 
     slices = []
-    if experiment == 'axial_1_image':
-        if len(img_data.shape) > 2:
-            idx = img_data.shape[2] // 2
-            s = img_data[:, :, idx]
-            slices.append(normalize_slice(s))
-    elif experiment == 'all_image':
-        if len(img_data.shape) >= 3:
-            # sagittal, coronal, axial middle
-            sx = img_data.shape[0] // 2
-            sy = img_data.shape[1] // 2
-            sz = img_data.shape[2] // 2
-            slices.append(normalize_slice(img_data[sx, :, :]))
-            slices.append(normalize_slice(img_data[:, sy, :]))
-            slices.append(normalize_slice(img_data[:, :, sz]))
-    elif experiment == 'axial_all_image':
+    if experiment == 'axial_all_image':
         if len(img_data.shape) > 2:
             depth = img_data.shape[2]
             for i in range(10):
                 pos = i * 0.1
                 idx = min(int(pos * (depth - 1)), depth - 1)
                 slices.append(normalize_slice(img_data[:, :, idx]))
-    elif experiment == 'sagittal_all_image':
-        if len(img_data.shape) > 0:
-            width = img_data.shape[0]
-            for i in range(10):
-                pos = i * 0.1
-                idx = min(int(pos * (width - 1)), width - 1)
-                slices.append(normalize_slice(img_data[idx, :, :]))
     elif experiment == 'no_timeline':
         if len(img_data.shape) > 2:
             depth = img_data.shape[2]

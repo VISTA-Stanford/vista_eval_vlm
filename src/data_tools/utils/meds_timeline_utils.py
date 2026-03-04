@@ -25,6 +25,25 @@ def count_unique_event_dates(timeline_text) -> int:
     return len(set(dates)) if dates else 0
 
 
+def count_timeline_events(timeline_text) -> int:
+    """
+    Count total number of events in the patient timeline (one event per line).
+
+    Args:
+        timeline_text: The patient timeline string with format [YYYY-MM-DD HH:MM] | ...
+
+    Returns:
+        int: Number of events
+    """
+    if pd.isna(timeline_text) or not timeline_text:
+        return 0
+    text_str = str(timeline_text)
+    if "No clinical events found for this period." in text_str:
+        return 0
+    pattern = r'\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]'
+    return len(re.findall(pattern, text_str))
+
+
 def get_first_4_rows(text) -> str:
     """
     Return the first 4 lines of the patient timeline.
@@ -86,7 +105,7 @@ def truncate_timeline(text, truncation_config=None) -> str:
 
     elif mode == 'last_k_events':
         initial_k = truncation_config.get('k', 10)
-        safety_max_chars = truncation_config.get('max_chars', 180000)
+        safety_max_chars = truncation_config.get('max_chars', 210000)
 
         pattern = r'\[(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}\]\s*\|'
         matches = list(re.finditer(pattern, text_str))
@@ -203,7 +222,7 @@ def get_llm_event_string(
         # 3. Extract Numeric Value + Unit
         if 'numeric_value' in row and pd.notnull(row['numeric_value']):
             unit_str = f" {row['unit']}" if pd.notnull(row.get('unit')) else ""
-            event_parts.append(f"VALUE: {row['numeric_value']}{unit_str}")
+            event_parts.append(f"VALUE: {round(float(row['numeric_value']), 1)}{unit_str}")
 
         # 4. Extract Text Notes (Conditional)
         if include_text and 'text_value' in row and pd.notnull(row['text_value']):

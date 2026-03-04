@@ -2,6 +2,7 @@
 Format meds_mcp search results into patient_string-style timeline format.
 """
 
+import re
 import datetime
 import logging
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,7 @@ def _parse_timestamp(ts: Any) -> Optional[datetime.datetime]:
 def format_retrieved_events(
     results: List[Dict[str, Any]],
     exclude_report: bool = False,
+    exclude_value: bool = False,
 ) -> str:
     """
     Convert meds_mcp search results to patient_string format.
@@ -40,6 +42,7 @@ def format_retrieved_events(
         results: List of dicts from search_patient_events with keys:
             id, content, metadata, timestamp, event_type, code, name, person_id, score
         exclude_report: If True, exclude events with STANFORD or imaging in code/name.
+        exclude_value: If True, omit VALUE content from each event (shorter output for model prompts).
 
     Returns:
         Formatted timeline string. Returns "No clinical events found for this period."
@@ -93,8 +96,8 @@ def format_retrieved_events(
         if desc_parts:
             event_parts.append(" ".join(desc_parts))
 
-        # Value content
-        if value is not None and str(value).strip():
+        # Value content (omit when exclude_value=True for shorter model prompts)
+        if not exclude_value and value is not None and str(value).strip():
             val_str = str(value).replace("\n", " ").strip()
             if val_str:
                 event_parts.append(f"VALUE: {val_str}")
@@ -105,3 +108,13 @@ def format_retrieved_events(
     # Sort by timestamp
     lines.sort(key=lambda x: x[1])
     return "\n".join(l[0] for l in lines) if lines else "No clinical events found for this period."
+
+
+def strip_value_from_timeline(timeline: str) -> str:
+    """
+    Remove VALUE: ... from each line of a formatted timeline.
+    Used to derive summarized (short) version from full timeline when loading from cache.
+    """
+    if not timeline or not str(timeline).strip():
+        return timeline
+    return re.sub(r"\s*\|\s*VALUE:.*$", "", str(timeline), flags=re.MULTILINE).rstrip()

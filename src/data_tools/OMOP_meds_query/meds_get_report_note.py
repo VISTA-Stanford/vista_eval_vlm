@@ -186,7 +186,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--meds-db",
-        default="/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/vista_thoracic_cohort_v0_db",
+        # default="/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/vista_thoracic_cohort_v0_db",
+        default="/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/thoracic_cohort_meds_femr_db",
         help="Path to meds reader DB",
     )
     parser.add_argument(

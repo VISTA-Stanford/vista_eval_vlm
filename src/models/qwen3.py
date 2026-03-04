@@ -12,7 +12,7 @@ from .base import BaseVLMAdapter, serialize_logprobs
 class Qwen3Adapter(BaseVLMAdapter):
     def load(self):
         # Initialize vLLM engine
-        llm = LLM(
+        llm_kwargs = dict(
             model=self.model_name,
             dtype="bfloat16",
             trust_remote_code=True,
@@ -23,11 +23,16 @@ class Qwen3Adapter(BaseVLMAdapter):
             mm_processor_cache_gb=0,
             max_model_len=120000,
         )
+        if self.cache_dir:
+            llm_kwargs["download_dir"] = self.cache_dir
+            llm_kwargs["hf_overrides"] = {"cache_dir": self.cache_dir}
+        llm = LLM(**llm_kwargs)
         
         # Load processor for chat template formatting
         processor = AutoProcessor.from_pretrained(
             self.model_name,
-            trust_remote_code=True
+            trust_remote_code=True,
+            cache_dir=self.cache_dir,
         )
         
         # Configure tokenizer padding

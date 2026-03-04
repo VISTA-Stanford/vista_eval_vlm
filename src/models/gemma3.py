@@ -9,7 +9,7 @@ from .base import BaseVLMAdapter, serialize_logprobs
 class Gemma3Adapter(BaseVLMAdapter):
     def load(self):
         # Initialize vLLM engine
-        llm = LLM(
+        llm_kwargs = dict(
             model=self.model_name,
             dtype="bfloat16",
             trust_remote_code=True,
@@ -20,11 +20,16 @@ class Gemma3Adapter(BaseVLMAdapter):
             limit_mm_per_prompt={"image": 100}, 
             max_model_len=120000,
         )
+        if self.cache_dir:
+            llm_kwargs["download_dir"] = self.cache_dir
+            llm_kwargs["hf_overrides"] = {"cache_dir": self.cache_dir}
+        llm = LLM(**llm_kwargs)
         
         # Load processor for chat template formatting
         processor = AutoProcessor.from_pretrained(
             self.model_name,
-            trust_remote_code=True
+            trust_remote_code=True,
+            cache_dir=self.cache_dir,
         )
         
         # Configure tokenizer padding

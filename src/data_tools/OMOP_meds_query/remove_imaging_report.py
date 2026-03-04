@@ -17,8 +17,8 @@ from meds2text.ontology import OntologyDescriptionLookupTable
 from data_tools.utils.meds_timeline_utils import get_llm_event_string
 from data_tools.utils.config_utils import load_tasks_and_base_dir, load_task_source_csv
 
-def process_subsampled_csv(
-    csv_path: Path,
+def process_dataframe(
+    df: pd.DataFrame,
     database: meds_reader.SubjectDatabase,
     lookup_table: OntologyDescriptionLookupTable,
     embed_time_col: str = "embed_time",
@@ -26,20 +26,21 @@ def process_subsampled_csv(
     months_before: int = 6,
 ) -> pd.DataFrame:
     """
-    Read subsampled CSV and replace 'patient_string' with timeline built from
+    Process a DataFrame and replace 'patient_string' with timeline built from
     get_described_events_window (end_time=embed_time, start_time=6 months prior, subject_id=person_id)
-    and get_llm_event_string_no_imaging. All other columns unchanged.
+    and get_llm_event_string with exclude_report=True. All other columns unchanged.
     """
-    df = pd.read_csv(csv_path)
-
     if embed_time_col not in df.columns:
-        raise ValueError(f"CSV missing column '{embed_time_col}': {csv_path}")
+        raise ValueError(f"DataFrame missing column '{embed_time_col}'")
     if person_id_col not in df.columns:
-        raise ValueError(f"CSV missing column '{person_id_col}': {csv_path}")
+        raise ValueError(f"DataFrame missing column '{person_id_col}'")
 
     # Ensure we have a patient_string column (create if missing so output has same structure)
     if "patient_string" not in df.columns:
+        df = df.copy()
         df["patient_string"] = ""
+    else:
+        df = df.copy()
 
     embed_times = pd.to_datetime(df[embed_time_col], errors="coerce")
     start_times = embed_times - pd.DateOffset(months=months_before)
@@ -47,8 +48,8 @@ def process_subsampled_csv(
     new_strings = []
     for i, row in df.iterrows():
         subject_id = row[person_id_col]
-        end_time = embed_times.iloc[i]
-        start_time = start_times.iloc[i]
+        end_time = embed_times.loc[i]
+        start_time = start_times.loc[i]
 
         if pd.isna(end_time) or pd.isna(subject_id):
             new_strings.append(row.get("patient_string", "") if pd.notna(row.get("patient_string")) else "")
@@ -74,6 +75,30 @@ def process_subsampled_csv(
 
     df["patient_string"] = new_strings
     return df
+
+
+def process_subsampled_csv(
+    csv_path: Path,
+    database: meds_reader.SubjectDatabase,
+    lookup_table: OntologyDescriptionLookupTable,
+    embed_time_col: str = "embed_time",
+    person_id_col: str = "person_id",
+    months_before: int = 6,
+) -> pd.DataFrame:
+    """
+    Read subsampled CSV and replace 'patient_string' with timeline built from
+    get_described_events_window (end_time=embed_time, start_time=6 months prior, subject_id=person_id)
+    and get_llm_event_string_no_imaging. All other columns unchanged.
+    """
+    df = pd.read_csv(csv_path)
+    return process_dataframe(
+        df,
+        database=database,
+        lookup_table=lookup_table,
+        embed_time_col=embed_time_col,
+        person_id_col=person_id_col,
+        months_before=months_before,
+    )
 
 
 def run(
@@ -140,7 +165,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build _subsampled_no_img_report CSVs with timeline skipping imaging codes.")
     parser.add_argument("--config", default="/home/rdcunha/vista_project/vista_eval_vlm/configs/all_tasks.yaml", help="Path to all_tasks.yaml")
     parser.add_argument("--valid-tasks", default="/home/rdcunha/vista_project/vista_bench/tasks/valid_tasks.json", help="Path to valid_tasks.json")
-    parser.add_argument("--meds-db", default="/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/vista_thoracic_cohort_v0_db", help="Path to meds reader DB")
+    # parser.add_argument("--meds-db", default="/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/vista_thoracic_cohort_v0_db", help="Path to meds reader DB")
+    parser.add_argument("--meds-db", default="/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/thoracic_cohort_meds_femr_db", help="Path to meds reader DB")
     parser.add_argument("--ontology", default="/home/rdcunha/vista_project/vista_bench/thoracic_cohort_meds/athena_omop_ontologies", help="Path to ontology")
     parser.add_argument("--overwrite", default=True, help="Overwrite existing _subsampled_no_img_report files")
     args = parser.parse_args()

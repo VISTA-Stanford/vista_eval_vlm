@@ -39,6 +39,26 @@ def load_tasks_and_paths(config_path: str, valid_tasks_path: str) -> tuple[list[
     return tasks, base_dir, task_to_source
 
 
+RETRIEVAL_SUBSAMPLE_CSV = (
+    "/home/rdcunha/vista_project/vista_bench/v1_2/progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr/retrieval_subsample_50.csv"
+)
+
+
+def collect_person_ids_from_retrieval_csv(csv_path: str | Path) -> set[str]:
+    """Collect unique person_ids from retrieval_subsample_50.csv."""
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Retrieval CSV not found: {csv_path}")
+    df = pd.read_csv(csv_path, sep=None, engine="python", on_bad_lines="warn")
+    pid_col = next(
+        (c for c in df.columns if c.lower() in ("person_id", "patient_id")),
+        None,
+    )
+    if not pid_col:
+        raise ValueError(f"No person_id column in {csv_path}. Columns: {list(df.columns)}")
+    return set(df[pid_col].dropna().astype(str).str.strip().unique())
+
+
 def collect_person_ids_from_tasks(
     base_dir: Path,
     tasks: list[str],
@@ -77,9 +97,11 @@ def download_xmls(
     file_suffix: str = "_subsampled",
     dry_run: bool = False,
     person_id: str | None = None,
+    retrieval_csv: str | Path | None = None,
 ) -> dict:
     """
-    Download XML files for all tasks defined in config, or for a single person_id.
+    Download XML files for all tasks defined in config, or for a single person_id,
+    or for person_ids from retrieval_subsample_50.csv.
 
     Args:
         config_path: Path to all_tasks.yaml.
@@ -90,6 +112,7 @@ def download_xmls(
         file_suffix: CSV filename suffix (e.g. _subsampled).
         dry_run: If True, only report without downloading.
         person_id: If set, download only this person's XML (skips task-based collection).
+        retrieval_csv: If set, load unique person_ids from this CSV (e.g. retrieval_subsample_50.csv).
 
     Returns:
         Dict with keys: downloaded, existing, not_in_bucket.
@@ -97,6 +120,9 @@ def download_xmls(
     if person_id:
         person_ids = {str(person_id).strip()}
         print(f"Downloading XML for single person_id: {person_id}")
+    elif retrieval_csv:
+        person_ids = collect_person_ids_from_retrieval_csv(retrieval_csv)
+        print(f"Loaded {len(person_ids)} unique person_ids from retrieval CSV: {retrieval_csv}")
     else:
         tasks, base_dir, task_to_source = load_tasks_and_paths(config_path, valid_tasks_path)
         if not tasks:
@@ -184,6 +210,20 @@ def main():
         default=None,
         help="Download XML for this specific person_id only (skips task-based collection)",
     )
+    parser.add_argument(
+        "--retrieval-csv",
+        type=str,
+        nargs="?",
+        const=RETRIEVAL_SUBSAMPLE_CSV,
+        default=RETRIEVAL_SUBSAMPLE_CSV,
+        metavar="PATH",
+        help="Load unique person_ids from retrieval_subsample_50.csv (default)",
+    )
+    parser.add_argument(
+        "--tasks",
+        action="store_true",
+        help="Use task-based collection from config instead of retrieval CSV",
+    )
     args = parser.parse_args()
 
     # Resolve default paths relative to vista_eval_vlm
@@ -198,23 +238,31 @@ def main():
         if not str(args.person_id).strip():
             print("Error: --person-id must be non-empty")
             return 1
-    else:
+    elif args.tasks:
         if not Path(config_path).exists():
             print(f"Error: Config not found: {config_path}")
             return 1
         if not Path(valid_tasks_path).exists():
             print(f"Error: valid_tasks.json not found: {valid_tasks_path}")
             return 1
+    else:
+        csv_path = args.retrieval_csv or RETRIEVAL_SUBSAMPLE_CSV
+        if not Path(csv_path).exists():
+            print(f"Error: Retrieval CSV not found: {csv_path}")
+            return 1
 
     print("=" * 50)
     print("XML Download for vista_eval_vlm tasks")
     print("=" * 50)
+    mode = "retrieval CSV" if not args.tasks and not args.person_id else ("tasks" if args.tasks else "single person_id")
+    print(f"Mode: {mode}")
     print(f"Config: {config_path}")
     print(f"Bucket: gs://{args.bucket}/{args.prefix}/")
     print(f"Download to: {args.download_dir}")
     print(f"Mode: {'DRY RUN' if args.dry_run else 'LIVE'}")
     print("=" * 50)
 
+    retrieval_csv = None if args.tasks else args.retrieval_csv
     stats = download_xmls(
         config_path=config_path,
         valid_tasks_path=valid_tasks_path,
@@ -223,6 +271,7 @@ def main():
         download_dir=args.download_dir,
         dry_run=args.dry_run,
         person_id=args.person_id,
+        retrieval_csv=retrieval_csv,
     )
 
     print("\n" + "=" * 50)
