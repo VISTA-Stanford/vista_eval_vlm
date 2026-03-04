@@ -57,13 +57,13 @@ def window(ct_vol: np.ndarray) -> np.ndarray:
     return np.stack([norm(ct_vol, clip[0], clip[1]) for clip in window_clips], axis=-1)
 
 class PromptDataset(Dataset):
-    def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='axial_1_image', storage_client=None, model_type=None, ct_dir=None):
+    def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None):
         """
         Args:
             df: Dataframe containing the data.
             prompt_col: The column name to use for the text prompt.
             add_options: Whether to append options to the prompt.
-            experiment: Experiment type - 'no_image', 'axial_1_image', 'all_image', 'axial_all_image', 'sagittal_all_image', 'no_timeline', 'no_report', 'timeline_only', 'report', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image'
+            experiment: Experiment type - 'no_image', 'axial_all_image', 'no_timeline', 'no_report', 'timeline_only', 'report', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image', 'retrieved_timeline_per_iteration_summarization_with_image'
             storage_client: GCP Storage client for loading NIfTI files from bucket (used when file not under ct_dir).
             model_type: Model type string (e.g., 'gemma3') to determine preprocessing.
             ct_dir: Optional path from config paths.ct_dir. If set and nifti_path (split to filename) exists under ct_dir, load from disk; else use GCP.
@@ -123,7 +123,7 @@ class PromptDataset(Dataset):
         image_path = row.get('image_path', None)
         
         # Skip image loading for 'no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', and 'retrieved_timeline_per_iteration' experiments
-        # (retrieved_timeline_with_image loads 50 axial slices like axial_all_image)
+        # (retrieved_timeline_with_image and retrieved_timeline_per_iteration_summarization_with_image load 50 axial slices like axial_all_image)
         if self.experiment in ('no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization'):
             img = None
         else:
@@ -171,28 +171,7 @@ class PromptDataset(Dataset):
 
                         if img_data is not None:
                             # Handle different experiment types
-                            if self.experiment == 'axial_1_image':
-                                # Extract axial middle slice (3rd dimension)
-                                axial_middle_index = img_data.shape[2] // 2
-                                axial_slice = img_data[:, :, axial_middle_index]
-                                img = self._process_ct_slice(axial_slice)
-                            elif self.experiment == 'all_image':
-                                # Extract middle index of each of the 3 dimensions
-                                img_list = []
-                                if len(img_data.shape) > 0:
-                                    sagittal_middle = img_data.shape[0] // 2
-                                    sagittal_slice = img_data[sagittal_middle, :, :]
-                                    img_list.append(self._process_ct_slice(sagittal_slice))
-                                if len(img_data.shape) > 1:
-                                    coronal_middle = img_data.shape[1] // 2
-                                    coronal_slice = img_data[:, coronal_middle, :]
-                                    img_list.append(self._process_ct_slice(coronal_slice))
-                                if len(img_data.shape) > 2:
-                                    axial_middle = img_data.shape[2] // 2
-                                    axial_slice = img_data[:, :, axial_middle]
-                                    img_list.append(self._process_ct_slice(axial_slice))
-                                img = img_list if img_list else None
-                            elif self.experiment in ('axial_all_image', 'retrieved_timeline_with_image'):
+                            if self.experiment in ('axial_all_image', 'retrieved_timeline_with_image', 'retrieved_timeline_per_iteration_summarization_with_image'):
                                 # 50 axial slices (same sampling as axial_all_image)
                                 if len(img_data.shape) > 2:
                                     depth = img_data.shape[2]
@@ -204,20 +183,6 @@ class PromptDataset(Dataset):
                                             index = depth - 1
                                         axial_slice = img_data[:, :, index]
                                         img_list.append(self._process_ct_slice(axial_slice))
-                                    img = img_list
-                                else:
-                                    img = None
-                            elif self.experiment == 'sagittal_all_image':
-                                if len(img_data.shape) > 0:
-                                    width = img_data.shape[0]
-                                    img_list = []
-                                    for i in range(10):
-                                        position = i * 0.1
-                                        index = int(position * (width - 1))
-                                        if index >= width:
-                                            index = width - 1
-                                        sagittal_slice = img_data[index, :, :]
-                                        img_list.append(self._process_ct_slice(sagittal_slice))
                                     img = img_list
                                 else:
                                     img = None

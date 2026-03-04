@@ -1,6 +1,7 @@
 paths:
-  base_dir: "/home/rdcunha/vista_project/vista_bench"
-  results_dir: "/home/rdcunha/vista_project/results_retrieval_v14"
+  base_dir: "/data/fries/users/rdcunha/vista_bench_cached/vista_bench"
+  # results_dir: "/data/fries/users/rdcunha/vb_results/results_retrieval_v24"
+  results_dir: "/home/rdcunha/vista_project/results"
   ct_dir: "/data/fries/datasets/vista_bench_ryan/downloaded_ct_scans/chaudhari_lab/ct_data/ct_scans/vista/nov25"
   valid_tasks: "tasks/valid_tasks_v1_2.json"
   prompts: "tasks/prompts_by_task.json"
@@ -11,32 +12,32 @@ model:
 
 runtime:
   cache_dir: "/data/fries/users/rdcunha/model_cache"
-  batch_size: 30
+  batch_size: 64
   max_new_tokens: 1024
 
 models:
-  - type: "intern"
-    name: "OpenGVLab/InternVL3_5-8B-hf"
-  
-  - type: "gemma3"
-    name: "google/medgemma-1.5-4b-it"
+  # - type: "gemma3"
+  #   name: "google/medgemma-1.5-4b-it"
 
+  # - type: "intern"
+  #   name: "OpenGVLab/InternVL3_5-8B-hf"
+  
   - type: "gemma3"
     name: "google/medgemma-4b-it"
 
-  - type: "qwen3vl"
-    name: "Qwen/Qwen3-VL-8B-Instruct"
+  # - type: "qwen3vl"
+  #   name: "Qwen/Qwen3-VL-8B-Instruct"
 
-  - type: "octomed"
-    name: "OctoMed/OctoMed-7B"
+  # - type: "octomed"
+  #   name: "OctoMed/OctoMed-7B"
 
 tasks:
   # - radiation_oligoprogression_answer
   # - early_stage_management_answer
   # CVPR task
   - has_recurrence_1_yr
-  - progression_recurrence_free_survival_1_yr
-  - has_progression_nonrecurrence_1_yr
+  # - progression_recurrence_free_survival_1_yr
+  # - has_progression_nonrecurrence_1_yr
   # - died_of_cancer_1_yr
   # - died_any_cause_1_yr
   # - has_recurrence_2_yr
@@ -63,11 +64,8 @@ tasks:
   # - died_any_cause_2_yr
 
 experiments:
-  # - no_image # no image
-  # - axial_1_image # middle axial image
-  # - all_image # middle image from each view
+  - no_image # no image
   # - axial_all_image # 50 axial images
-  # - sagittal_all_image # 10 sagittal images
   # - no_timeline # image
   # - no_report # timeline + image
   # - timeline_only # timeline
@@ -75,16 +73,17 @@ experiments:
   # - all_vb_image_only # full test split from _full.parquet, image only (same as no_timeline)
   # - report # timeline + report
   # - retrieved_timeline # retrieved timeline
-  - retrieved_timeline_per_iteration
+  # - retrieved_timeline_per_iteration
   - retrieved_timeline_per_iteration_summarization  # summarized timeline
   # - retrieved_timeline_with_image # retrieved timeline per iteration + 50 axial slices
+  # - retrieved_timeline_per_iteration_summarization_with_image  # summarized timeline + 50 axial slices
 
 # Retrieval (for retrieved_timeline experiment)
 retrieval:
   enabled: true
   corpus_dir: "/data/fries/datasets/vista_bench_ryan/thoracic_cohort_lumia"
   cache_dir: "/data/fries/users/rdcunha/bm25_cache"
-  max_iterations: 10
+  max_iterations: 5
   keywords_per_iteration: 3
   records_per_keyword: 5
   retrieval_batch_size: 20  # patients per VLM batch (use 1 for sequential)
@@ -97,7 +96,7 @@ retrieval:
   save_timeline_cache: true  # Save parquet for reuse (per-iteration timelines)
   use_timeline_cache: true  # Load from cache instead of running retrieval (for inference-only runs)
   summarize_timeline_for_context: true  # VLM summary of patient timeline in retrieval
-  timeline_summary_max_chars: 20000  # Max chars for summarized timeline
+  timeline_summary_max_chars: 2000  # Max chars for summarized timeline
 
 # Timeline truncation configuration
 # Events are identified by the pattern: [YYYY-MM-DD HH:MM] |
@@ -113,4 +112,4 @@ subsample: true
 # Weill eval: which GPU nodes to use (0-7). Used by eval/weill.sh.
 # Override with WEILL_GPUS env or command-line args if needed.
 weill:
-  gpu_nodes: [3,4,5,6,7]
+  gpu_nodes: [7]

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from retrieval.format_events import format_retrieved_events
-from retrieval.keyword_prompts import KEYWORD_EXTRACTION_TEMPLATE, TIMELINE_SUMMARY_TEMPLATE
+from retrieval.prompt_templates import KEYWORD_EXTRACTION_TEMPLATE, TIMELINE_SUMMARY_TEMPLATE
 
 if TYPE_CHECKING:
     from retrieval.local_retriever import LocalPatientRetriever
@@ -278,6 +278,7 @@ def run_iterative_retrieval(
     keyword_extraction_template: Optional[str] = None,
     summarize_timeline_for_context: bool = False,
     timeline_summary_max_chars: int = 4000,
+    search_diary_all_iterations: bool = False,
 ) -> IterativeRetrievalResult:
     """
     Run iterative retrieval: fixed iterations, keywords_per_iteration keywords, records_per_keyword per keyword.
@@ -315,10 +316,15 @@ def run_iterative_retrieval(
         previous_searched_keywords = (
             ", ".join(dict.fromkeys(searched_keywords_list)) if searched_keywords_list else "No previous searches."
         )
-        # search_diary: up to last 5 iterations of clinical_reasoning (empty on first iteration)
-        last_5_reasoning = clinical_reasoning_history[-5:] if clinical_reasoning_history else []
+        # search_diary: clinical_reasoning from previous iterations (all or last 5)
+        reasoning_for_diary = (
+            clinical_reasoning_history
+            if search_diary_all_iterations
+            else (clinical_reasoning_history[-5:] if clinical_reasoning_history else [])
+        )
         search_diary_parts = [
-            f"--- Retrieval Iteration {j} Reasoning ---\n{cr}" for j, cr in enumerate(last_5_reasoning, start=iteration - len(last_5_reasoning))
+            f"--- Retrieval Iteration {j} Reasoning ---\n{cr}"
+            for j, cr in enumerate(reasoning_for_diary, start=iteration - len(reasoning_for_diary))
         ]
         search_diary = "\n\n".join(search_diary_parts) if search_diary_parts else "(none yet)"
 
@@ -434,6 +440,7 @@ def run_iterative_retrieval_batch(
     keyword_extraction_template: Optional[str] = None,
     summarize_timeline_for_context: bool = False,
     timeline_summary_max_chars: int = 4000,
+    search_diary_all_iterations: bool = False,
 ) -> List[IterativeRetrievalResult]:
     """
     Run iterative retrieval for a batch of patients. Batches VLM keyword extraction
@@ -493,10 +500,12 @@ def run_iterative_retrieval_batch(
                 if searched_keywords_per_patient[i]
                 else "No previous searches."
             )
-            # search_diary: up to last 5 iterations of clinical_reasoning (empty on first iteration)
-            last_5_reasoning = clinical_reasoning_history_per_patient[i][-5:] if clinical_reasoning_history_per_patient[i] else []
+            # search_diary: clinical_reasoning from previous iterations (all or last 5)
+            hist = clinical_reasoning_history_per_patient[i]
+            reasoning_for_diary = hist if search_diary_all_iterations else (hist[-5:] if hist else [])
             search_diary_parts = [
-                f"--- Retrieval Iteration {j} Reasoning ---\n{cr}" for j, cr in enumerate(last_5_reasoning, start=iteration - len(last_5_reasoning))
+                f"--- Retrieval Iteration {j} Reasoning ---\n{cr}"
+                for j, cr in enumerate(reasoning_for_diary, start=iteration - len(reasoning_for_diary))
             ]
             search_diary = "\n\n".join(search_diary_parts) if search_diary_parts else "(none yet)"
 

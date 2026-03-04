@@ -8,15 +8,15 @@ import pandas as pd
 # Tasks required for retrieval subsampling (person_id must appear in ALL of these)
 RETRIEVAL_TASKS = [
     "has_recurrence_1_yr",
-    "has_recurrence_2_yr",
+    # "has_recurrence_2_yr",
     "progression_recurrence_free_survival_1_yr",
-    "progression_recurrence_free_survival_2_yr",
+    # "progression_recurrence_free_survival_2_yr",
     "has_progression_nonrecurrence_1_yr",
-    "has_progression_nonrecurrence_2_yr",
-    "died_of_cancer_1_yr",
-    "died_of_cancer_2_yr",
-    "died_any_cause_1_yr",
-    "died_any_cause_2_yr",
+    # "has_progression_nonrecurrence_2_yr",
+    # "died_of_cancer_1_yr",
+    # "died_of_cancer_2_yr",
+    # "died_any_cause_1_yr",
+    # "died_any_cause_2_yr",
 ]
 
 # Columns that must be present (non-null, non-empty) for a person_id to be valid
@@ -208,7 +208,7 @@ if __name__ == "__main__":
     subsample_retrieval_csv(
         csv_path=CSV_PATH,
         output_dir=OUTPUT_DIR,
-        target_n=50,
+        target_n=171,
         split="test",
         tasks=RETRIEVAL_TASKS,
     )

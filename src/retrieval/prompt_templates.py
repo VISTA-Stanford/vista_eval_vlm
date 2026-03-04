@@ -100,7 +100,7 @@
 
 # Retrieval try #3
 KEYWORD_EXTRACTION_TEMPLATE = """
-You are an expert Clinical Prognostician. You are analyzing the PRE-DIAGNOSTIC history of a patient who will be diagnosed with cancer. Your goal is to retrieve early clinical signals and risk factors to help answer a future-state question: 
+You are an expert Clinical Prognostician. You are analyzing the PRE-TREATMENT history of a patient who is diagnosed with cancer. Your goal is to retrieve clinical signals and risk factors to help answer a future-state question: 
 
 ### PREDICTIVE TASK QUESTION 
 {task_query}
@@ -113,7 +113,7 @@ You are an expert Clinical Prognostician. You are analyzing the PRE-DIAGNOSTIC h
 </current_evidence>
 
 
-### SEARCH DIARY (your reasoning from up to the last 5 iterations)
+### SEARCH DIARY (your clinical reasoning from previous iterations)
 <search_diary>
 {search_diary}
 </search_diary>
@@ -128,7 +128,7 @@ You are an expert Clinical Prognostician. You are analyzing the PRE-DIAGNOSTIC h
 1) Determine retrieval phase:
    - COLD START if <current_evidence> is empty or says no evidence.
    - GAP FILL if <current_evidence> exists.
-2) Review the <search_diary> to see your clinical reasoning from up to the last 5 iterations. Use this to guide your gap plan and new keywords.
+2) Review the <search_diary> to see your clinical reasoning from previous iterations. Use this to guide your gap plan and new keywords.
 3) Write a 3-slot "gap plan" (one slot per keyword) in <clinical_reasoning> XML tags:
    - Slot 1: most critical missing fact to answer {task_query}
    - Slot 2: second most critical missing fact
@@ -200,9 +200,10 @@ Gap plan:
 
 # Template for VLM summarization of patient timeline (used as current_evidence in next iteration).
 # Placeholders: {task_query}, {patient_timeline}, {max_chars}
-TIMELINE_SUMMARY_TEMPLATE = """You are a clinical summarization assistant. Given a patient timeline and a clinical question, extract ONLY the key facts relevant to answering that question.
+TIMELINE_SUMMARY_TEMPLATE = """
+You are a clinical oncology summarization assistant. Given a patient timeline and a clinical oncology question, extract ONLY the key facts relevant to answering that question.
 
-### CLINICAL QUESTION
+### CLINICAL ONCOLOGY QUESTION
 {task_query}
 
 ### PATIENT TIMELINE (retrieved events)
@@ -215,7 +216,7 @@ Summarize the timeline in a concise bullet list. Include:
 - Treatment history (drugs, procedures)
 - Relevant labs, biomarkers, or vital signs
 - Clinical notes and note content (VALUE fields) when relevant to the question
-- Any evidence of recurrence, progression, or outcomes
+- Any evidence towards outcomes
 
 Give a brief summary of the timeline (under {max_chars} characters). Use clinical terminology. Do not add speculation—only facts from the timeline. Preserve key details from reports and notes.
 

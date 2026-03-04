@@ -22,7 +22,6 @@ from models import load_model_adapter
 from data_tools.utils.query_utils import VISTA_BENCH_DATASET, fetch_task_data_from_bq
 from data_tools.utils.meds_timeline_utils import (
     count_unique_event_dates,
-    count_timeline_events,
     truncate_timeline,
 )
 from data_tools.utils.task_data_utils import (
@@ -34,6 +33,18 @@ from data_tools.utils.task_data_utils import (
     merge_bq_with_timeline_csv,
 )
 from data_tools.utils.csv_utils import append_to_csv as append_to_csv_util
+from retrieval.prompt_building import (
+    build_retrieval_prompts,
+    RETRIEVAL_SINGLE_TIMELINE,
+    RETRIEVAL_PER_ITERATION,
+)
+
+# All retrieval experiments (used for overwrite-output and data-loading dispatch)
+RETRIEVAL_EXPERIMENTS = RETRIEVAL_SINGLE_TIMELINE | RETRIEVAL_PER_ITERATION
+
+# Columns to drop from raw_row when building result row (heavy or redundant)
+HEAVY_RESULT_COLUMNS = ("note_text", "patient_string", "report")
+
 
 class TaskOrchestrator:
     def __init__(self, config_path, model_type, model_name):
@@ -58,6 +69,14 @@ class TaskOrchestrator:
             self.valid_tasks = json.load(f)
         with open(prompts_path, 'r') as f:
             self.prompts_map = json.load(f)
+        prompts_summarized_path = os.path.join(
+            self.base_path,
+            self.cfg['paths'].get('prompts_summarized', 'tasks/prompts_by_task_summarized.json')
+        )
+        self.prompts_map_summarized = {}
+        if os.path.exists(prompts_summarized_path):
+            with open(prompts_summarized_path, 'r') as f:
+                self.prompts_map_summarized = json.load(f)
 
         # Image-style prompts (used only for experiment 'no_timeline')
         image_prompts_path = os.path.join(
@@ -149,10 +168,14 @@ class TaskOrchestrator:
             # - all other experiments: use *_subsampled.csv and require patient timeline merge
             needs_report_timeline = any(e in ('no_report', 'timeline_only', 'report') for e in experiments)
             needs_no_timeline = 'no_timeline' in experiments
-            needs_retrieved_timeline = any(e in ('retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image') for e in experiments)
+            needs_retrieved_timeline = any(e in RETRIEVAL_EXPERIMENTS for e in experiments)
             needs_all_vb_timeline = 'all_vb_timeline_only' in experiments
             needs_all_vb_image = 'all_vb_image_only' in experiments
-            needs_normal = any(e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image', 'all_vb_timeline_only', 'all_vb_image_only') for e in experiments)
+            needs_normal = any(
+                e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'all_vb_timeline_only', 'all_vb_image_only')
+                and e not in RETRIEVAL_EXPERIMENTS
+                for e in experiments
+            )
 
             loaded_normal = self._load_task_data(task_info, use_no_report_csv=False, require_timeline=True) if needs_normal else None
             loaded_no_report = self._load_task_data(task_info, use_no_report_csv=True, require_timeline=True) if needs_report_timeline else None
@@ -170,7 +193,7 @@ class TaskOrchestrator:
                     loaded = loaded_all_vb_timeline
                 elif experiment in ('no_report', 'timeline_only', 'report'):
                     loaded = loaded_no_report
-                elif experiment in ('retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image'):
+                elif experiment in RETRIEVAL_EXPERIMENTS:
                     loaded = loaded_retrieval
                 else:
                     loaded = loaded_normal
@@ -520,6 +543,153 @@ class TaskOrchestrator:
 
         return (new_items, inference_batches, max_input_tokens)
 
+    def _setup_output_and_resume(self, task_info, experiment):
+        """Create save dir, resolve out_file, optionally overwrite for retrieval, load existing indices for resume.
+        Returns (out_file, existing_indices)."""
+        source_csv = task_info['task_source_csv']
+        task_name = task_info['task_name']
+        save_dir = self.results_base / source_csv / task_name / self.file_model_name
+        save_dir.mkdir(parents=True, exist_ok=True)
+        out_file = save_dir / f"{task_name}_results_{experiment}.csv"
+        if experiment in RETRIEVAL_EXPERIMENTS:
+            out_file.unlink(missing_ok=True)
+        existing_indices = set()
+        if out_file.exists():
+            try:
+                existing_df = pd.read_csv(out_file)
+                if 'index' in existing_df.columns:
+                    existing_indices = set(existing_df['index'].tolist())
+                    print(f"Resuming: Found {len(existing_indices)} existing records.")
+            except Exception as e:
+                print(f"Could not read existing file, starting fresh: {e}")
+        return out_file, existing_indices
+
+    def _build_prompts_for_experiment(self, df, task_info, experiment, timeline_col):
+        """Build dynamic_prompt column for the given experiment. Returns df_exp (copy or expanded)."""
+        task_name = task_info['task_name']
+        source_csv = task_info['task_source_csv']
+        df_exp = df.copy()
+
+        if experiment in ('no_timeline', 'all_vb_image_only'):
+            base_prompt_template = self.image_prompts_map.get(task_name, "") or self.prompts_map.get(task_name, "")
+            df_exp['dynamic_prompt'] = base_prompt_template
+            return df_exp
+
+        prompts_map = (
+            self.prompts_map_summarized
+            if experiment == 'retrieved_timeline_per_iteration_summarization'
+            else self.prompts_map
+        )
+        base_prompt_template = prompts_map.get(task_name, "[PATIENT_TIMELINE]")
+
+        if experiment == 'report':
+            def timeline_with_report(row):
+                timeline = str(row[timeline_col]) if pd.notna(row[timeline_col]) else ""
+                report = str(row['report']) if 'report' in row and pd.notna(row.get('report')) else ""
+                combined = f"{timeline}\nRadiology Report: {report}".rstrip()
+                return base_prompt_template.replace('[PATIENT_TIMELINE]', combined)
+            df_exp['dynamic_prompt'] = df_exp.apply(timeline_with_report, axis=1)
+            return df_exp
+
+        if experiment in RETRIEVAL_EXPERIMENTS:
+            if self.retriever is None:
+                raise ValueError(
+                    f"{experiment} experiment requires retrieval.enabled=true in config"
+                )
+            truncation_config = None if experiment in RETRIEVAL_PER_ITERATION else self.cfg.get("timeline_truncation", None)
+            return build_retrieval_prompts(
+                experiment, df_exp, task_name, base_prompt_template,
+                self.retriever, self.adapter, self.model, self.processor,
+                self.retrieval_cfg, truncation_config,
+                self.results_base, source_csv, self.file_model_name,
+            )
+
+        df_exp['dynamic_prompt'] = df_exp[timeline_col].apply(
+            lambda x: base_prompt_template.replace('[PATIENT_TIMELINE]', str(x))
+        )
+        return df_exp
+
+    def _build_result_row(self, item, out, experiment, timeline_col):
+        """Build a single result row dict for CSV (drop heavy cols, add model_response, used_image, etc.)."""
+        raw = item['raw_row']
+        drop_cols = [c for c in [timeline_col] + list(HEAVY_RESULT_COLUMNS) if c and c in raw.index]
+        res_row = raw.drop(labels=drop_cols, errors='ignore').to_dict()
+
+        if isinstance(out, dict):
+            res_row['model_response'] = out.get("text", "")
+            res_row['cumulative_logprob'] = out.get("cumulative_logprob")
+            res_row['log_probs'] = out.get("log_probs")
+        else:
+            res_row['model_response'] = out
+            res_row['cumulative_logprob'] = None
+            res_row['log_probs'] = None
+
+        image = item.get('image', None)
+        res_row['used_image'] = (1 if (image and (len(image) if isinstance(image, list) else 1)) else 0)
+
+        if experiment in RETRIEVAL_PER_ITERATION:
+            res_row['input_token_length'] = self._count_prompt_tokens(item.get('question', ''))
+            if experiment in ('retrieved_timeline_with_image', 'retrieved_timeline_per_iteration_summarization_with_image') and image is not None:
+                num_images = len(image) if isinstance(image, list) else 1
+                res_row['input_token_length'] = res_row['input_token_length'] + num_images * 256
+        if experiment == 'no_image' and timeline_col and timeline_col in raw:
+            timeline_text = raw[timeline_col]
+            res_row['timeline_token_count'] = self._count_prompt_tokens(
+                str(timeline_text) if pd.notna(timeline_text) and str(timeline_text) != 'nan' else ''
+            )
+        return res_row
+
+    def _run_inference_loop(
+        self, loader, existing_indices, constrained_choices, out_file,
+        task_name, experiment, timeline_col,
+    ):
+        """Producer-consumer inference loop: prepare batches in thread, run inference, build result rows, flush to CSV."""
+        results_buffer = []
+        batch_counter = 0
+        prefetch_queue = Queue(maxsize=2)
+        sentinel = object()
+
+        def producer():
+            try:
+                for batch in loader:
+                    prepared = self._prepare_batch_for_inference(batch, existing_indices, constrained_choices)
+                    if prepared is not None:
+                        prefetch_queue.put(prepared)
+            except Exception as e:
+                print(f"Producer error: {e}")
+            finally:
+                prefetch_queue.put(sentinel)
+
+        producer_thread = Thread(target=producer, daemon=True)
+        producer_thread.start()
+        pbar = tqdm(desc=f"Inference {task_name} | {experiment}")
+
+        while True:
+            got = prefetch_queue.get()
+            if got is sentinel:
+                break
+            new_items, inference_batches, max_input_tokens = got
+            try:
+                outputs = self._run_inference_on_batches(inference_batches, constrained_choices)
+                for item, out in zip(new_items, outputs):
+                    results_buffer.append(self._build_result_row(item, out, experiment, timeline_col))
+                batch_counter += 1
+                pbar.update(1)
+                print(f"Batch {batch_counter}: Max input tokens = {max_input_tokens}")
+                if batch_counter % 10 == 0:
+                    append_to_csv_util(out_file, results_buffer)
+                    results_buffer = []
+                if batch_counter % 20 == 0:
+                    torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"Error in batch: {e}")
+                print(f"Max input tokens = {max_input_tokens} (error occurred)")
+
+        pbar.close()
+        producer_thread.join(timeout=5)
+        if results_buffer:
+            append_to_csv_util(out_file, results_buffer)
+
     def _run_inference_on_batches(self, inference_batches, constrained_choices):
         """Run inference on prepared batches, return outputs in order of indices."""
         if not inference_batches:
@@ -541,316 +711,16 @@ class TaskOrchestrator:
     def _process_single_task_with_data(self, task_info, experiment, df, timeline_col):
         """Run inference for one (task, experiment) using already-loaded task data."""
         task_name = task_info['task_name']
-        source_csv = task_info['task_source_csv']
-        # Constrained decoding for binary tasks: force "Yes" or "No" from vLLM
         constrained_choices = ["Yes", "No"] if task_info.get("is_binary", False) else None
 
-        # We keep the local folder structure for results
-        save_dir = self.results_base / source_csv / task_name / self.file_model_name
-        save_dir.mkdir(parents=True, exist_ok=True)
-        out_file = save_dir / f"{task_name}_results_{experiment}.csv"
-
-        # Overwrite (don't resume) for retrieved_timeline experiments
-        if experiment in ("retrieved_timeline", "retrieved_timeline_per_iteration", "retrieved_timeline_per_iteration_summarization", "retrieved_timeline_with_image"):
-            out_file.unlink(missing_ok=True)
-
-        existing_indices = set()
-        if out_file.exists():
-            try:
-                existing_df = pd.read_csv(out_file)
-                if 'index' in existing_df.columns:
-                    existing_indices = set(existing_df['index'].tolist())
-                    print(f"Resuming: Found {len(existing_indices)} existing records.")
-            except Exception as e:
-                print(f"Could not read existing file, starting fresh: {e}")
-
-        # 3. Prepare Prompt and Dataset (experiment-specific; use copy so shared df is unchanged)
-        df_exp = df.copy()
-        if experiment in ('no_timeline', 'all_vb_image_only'):
-            # Image-only prompt from image_valid_tasks.json (no patient timeline)
-            base_prompt_template = self.image_prompts_map.get(task_name, "")
-            if not base_prompt_template:
-                # Fallback if task missing in image_valid_tasks.json
-                base_prompt_template = self.prompts_map.get(task_name, "")
-            df_exp['dynamic_prompt'] = base_prompt_template
-        else:
-            base_prompt_template = self.prompts_map.get(task_name, "[PATIENT_TIMELINE]")
-            if experiment == 'report':
-                # report: timeline + "Radiology Report:" + report column (no images; uses _subsampled_no_img_report CSV)
-                def timeline_with_report(row):
-                    timeline = str(row[timeline_col]) if pd.notna(row[timeline_col]) else ""
-                    report = str(row['report']) if 'report' in row and pd.notna(row.get('report')) else ""
-                    combined = f"{timeline}\nRadiology Report: {report}".rstrip()
-                    return base_prompt_template.replace('[PATIENT_TIMELINE]', combined)
-                df_exp['dynamic_prompt'] = df_exp.apply(timeline_with_report, axis=1)
-            elif experiment == 'retrieved_timeline':
-                if self.retriever is None:
-                    raise ValueError(
-                        "retrieved_timeline experiment requires retrieval.enabled=true in config"
-                    )
-                from retrieval import run_iterative_retrieval_batch
-                rc = self.retrieval_cfg
-                max_rows = rc.get("max_rows")
-                truncation_config = self.cfg.get("timeline_truncation", None)
-                iterations_log_dir = rc.get("iterations_log_dir") or (
-                    self.results_base / "retrieval_logs" / source_csv / task_name / self.file_model_name
-                )
-                save_log = rc.get("save_iterations_log", True)
-                if max_rows:
-                    df_exp = df_exp.head(max_rows).copy()
-                if save_log:
-                    Path(iterations_log_dir).mkdir(parents=True, exist_ok=True)
-                prompts_and_logs = []
-                batch_size = rc.get("retrieval_batch_size", 8)
-                rows_list = list(df_exp.iterrows())
-                for i in tqdm(range(0, len(rows_list), batch_size), desc="Retrieval"):
-                    batch_rows = rows_list[i : i + batch_size]
-                    batch_data = []
-                    use_time_filter = rc.get("use_time_filter", False)
-                    for _, r in batch_rows:
-                        entry = {
-                            "person_id": str(r["person_id"]),
-                            "question": str(r.get("question", r.get("label_description", ""))),
-                        }
-                        if use_time_filter:
-                            embed_time = r.get("embed_time")
-                            if embed_time is not None and pd.notna(embed_time):
-                                et = pd.to_datetime(embed_time, errors="coerce")
-                                if pd.notna(et):
-                                    entry["end_date"] = et.strftime("%Y-%m-%d")
-                                    start_dt = et - pd.DateOffset(months=rc.get("months_before", 6))
-                                    entry["start_date"] = start_dt.strftime("%Y-%m-%d")
-                        batch_data.append(entry)
-                    results = run_iterative_retrieval_batch(
-                        self.retriever, self.adapter, self.model, self.processor,
-                        batch_data=batch_data,
-                        task_name=task_name,
-                        max_iterations=rc.get("max_iterations", 3),
-                        keywords_per_iteration=rc.get("keywords_per_iteration", 5),
-                        records_per_keyword=rc.get("records_per_keyword", 5),
-                        summarize_timeline_for_context=rc.get("summarize_timeline_for_context", False),
-                        timeline_summary_max_chars=rc.get("timeline_summary_max_chars", 4000),
-                    )
-                    for (_, row), result in zip(batch_rows, results):
-                        combined = truncate_timeline(result.timeline_str, truncation_config)
-                        prompts_and_logs.append((base_prompt_template.replace("[PATIENT_TIMELINE]", combined), result))
-                df_exp["dynamic_prompt"] = [p for p, _ in prompts_and_logs]
-                if save_log:
-                    csv_log_path = Path(iterations_log_dir) / "retrieval_keywords.csv"
-                    log_rows = []
-                    for (_, row), (_, result) in zip(df_exp.iterrows(), prompts_and_logs):
-                        for log_entry in result.iterations_log:
-                            log_rows.append({
-                                "person_id": str(row["person_id"]),
-                                "task": task_name,
-                                "model": self.file_model_name,
-                                "iteration": log_entry["iteration"],
-                                "all_keywords_so_far": ", ".join(log_entry.get("all_keywords_so_far", [])),
-                                "num_results": sum(log_entry.get("num_results_per_keyword", [])),
-                                "total_unique": log_entry.get("total_unique_so_far", 0),
-                                "internal_state": log_entry.get("internal_state", ""),
-                                "current_evidence": log_entry.get("current_evidence", ""),
-                                "search_history": log_entry.get("search_history", ""),
-                                "answer": log_entry.get("answer", ""),
-                                "clinical_reasoning": log_entry.get("clinical_reasoning", ""),
-                                "raw_model_output": log_entry.get("raw_model_output", ""),
-                                "summary_patient_timeline": log_entry.get("summary_patient_timeline", ""),
-                            })
-                    if log_rows:
-                        pd.DataFrame(log_rows).to_csv(csv_log_path, mode="w", index=False)
-            elif experiment in ('retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image'):
-                if self.retriever is None:
-                    raise ValueError(
-                        f"{experiment} experiment requires retrieval.enabled=true in config"
-                    )
-                from retrieval import run_iterative_retrieval_batch
-                rc = self.retrieval_cfg
-                max_iterations = rc.get("max_iterations", 3)
-                max_rows = rc.get("max_rows")
-                truncation_config = None  # No truncation for retrieved_timeline_per_iteration
-                iterations_log_dir = rc.get("iterations_log_dir") or (
-                    self.results_base / "retrieval_logs" / source_csv / task_name / self.file_model_name
-                )
-                save_log = rc.get("save_iterations_log", True)
-                save_timeline_cache = rc.get("save_timeline_cache", False)
-                use_timeline_cache = rc.get("use_timeline_cache", False)
-                cache_path = Path(iterations_log_dir) / "retrieval_timelines_per_iteration.parquet"
-                if max_rows:
-                    df_exp = df_exp.head(max_rows).copy()
-                if save_log or save_timeline_cache or use_timeline_cache:
-                    Path(iterations_log_dir).mkdir(parents=True, exist_ok=True)
-
-                rows_list = list(df_exp.iterrows())
-                use_vlm_summary_for_all_iters = experiment == "retrieved_timeline_per_iteration_summarization"
-                if use_timeline_cache and cache_path.exists():
-                    cache_df = pd.read_parquet(cache_path)
-                    summary_df = None
-                    if use_vlm_summary_for_all_iters:
-                        csv_log_path = Path(iterations_log_dir) / "retrieval_keywords.csv"
-                        if csv_log_path.exists():
-                            try:
-                                kw_df = pd.read_csv(csv_log_path)
-                                if "summary_patient_timeline" in kw_df.columns and "person_id" in kw_df.columns and "iteration" in kw_df.columns:
-                                    summary_df = kw_df[["person_id", "iteration", "summary_patient_timeline"]].copy()
-                                    summary_df["person_id"] = summary_df["person_id"].astype(str)
-                            except Exception:
-                                pass
-                    expanded_rows = []
-                    for idx, row in rows_list:
-                        row_dict = row.to_dict()
-                        orig_index = row_dict.get("index", idx)
-                        cache_rows = cache_df[
-                            (cache_df["person_id"].astype(str) == str(row["person_id"]))
-                            & (cache_df["index"] == orig_index)
-                        ].sort_values("iteration")
-                        for _, cr in cache_rows.iterrows():
-                            new_row = dict(row_dict)
-                            iter_num = int(cr["iteration"])
-                            timeline = cr["timeline"]
-                            if use_vlm_summary_for_all_iters and summary_df is not None:
-                                # summary_patient_timeline for iter N in CSV = summary of timeline after iter N-1
-                                # (used as context for keyword extraction at iter N; same as prompt at iter N)
-                                match = summary_df[
-                                    (summary_df["person_id"] == str(row["person_id"]))
-                                    & (summary_df["iteration"] == iter_num)
-                                ]
-                                if not match.empty:
-                                    summ = match.iloc[0]["summary_patient_timeline"]
-                                    if pd.notna(summ) and str(summ).strip():
-                                        timeline_for_prompt = str(summ).strip()
-                                    else:
-                                        timeline_for_prompt = timeline
-                                else:
-                                    timeline_for_prompt = timeline
-                            else:
-                                timeline_for_prompt = timeline
-                            combined = truncate_timeline(timeline_for_prompt, truncation_config)
-                            new_row["dynamic_prompt"] = base_prompt_template.replace("[PATIENT_TIMELINE]", combined)
-                            new_row["unique_events"] = int(cr.get("unique_events", count_timeline_events(timeline)))
-                            new_row["iteration"] = iter_num
-                            expanded_rows.append(new_row)
-                    df_exp = pd.DataFrame(expanded_rows)
-                else:
-                    all_results = []
-                    batch_size = rc.get("retrieval_batch_size", 8)
-                    for i in tqdm(range(0, len(rows_list), batch_size), desc="Retrieval"):
-                        batch_rows = rows_list[i : i + batch_size]
-                        batch_data = []
-                        use_time_filter = rc.get("use_time_filter", False)
-                        for _, r in batch_rows:
-                            entry = {
-                                "person_id": str(r["person_id"]),
-                                "question": str(r.get("question", r.get("label_description", ""))),
-                            }
-                            if use_time_filter:
-                                embed_time = r.get("embed_time")
-                                if embed_time is not None and pd.notna(embed_time):
-                                    et = pd.to_datetime(embed_time, errors="coerce")
-                                    if pd.notna(et):
-                                        entry["end_date"] = et.strftime("%Y-%m-%d")
-                                        start_dt = et - pd.DateOffset(months=rc.get("months_before", 6))
-                                        entry["start_date"] = start_dt.strftime("%Y-%m-%d")
-                            batch_data.append(entry)
-                        results = run_iterative_retrieval_batch(
-                            self.retriever, self.adapter, self.model, self.processor,
-                            batch_data=batch_data,
-                            task_name=task_name,
-                            max_iterations=max_iterations,
-                            keywords_per_iteration=rc.get("keywords_per_iteration", 5),
-                            records_per_keyword=rc.get("records_per_keyword", 5),
-                            summarize_timeline_for_context=rc.get("summarize_timeline_for_context", False),
-                            timeline_summary_max_chars=rc.get("timeline_summary_max_chars", 4000),
-                        )
-                        for (_, row), result in zip(batch_rows, results):
-                            all_results.append((row, result))
-                    expanded_rows = []
-                    cache_rows = []
-                    summaries_by_patient_iter = {}
-                    if use_vlm_summary_for_all_iters:
-                        # Run VLM summarization on full timeline (with report+note) for each iteration
-                        from retrieval.iterative_retrieval import _summarize_timeline_for_context_batch
-                        timeline_summary_max_chars = rc.get("timeline_summary_max_chars", 20000)
-                        for iter_num in tqdm(range(1, max_iterations + 1), desc="VLM summarization"):
-                            timelines = []
-                            task_queries = []
-                            for row, result in all_results:
-                                if iter_num <= len(result.timeline_per_iteration):
-                                    timelines.append(result.timeline_per_iteration[iter_num - 1])
-                                    task_queries.append(str(row.get("question", row.get("label_description", "")) or task_name))
-                                else:
-                                    timelines.append("No evidence retrieved yet.")
-                                    task_queries.append(task_name)
-                            if timelines:
-                                summaries = _summarize_timeline_for_context_batch(
-                                    self.adapter, self.model, self.processor,
-                                    timelines, task_queries,
-                                    max_chars=timeline_summary_max_chars,
-                                )
-                                for patient_idx, summ in enumerate(summaries):
-                                    summaries_by_patient_iter[(patient_idx, iter_num)] = summ
-                    for patient_idx, (row, result) in enumerate(all_results):
-                        row_dict = row.to_dict()
-                        orig_index = row_dict.get("index", row.name)
-                        timelines_full = result.timeline_per_iteration
-                        iterations_log = result.iterations_log
-                        for iter_num, timeline in enumerate(timelines_full, start=1):
-                            new_row = dict(row_dict)
-                            new_row["iteration"] = iter_num
-                            if use_vlm_summary_for_all_iters and (patient_idx, iter_num) in summaries_by_patient_iter:
-                                timeline_for_prompt = summaries_by_patient_iter[(patient_idx, iter_num)]
-                            else:
-                                timeline_for_prompt = timeline
-                            combined = truncate_timeline(timeline_for_prompt, truncation_config)
-                            new_row["dynamic_prompt"] = base_prompt_template.replace("[PATIENT_TIMELINE]", combined)
-                            new_row["unique_events"] = count_timeline_events(timeline)
-                            expanded_rows.append(new_row)
-                            # summary_patient_timeline for prompt at iter N: summary of timeline after iter N
-                            # = log[N+1].summary (log entry N+1 has summary of timeline after iter N)
-                            summary_pt = ""
-                            if iterations_log:
-                                log_idx = min(iter_num, len(iterations_log) - 1)
-                                summary_pt = iterations_log[log_idx].get("summary_patient_timeline", "") or ""
-                            cache_rows.append({
-                                "person_id": str(row["person_id"]),
-                                "index": orig_index,
-                                "iteration": iter_num,
-                                "timeline": timeline,
-                                "timeline_summarized": None,
-                                "summary_patient_timeline": summary_pt if summary_pt else None,
-                                "unique_events": count_timeline_events(timeline),
-                            })
-                    df_exp = pd.DataFrame(expanded_rows)
-                    if save_timeline_cache and cache_rows:
-                        pd.DataFrame(cache_rows).to_parquet(cache_path, index=False)
-                    if save_log and all_results:
-                        csv_log_path = Path(iterations_log_dir) / "retrieval_keywords.csv"
-                        log_rows = []
-                        for row, result in all_results:
-                            for log_entry in result.iterations_log:
-                                log_rows.append({
-                                    "person_id": str(row["person_id"]),
-                                    "task": task_name,
-                                    "model": self.file_model_name,
-                                    "iteration": log_entry["iteration"],
-                                    "all_keywords_so_far": ", ".join(log_entry.get("all_keywords_so_far", [])),
-                                    "num_results": sum(log_entry.get("num_results_per_keyword", [])),
-                                    "total_unique": log_entry.get("total_unique_so_far", 0),
-                                    "internal_state": log_entry.get("internal_state", ""),
-                                    "current_evidence": log_entry.get("current_evidence", ""),
-                                    "search_history": log_entry.get("search_history", ""),
-                                    "answer": log_entry.get("answer", ""),
-                                    "clinical_reasoning": log_entry.get("clinical_reasoning", ""),
-                                    "raw_model_output": log_entry.get("raw_model_output", ""),
-                                    "summary_patient_timeline": log_entry.get("summary_patient_timeline", ""),
-                                })
-                        if log_rows:
-                            pd.DataFrame(log_rows).to_csv(csv_log_path, mode="w", index=False)
-                df_exp["index"] = range(len(df_exp))
-            else:
-                df_exp['dynamic_prompt'] = df_exp[timeline_col].apply(lambda x: base_prompt_template.replace('[PATIENT_TIMELINE]', str(x)))
+        out_file, existing_indices = self._setup_output_and_resume(task_info, experiment)
+        df_exp = self._build_prompts_for_experiment(df, task_info, experiment, timeline_col)
 
         ct_dir = self.cfg.get('paths', {}).get('ct_dir')
-        dataset = PromptDataset(df=df_exp, prompt_col='dynamic_prompt', experiment=experiment, storage_client=self.storage_client, model_type=self.model_type, ct_dir=ct_dir) 
+        dataset = PromptDataset(
+            df=df_exp, prompt_col='dynamic_prompt', experiment=experiment,
+            storage_client=self.storage_client, model_type=self.model_type, ct_dir=ct_dir,
+        )
         num_workers = 4
         loader = DataLoader(
             dataset,
@@ -863,114 +733,10 @@ class TaskOrchestrator:
             pin_memory=True,
         )
 
-        # 4. Inference Loop (producer-consumer: overlap prepare_inputs with GPU infer)
-        results_buffer = []
-        batch_counter = 0
-        prefetch_queue = Queue(maxsize=2)
-        sentinel = object()
-
-        def producer():
-            try:
-                for batch in loader:
-                    prepared = self._prepare_batch_for_inference(batch, existing_indices, constrained_choices)
-                    if prepared is not None:
-                        prefetch_queue.put(prepared)
-            except Exception as e:
-                print(f"Producer error: {e}")
-            finally:
-                prefetch_queue.put(sentinel)
-
-        producer_thread = Thread(target=producer, daemon=True)
-        producer_thread.start()
-
-        pbar = tqdm(desc=f"Inference {task_name} | {experiment}")
-
-        while True:
-            got = prefetch_queue.get()
-            if got is sentinel:
-                break
-
-            new_items, inference_batches, max_input_tokens = got
-
-            try:
-                outputs = self._run_inference_on_batches(inference_batches, constrained_choices)
-
-                # Process outputs
-                for item, out in zip(new_items, outputs):
-                    # We drop the heavy timeline column before saving to CSV
-                    if timeline_col in item['raw_row']:
-                        res_row = item['raw_row'].drop(labels=[timeline_col]).to_dict()
-                    else:
-                        res_row = item['raw_row'].to_dict()
-                    if 'note_text' in res_row:
-                        res_row = item['raw_row'].drop(labels=["note_text"]).to_dict()
-                    if 'patient_string' in res_row:
-                        res_row = item['raw_row'].drop(labels=["patient_string"]).to_dict()
-                    if 'report' in res_row:
-                        res_row = item['raw_row'].drop(labels=["report"]).to_dict()
-                    # Handle both dict (with logprobs) and legacy string output
-                    if isinstance(out, dict):
-                        res_row['model_response'] = out.get("text", "")
-                        res_row['cumulative_logprob'] = out.get("cumulative_logprob")
-                        res_row['log_probs'] = out.get("log_probs")
-                    else:
-                        res_row['model_response'] = out
-                        res_row['cumulative_logprob'] = None
-                        res_row['log_probs'] = None
-                    
-                    # Check if image was actually used
-                    image = item.get('image', None)
-                    if image is not None:
-                        # Handle both single image and list of images
-                        if isinstance(image, list):
-                            res_row['used_image'] = 1 if len(image) > 0 else 0
-                        else:
-                            res_row['used_image'] = 1
-                    else:
-                        res_row['used_image'] = 0
-                    
-                    if experiment in ('retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization', 'retrieved_timeline_with_image'):
-                        res_row['input_token_length'] = self._count_prompt_tokens(item.get('question', ''))
-                        # Add image token count for retrieved_timeline_with_image (50 axial slices)
-                        if experiment == 'retrieved_timeline_with_image':
-                            image = item.get('image', None)
-                            if image is not None:
-                                num_images = len(image) if isinstance(image, list) else 1
-                                res_row['input_token_length'] += num_images * 256  # Approx tokens per image for VLMs
-                    
-                    if experiment == 'no_image' and timeline_col and timeline_col in item['raw_row']:
-                        timeline_text = item['raw_row'][timeline_col]
-                        res_row['timeline_token_count'] = self._count_prompt_tokens(
-                            str(timeline_text) if pd.notna(timeline_text) and str(timeline_text) != 'nan' else ''
-                        )
-                    
-                    results_buffer.append(res_row)
-                
-                batch_counter += 1
-                pbar.update(1)
-                print(f"Batch {batch_counter}: Max input tokens = {max_input_tokens}")
-
-                # Flush to disk every 10 batches
-                if batch_counter % 10 == 0:
-                    append_to_csv_util(out_file, results_buffer)
-                    results_buffer = []
-
-                # Clear CUDA cache periodically (reduced frequency to avoid sync stalls)
-                if batch_counter % 20 == 0:
-                    torch.cuda.empty_cache()
-
-            except Exception as e:
-                print(f"Error in batch: {e}")
-                print(f"Max input tokens = {max_input_tokens} (error occurred)")
-                # import traceback
-                # traceback.print_exc()
-
-        pbar.close()
-        producer_thread.join(timeout=5)
-
-        # 6. Final Save for remaining items
-        if results_buffer:
-            append_to_csv_util(out_file, results_buffer)
+        self._run_inference_loop(
+            loader, existing_indices, constrained_choices, out_file,
+            task_name, experiment, timeline_col,
+        )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
