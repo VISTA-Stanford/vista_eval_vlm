@@ -38,6 +38,13 @@ def resolve_retrieval_csv_path(
     return base_path / "v1_2" / source_csv / filename
 
 
+def resolve_path_subsampled_csv_path(
+    base_path: Path, source_csv: str, task_name: str
+) -> Path:
+    """Full path to path_subsampled CSV (v1_3 path tasks: pathology tiles per path_accession_number)."""
+    return base_path / "v1_3" / source_csv / f"{task_name}_path_subsampled.csv"
+
+
 def resolve_timeline_csv_path(
     base_path: Path, source_csv: str, task_name: str, use_subsampled: bool, use_no_report_csv: bool
 ) -> Path:

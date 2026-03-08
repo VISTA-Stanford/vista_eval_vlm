@@ -1,6 +1,7 @@
 import os
 import argparse
 import json
+import random
 import yaml
 import torch
 import pandas as pd
@@ -29,6 +30,7 @@ from data_tools.utils.task_data_utils import (
     resolve_timeline_csv_path,
     resolve_timeline_csv_filename,
     resolve_retrieval_csv_path,
+    resolve_path_subsampled_csv_path,
     find_bq_timeline_column,
     merge_bq_with_timeline_csv,
 )
@@ -43,7 +45,7 @@ from retrieval.prompt_building import (
 RETRIEVAL_EXPERIMENTS = RETRIEVAL_SINGLE_TIMELINE | RETRIEVAL_PER_ITERATION
 
 # Columns to drop from raw_row when building result row (heavy or redundant)
-HEAVY_RESULT_COLUMNS = ("note_text", "patient_string", "report")
+HEAVY_RESULT_COLUMNS = ("note_text", "patient_string", "report", "path_note_text")
 
 
 class TaskOrchestrator:
@@ -171,8 +173,9 @@ class TaskOrchestrator:
             needs_retrieved_timeline = any(e in RETRIEVAL_EXPERIMENTS for e in experiments)
             needs_all_vb_timeline = 'all_vb_timeline_only' in experiments
             needs_all_vb_image = 'all_vb_image_only' in experiments
+            needs_path = 'path' in experiments or 'path_image_and_report' in experiments
             needs_normal = any(
-                e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'all_vb_timeline_only', 'all_vb_image_only')
+                e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'all_vb_timeline_only', 'all_vb_image_only', 'path', 'path_image_and_report')
                 and e not in RETRIEVAL_EXPERIMENTS
                 for e in experiments
             )
@@ -183,6 +186,7 @@ class TaskOrchestrator:
             loaded_retrieval = self._load_retrieval_task_data(task_info) if needs_retrieved_timeline else None
             loaded_all_vb_timeline = self._load_all_vb_timeline_task_data(task_info) if needs_all_vb_timeline else None
             loaded_all_vb_image = self._load_all_vb_image_task_data(task_info) if needs_all_vb_image else None
+            loaded_path = self._load_path_task_data(task_info) if needs_path else None
             for experiment in experiments:
                 print(f"\n>>> Starting Task: {task_name} | Experiment: {experiment}")
                 if experiment == 'no_timeline':
@@ -191,6 +195,8 @@ class TaskOrchestrator:
                     loaded = loaded_all_vb_image
                 elif experiment == 'all_vb_timeline_only':
                     loaded = loaded_all_vb_timeline
+                elif experiment in ('path', 'path_image_and_report'):
+                    loaded = loaded_path
                 elif experiment in ('no_report', 'timeline_only', 'report'):
                     loaded = loaded_no_report
                 elif experiment in RETRIEVAL_EXPERIMENTS:
@@ -429,6 +435,104 @@ class TaskOrchestrator:
         df['unique_events'] = float("nan")
         return (df, None, source_csv)
 
+    def _load_path_task_data(self, task_info):
+        """
+        Load task data from {task_name}_path_subsampled.csv in v1_3.
+        For each row, derive folder name from path_image_path: last part after '\\', then
+        remove .tiff/.tif; look under path_tile_base/test_patch/{folder_name} for .jpg tiles.
+        Attach 10 randomly subsampled tile paths as path_tile_paths (list).
+        Returns (df, None, source_csv) or None on failure.
+        """
+        task_name = task_info['task_name']
+        source_csv = task_info['task_source_csv']
+
+        csv_path = resolve_path_subsampled_csv_path(self.base_path, source_csv, task_name)
+        if not csv_path.exists():
+            print(f"!!! Error: Path subsampled CSV not found at {csv_path}")
+            return None
+
+        path_tile_base = Path(self.cfg['paths'].get('path_tile_base', '/data/fries/datasets/vista_bench_ryan/download_path'))
+        test_patch_dir = path_tile_base / "test_patch"
+        num_tiles_per_slide = 10
+        seed = 42
+
+        print(f"\n>>> Loading data for task: {task_name} (path – from _path_subsampled.csv)")
+        print(f"    Reading {csv_path}...")
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            print(f"!!! Error reading path CSV for {task_name}: {e}")
+            return None
+
+        if df.empty:
+            print(f"!!! No data found for task '{task_name}' in path CSV.")
+            return None
+
+        # Derive folder name from path_image_path: last part after '\\', then remove .tiff/.tif
+        # Search path: path_tile_base/test_patch/{folder_name}
+        path_image_col = next(
+            (c for c in df.columns if str(c).strip().lower() == 'path_image_path'),
+            next((c for c in df.columns if 'path_image_path' in str(c).lower()), None),
+        )
+        if path_image_col is None:
+            print(f"!!! Path CSV has no 'path_image_path' column. Columns: {list(df.columns)}")
+            return None
+
+        def folder_name_from_path_image_path(path_image_path):
+            if pd.isna(path_image_path) or path_image_path is None:
+                return None
+            s = str(path_image_path).strip()
+            if not s:
+                return None
+            # Last part of split by backslash (filename or path tail)
+            last_after_backslash = s.split("\\")[-1]
+            # Last part after forward slash (filename in case path had no backslash)
+            filename = last_after_backslash.split("/")[-1]
+            # Remove .tiff or .tif to get folder name
+            folder_name = Path(filename).stem
+            return folder_name or None
+
+        sample_val = df[path_image_col].dropna().astype(str).str.strip()
+        sample_val = sample_val[sample_val != ""]
+        if len(sample_val) > 0:
+            example_folder = folder_name_from_path_image_path(sample_val.iloc[0])
+            if example_folder:
+                print(f"    Using column '{path_image_col}'; example folder: {test_patch_dir}/{example_folder}")
+
+        random.seed(seed)
+        path_tile_paths_list = []
+        for idx, row in df.iterrows():
+            folder_name = folder_name_from_path_image_path(row.get(path_image_col))
+            if not folder_name:
+                path_tile_paths_list.append([])
+                continue
+            folder = test_patch_dir / folder_name
+            if not folder.is_dir():
+                path_tile_paths_list.append([])
+                continue
+            jpgs = sorted(folder.glob("*.jpg")) + sorted(folder.glob("*.jpeg"))
+            if len(jpgs) <= num_tiles_per_slide:
+                chosen = [str(p.resolve()) for p in jpgs]
+            else:
+                chosen = [str(p.resolve()) for p in random.sample(jpgs, num_tiles_per_slide)]
+            path_tile_paths_list.append(chosen)
+
+        df = df.copy()
+        df['path_tile_paths'] = path_tile_paths_list
+        df = df[[len(p) > 0 for p in path_tile_paths_list]].copy()
+        if df.empty:
+            print(f"!!! No rows with tiles under {test_patch_dir}/<folder_name> for task '{task_name}'")
+            print(f"    (Folder name = last segment of path_image_path after \\ then /, with .tiff/.tif removed)")
+            return None
+
+        print(f"    Loaded {len(df)} rows with path tiles (10 tiles per slide from test_patch/).")
+
+        if 'index' not in df.columns:
+            df['index'] = df.index
+
+        df['unique_events'] = float("nan")
+        return (df, None, source_csv)
+
     def _prepare_batch_for_inference(self, batch, existing_indices, constrained_choices):
         """
         Prepare a batch for inference (CPU work: create_template, prepare_inputs).
@@ -570,9 +674,24 @@ class TaskOrchestrator:
         source_csv = task_info['task_source_csv']
         df_exp = df.copy()
 
-        if experiment in ('no_timeline', 'all_vb_image_only'):
+        if experiment in ('no_timeline', 'all_vb_image_only', 'path'):
             base_prompt_template = self.image_prompts_map.get(task_name, "") or self.prompts_map.get(task_name, "")
             df_exp['dynamic_prompt'] = base_prompt_template
+            return df_exp
+
+        if experiment == 'path_image_and_report':
+            base_prompt_template = self.image_prompts_map.get(task_name, "") or self.prompts_map.get(task_name, "")
+            path_note_col = next(
+                (c for c in df_exp.columns if str(c).strip().lower() == 'path_note_text'),
+                next((c for c in df_exp.columns if 'path_note_text' in str(c).lower()), None),
+            )
+            if path_note_col is not None:
+                df_exp['dynamic_prompt'] = df_exp.apply(
+                    lambda row: base_prompt_template + "\n\nPathology note:\n" + str(row.get(path_note_col) or ""),
+                    axis=1,
+                )
+            else:
+                df_exp['dynamic_prompt'] = base_prompt_template
             return df_exp
 
         prompts_map = (
@@ -711,7 +830,9 @@ class TaskOrchestrator:
     def _process_single_task_with_data(self, task_info, experiment, df, timeline_col):
         """Run inference for one (task, experiment) using already-loaded task data."""
         task_name = task_info['task_name']
-        constrained_choices = ["Yes", "No"] if task_info.get("is_binary", False) else None
+        # Respect runtime flag: only use constrained decoding for binary tasks when enabled.
+        use_constrained = self.cfg['runtime'].get('use_constrained_decoding_for_binary', True)
+        constrained_choices = ["Yes", "No"] if (task_info.get("is_binary", False) and use_constrained) else None
 
         out_file, existing_indices = self._setup_output_and_resume(task_info, experiment)
         df_exp = self._build_prompts_for_experiment(df, task_info, experiment, timeline_col)

@@ -304,10 +304,14 @@ def _cli() -> None:
     )
     parser.add_argument(
         "slide_input",
+        nargs="?",
+        default="/data/fries/datasets/vista_bench_ryan/download_path/tile_manifest.csv",
         help="Path to a single WSI or a CSV with a 'slide_path' column.",
     )
     parser.add_argument(
         "output_dir",
+        nargs="?",
+        default="/data/fries/datasets/vista_bench_ryan/download_path/test_patch",
         help="Root output directory for tiles and manifest CSV.",
     )
     parser.add_argument(
