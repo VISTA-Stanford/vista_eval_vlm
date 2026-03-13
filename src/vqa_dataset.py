@@ -63,7 +63,7 @@ class PromptDataset(Dataset):
             df: Dataframe containing the data.
             prompt_col: The column name to use for the text prompt.
             add_options: Whether to append options to the prompt.
-            experiment: Experiment type - 'no_image', 'axial_all_image', 'no_timeline', 'no_report', 'timeline_only', 'report', 'path', 'retrieved_timeline', ...
+            experiment: Experiment type - 'no_image', 'axial_all_image', 'no_timeline', 'no_report', 'timeline_only', 'report', 'path', 'path_image_and_report', 'path_full', 'retrieved_timeline', ...
             storage_client: GCP Storage client for loading NIfTI files from bucket (used when file not under ct_dir).
             model_type: Model type string (e.g., 'gemma3') to determine preprocessing.
             ct_dir: Optional path from config paths.ct_dir. If set and nifti_path (split to filename) exists under ct_dir, load from disk; else use GCP.
@@ -127,8 +127,8 @@ class PromptDataset(Dataset):
         if self.experiment in ('no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization'):
             img = None
         else:
-            # Path / path_image_and_report: load pathology tile paths from path_tile_paths (list)
-            if self.experiment in ('path', 'path_image_and_report'):
+            # Path / path_image_and_report / path_full: load pathology tile paths from path_tile_paths (list)
+            if self.experiment in ('path', 'path_image_and_report', 'path_full'):
                 path_tile_paths = row.get('path_tile_paths', None)
                 if path_tile_paths is not None and len(path_tile_paths) > 0:
                     img_list = []

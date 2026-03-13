@@ -98,6 +98,17 @@ One row per tile. This CSV is the input for downstream VQA/inference pipelines.
 2. **Tiling** — Walks a grid over the slide at level-0 coordinates. For each tile position, checks the tissue fraction on the thumbnail mask. Tiles below `--tissue-threshold` (default 50%) are skipped.
 3. **Extraction** — Reads the region from the best available OpenSlide level, resizes to the target tile size, and saves.
 
+**Otsu-based tissue detection:** 
+
+1. Specify target magnification, tile size, tissue threshold (part of tile that must be tissue), thumbnail dimension for tissue detection, border margin, min_variance
+    - Native magnification (default 10 microns per pixel)
+2. Creates tissue mask → downscale slide to thumbnail_max_dim and use cv2 to get automatic threshold
+    - H&E (Hematoxylin)**-** tissue is darker than background white
+    - Check tissue takes up certain proportion of slide
+3. Border check (must be far enough from edge of slide) and check for variance in slide
+4. Use OpenSlide to downsample image, pyramid level, region at level 0
+    - Level 0 (highest resolution) → convert to this pixel coordinate by scaling magnification
+
 ## Native Magnification Detection
 
 The tool resolves native magnification automatically in this order:

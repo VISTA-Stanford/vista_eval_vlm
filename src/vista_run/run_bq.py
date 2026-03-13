@@ -32,6 +32,7 @@ from data_tools.utils.task_data_utils import (
     resolve_retrieval_csv_path,
     resolve_path_subsampled_csv_path,
     find_bq_timeline_column,
+    find_timeline_column,
     merge_bq_with_timeline_csv,
 )
 from data_tools.utils.csv_utils import append_to_csv as append_to_csv_util
@@ -174,8 +175,9 @@ class TaskOrchestrator:
             needs_all_vb_timeline = 'all_vb_timeline_only' in experiments
             needs_all_vb_image = 'all_vb_image_only' in experiments
             needs_path = 'path' in experiments or 'path_image_and_report' in experiments
+            needs_path_full = 'path_full' in experiments
             needs_normal = any(
-                e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'all_vb_timeline_only', 'all_vb_image_only', 'path', 'path_image_and_report')
+                e not in ('no_report', 'timeline_only', 'report', 'no_timeline', 'all_vb_timeline_only', 'all_vb_image_only', 'path', 'path_image_and_report', 'path_full')
                 and e not in RETRIEVAL_EXPERIMENTS
                 for e in experiments
             )
@@ -187,6 +189,7 @@ class TaskOrchestrator:
             loaded_all_vb_timeline = self._load_all_vb_timeline_task_data(task_info) if needs_all_vb_timeline else None
             loaded_all_vb_image = self._load_all_vb_image_task_data(task_info) if needs_all_vb_image else None
             loaded_path = self._load_path_task_data(task_info) if needs_path else None
+            loaded_path_full = self._load_path_full_task_data(task_info) if needs_path_full else None
             for experiment in experiments:
                 print(f"\n>>> Starting Task: {task_name} | Experiment: {experiment}")
                 if experiment == 'no_timeline':
@@ -197,6 +200,8 @@ class TaskOrchestrator:
                     loaded = loaded_all_vb_timeline
                 elif experiment in ('path', 'path_image_and_report'):
                     loaded = loaded_path
+                elif experiment == 'path_full':
+                    loaded = loaded_path_full
                 elif experiment in ('no_report', 'timeline_only', 'report'):
                     loaded = loaded_no_report
                 elif experiment in RETRIEVAL_EXPERIMENTS:
@@ -440,7 +445,7 @@ class TaskOrchestrator:
         Load task data from {task_name}_path_subsampled.csv in v1_3.
         For each row, derive folder name from path_image_path: last part after '\\', then
         remove .tiff/.tif; look under path_tile_base/test_patch/{folder_name} for .jpg tiles.
-        Attach 10 randomly subsampled tile paths as path_tile_paths (list).
+        Attach up to 100 randomly subsampled tile paths as path_tile_paths (list).
         Returns (df, None, source_csv) or None on failure.
         """
         task_name = task_info['task_name']
@@ -453,7 +458,7 @@ class TaskOrchestrator:
 
         path_tile_base = Path(self.cfg['paths'].get('path_tile_base', '/data/fries/datasets/vista_bench_ryan/download_path'))
         test_patch_dir = path_tile_base / "test_patch"
-        num_tiles_per_slide = 10
+        num_tiles_per_slide = 100
         seed = 42
 
         print(f"\n>>> Loading data for task: {task_name} (path – from _path_subsampled.csv)")
@@ -525,13 +530,69 @@ class TaskOrchestrator:
             print(f"    (Folder name = last segment of path_image_path after \\ then /, with .tiff/.tif removed)")
             return None
 
-        print(f"    Loaded {len(df)} rows with path tiles (10 tiles per slide from test_patch/).")
+        print(f"    Loaded {len(df)} rows with path tiles ({num_tiles_per_slide} tiles per slide from test_patch/).")
 
         if 'index' not in df.columns:
             df['index'] = df.index
 
         df['unique_events'] = float("nan")
         return (df, None, source_csv)
+
+    def _load_path_full_task_data(self, task_info):
+        """
+        Load path task data (same as _load_path_task_data) and merge with patient timeline CSV
+        so that each row has path tiles + path_note_text + truncated patient timeline (same as no_image).
+        Returns (df, timeline_col, source_csv) or None on failure.
+        """
+        loaded = self._load_path_task_data(task_info)
+        if loaded is None:
+            return None
+        df, _, source_csv = loaded
+        task_name = task_info['task_name']
+        use_subsampled = self.cfg.get('subsample', False)
+
+        if 'person_id' not in df.columns:
+            print(f"!!! Error: Path CSV has no 'person_id' column; cannot merge timeline for path_full.")
+            return None
+
+        csv_path = resolve_timeline_csv_path(
+            self.base_path, source_csv, task_name, use_subsampled, use_no_report_csv=False
+        )
+        if not csv_path.exists():
+            csv_path_v1_2 = self.base_path / "v1_2" / source_csv / resolve_timeline_csv_filename(
+                task_name, use_subsampled, use_no_report_csv=False
+            )
+            if csv_path_v1_2.exists():
+                csv_path = csv_path_v1_2
+            else:
+                print(f"!!! Error: Timeline CSV not found at {csv_path} (path_full needs timeline like no_image).")
+                return None
+
+        print(f"    Loading patient timelines for path_full: {csv_path}")
+        try:
+            csv_df = pd.read_csv(csv_path)
+        except Exception as e:
+            print(f"!!! Error reading timeline CSV: {e}")
+            return None
+
+        timeline_col = find_timeline_column(csv_df)
+        if timeline_col is None:
+            timeline_col = 'patient_string'
+            if timeline_col not in csv_df.columns:
+                print(f"!!! Error: Timeline CSV has no patient_string/patient_timeline column.")
+                return None
+
+        merge_df = csv_df[['person_id', timeline_col]].drop_duplicates(subset=['person_id'], keep='first')
+        df = df.merge(merge_df, on='person_id', how='inner')
+        if df.empty:
+            print(f"!!! No path rows matched timeline CSV on person_id.")
+            return None
+
+        df['unique_events'] = df[timeline_col].apply(count_unique_event_dates)
+        truncation_config = self.cfg.get('timeline_truncation', None)
+        df[timeline_col] = df[timeline_col].apply(lambda x: truncate_timeline(x, truncation_config))
+        print(f"    Merged timeline: {len(df)} rows with truncated patient timeline.")
+        return (df, timeline_col, source_csv)
 
     def _prepare_batch_for_inference(self, batch, existing_indices, constrained_choices):
         """
@@ -692,6 +753,29 @@ class TaskOrchestrator:
                 )
             else:
                 df_exp['dynamic_prompt'] = base_prompt_template
+            return df_exp
+
+        if experiment == 'path_full':
+            base_prompt_template = self.image_prompts_map.get(task_name, "") or self.prompts_map.get(task_name, "")
+            path_note_col = next(
+                (c for c in df_exp.columns if str(c).strip().lower() == 'path_note_text'),
+                next((c for c in df_exp.columns if 'path_note_text' in str(c).lower()), None),
+            )
+            timeline_text = df_exp[timeline_col].apply(
+                lambda x: str(x) if pd.notna(x) and str(x) != 'nan' else ''
+            )
+            if path_note_col is not None:
+                df_exp['dynamic_prompt'] = (
+                    base_prompt_template
+                    + "\n\nPathology note:\n"
+                    + df_exp[path_note_col].fillna("").astype(str)
+                    + "\n\nPatient timeline:\n"
+                    + timeline_text
+                )
+            else:
+                df_exp['dynamic_prompt'] = (
+                    base_prompt_template + "\n\nPatient timeline:\n" + timeline_text
+                )
             return df_exp
 
         prompts_map = (

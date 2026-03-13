@@ -39,6 +39,8 @@ def tile_wsi(
     output_format: str = "jpg",
     tissue_threshold: float = 0.50,
     thumbnail_max_dim: int = 2048,
+    border_margin_px: int = 5000,
+    min_variance: float = 100.0,
 ) -> Path:
     """Tile one or more WSIs and write a manifest CSV.
 
@@ -54,6 +56,10 @@ def tile_wsi(
         tissue_threshold: Minimum tissue fraction (0–1) for a tile to be kept.
         thumbnail_max_dim: Max dimension for the thumbnail used in tissue
             detection.
+        border_margin_px: Skip tiles whose center falls within this margin (at
+            level 0) of the slide edge. Use 0 to disable.
+        min_variance: Minimum grayscale variance for kept tiles. Rejects blank
+            or uniform regions. Use 0 to disable.
 
     Returns:
         Path to the manifest CSV.
@@ -94,6 +100,8 @@ def tile_wsi(
                 output_format=output_format,
                 tissue_threshold=tissue_threshold,
                 thumbnail_max_dim=thumbnail_max_dim,
+                border_margin_px=border_margin_px,
+                min_variance=min_variance,
             )
         except Exception as exc:
             print(f"[WARN] Failed to process {slide_path}: {exc}")
@@ -208,6 +216,34 @@ def _tissue_fraction_for_tile(
     return float(patch.sum()) / patch.size
 
 
+def _is_within_border(
+    x0: int,
+    y0: int,
+    region_size_l0: int,
+    slide_w: int,
+    slide_h: int,
+    border_margin_px: int,
+) -> bool:
+    """Return True if tile center is within border margin (should be excluded)."""
+    center_x = x0 + region_size_l0 // 2
+    center_y = y0 + region_size_l0 // 2
+    return (
+        center_x < border_margin_px
+        or center_x > slide_w - border_margin_px
+        or center_y < border_margin_px
+        or center_y > slide_h - border_margin_px
+    )
+
+
+def _is_informative_by_variance(
+    tile_img: np.ndarray,
+    min_variance: float,
+) -> bool:
+    """Return True if tile has sufficient color variance (reject blank/uniform regions)."""
+    gray = cv2.cvtColor(tile_img, cv2.COLOR_RGB2GRAY)
+    return float(gray.var()) >= min_variance
+
+
 def _process_slide(
     slide_path: Path,
     output_dir: Path,
@@ -218,6 +254,8 @@ def _process_slide(
     output_format: str,
     tissue_threshold: float,
     thumbnail_max_dim: int,
+    border_margin_px: int,
+    min_variance: float,
 ) -> None:
     """Process a single slide: detect tissue, extract tiles, update manifest."""
     slide = openslide.OpenSlide(str(slide_path))
@@ -254,6 +292,11 @@ def _process_slide(
             if frac < tissue_threshold:
                 continue
 
+            if border_margin_px > 0 and _is_within_border(
+                x0, y0, region_size_l0, slide_w, slide_h, border_margin_px
+            ):
+                continue
+
             try:
                 region = slide.read_region((x0, y0), best_level, (
                     int(tile_size * downsample / level_downsample),
@@ -262,6 +305,12 @@ def _process_slide(
                 tile_img = region.convert("RGB").resize(
                     (tile_size, tile_size), Image.LANCZOS,
                 )
+                tile_np = np.array(tile_img)
+
+                if min_variance > 0 and not _is_informative_by_variance(
+                    tile_np, min_variance
+                ):
+                    continue
 
                 fname = f"{slide_name}_{x0}_{y0}_{target_mag}x_{tile_index}.{output_format}"
                 tile_path = slide_dir / fname
@@ -338,6 +387,16 @@ def _cli() -> None:
         "--thumbnail-max-dim", type=int, default=2048,
         help="Max thumbnail dimension for tissue detection (default: 2048).",
     )
+    parser.add_argument(
+        "--border-margin-px", type=int, default=10000,
+        help="Skip tiles whose center is within this margin (at level 0) of "
+             "slide edge (default: 5000). Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--min-variance", type=float, default=150.0,
+        help="Minimum grayscale variance per tile (default: 100). Rejects "
+             "blank/uniform regions. Use 0 to disable.",
+    )
     args = parser.parse_args()
 
     manifest = tile_wsi(
@@ -349,6 +408,8 @@ def _cli() -> None:
         output_format=args.output_format,
         tissue_threshold=args.tissue_threshold,
         thumbnail_max_dim=args.thumbnail_max_dim,
+        border_margin_px=args.border_margin_px,
+        min_variance=args.min_variance,
     )
     print(f"\nManifest: {manifest}")
 
