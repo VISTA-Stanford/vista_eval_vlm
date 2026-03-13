@@ -1,103 +1,91 @@
-# MMBU Inference Evaluation Pipeline (Autoregressive)
+# Vista Eval VLM
 
-# Setup
+Evaluation pipeline for vision-language models (VLMs) on the Vista Bench benchmark. Supports timeline-only, CT imaging, pathology slides, and retrieval-based experiments.
 
-llava will contain environment for LLaVA-Med model
+**Full pipeline documentation** (pathology, CT, Vista Bench cohort, retrieval, running the pipeline): [docs/](docs/README.md).
 
-.venv will contain environment for all models
+---
 
-- Can run `bash scripts/setup.sh`
+## Setup
 
-OR (if issue)
+- **Python:** 3.11+
+- **Environment:** Use the project root `.venv` for all models except llava models require `llava`.
 
-- Install `requirements-default.txt` with `uv pip install -r requirements-default.txt` to create .venv
-- Clone LLaVA-Med repo in src directory `git clone https://github.com/microsoft/LLaVA-Med.git`
-- Install `requirements-llava.txt` in a new uv environment called llava
+**scripts/setup.sh (recommended)**
 
-# Running Code (GCP)
+```bash
+# From repo root
+./scripts/setup.sh
+# Install any extra deps from external repos
+```
+- Creates `.venv` with `uv`, installs the package and `requirements-default.txt`.
+- Clones LLaVA-Med into `src/` and creates a separate `llava` env for LLaVA-Med models.
 
-To run code you need to edit `all_tasks.yaml` config file in configs/ and either bq_gcp.sh, gcp.sh, or weill.sh (depending on VM location) eval file in eval/ and then run `./eval/{eval_file}.sh`
+Edit `scripts/setup.sh` if you use different paths or env names. For all runs besides with llava models the default `.venv` is sufficient.
+
+---
 
 ## Configs
 
-In a .yaml file:
+All runtime configuration is in **`configs/all_tasks.yaml`**.
 
-- Edit all paths to be your local directory paths
-- Edit runtime to select model cache path and inference settings
-- Edit models for all/any models used
-- In "tasks", set the "name" for all eval tasks (can do multiple at once)
-    - An example is shown in `configs/all_tasks.yaml`
-    - All current tasks are defined in the vista_bench valid_tasks.json section (which is found on GCP)
-- In "experiment", set the specific experiment(s) you want to run
-- Edit subsample (boolean) if want to use subsampled data
-- If on weill cluster, set GPU nodes (not used for GCP)
+| Section | What to set |
+|--------|--------------|
+| **paths** | `base_dir`, `results_dir`, `ct_dir`, `path_tile_base` to your Vista Bench and data locations; `valid_tasks`, `prompts`, `image_prompts` (paths relative to `base_dir`). |
+| **model** | `device` (e.g. `cuda`). |
+| **runtime** | `cache_dir` (HF/transformers/vLLM cache), `batch_size`, `max_new_tokens`, `use_constrained_decoding_for_binary`. |
+| **models** | List of `{ type, name }` for each VLM to run (see [Models](#models)). |
+| **tasks** | Task names to evaluate (must exist in `valid_tasks` JSON). |
+| **experiments** | Experiment(s) to run (e.g. `no_image`, `path_full`, `axial_all_image`, retrieval variants). |
+| **retrieval** | If any experiment is retrieval-based: `enabled: true`, `corpus_dir`, `cache_dir`, and other options (see [docs/05-retrieval.md](docs/05-retrieval.md)). |
+| **timeline_truncation** | `mode` and `k` (or `max_chars`) for truncating patient timelines. |
+| **subsample** | `true` to use `_subsampled*.csv` data. |
+| **weill** | `gpu_nodes` (list of GPU IDs) when using `eval/weill.sh`. |
 
-## Eval
+---
 
-In a .sh file:
+## Eval scripts
 
-- Change .venv paths to current directory and environment directory
-- EDIT HUGGINGFACE TOKEN (it will not work as the token you put on github expires)
+Run from **repo root**. Each script reads `configs/all_tasks.yaml` and runs `src/vista_run/run_bq.py` for every model in the config.
 
-**NOTE**: All models can be run with `run_vlm_eval.py`
+| Script | Use case |
+|--------|----------|
+| **`eval/weill.sh`** | Weill cluster (or any multi-GPU machine). Uses `weill.gpu_nodes` from config; override with `./eval/weill.sh 0 1 2 3` or `WEILL_GPUS="0 2 4 6" ./eval/weill.sh`. Activates `.venv` from project root (or `VISTA_VENV`). |
+| **`eval/bq_gcp.sh`** | GCP VM with BigQuery; runs models sequentially. **Edit the script:** set venv path and any `MAX_MODELS` / paths for your machine. |
+| **`eval/gcp.sh`** | GCP VM (non-BQ). **Edit the script:** set venv path and paths for your machine. |
+
+**Before running**
+
+- Set **`HF_TOKEN`** in the script (or export it) if your models need Hugging Face auth. The token in the repo may be expired; use your own.
+- For Weill: ensure `weill.gpu_nodes` in `all_tasks.yaml` matches your GPU IDs (e.g. `[0,1,2,3,4,5,6,7]`).
+
+---
 
 ## Models
 
-List of all models that can be implement along with MODEL_TYPE and MODEL_NAME
+Models are defined in the config as `type` + `name`. The **type** must match a key in the adapter registry in `src/models/__init__.py`. Supported types and example names:
 
-**NOTE**: Currently InternVL3.5, Qwen3, OctoMed, and Gemma are setup for vLLM inference
+| type | Example name | Notes |
+|------|----------------|------|
+| **gemma3** | `google/medgemma-1.5-4b-it`, `google/medgemma-4b-it`, `google/gemma-3-4b-it` | vLLM |
+| **qwen3vl** | `Qwen/Qwen3-VL-8B-Instruct` | vLLM |
+| **intern** | `OpenGVLab/InternVL3_5-8B-hf` | vLLM |
+| **octomed** | `OctoMed/OctoMed-7B` | vLLM |
+| **qwen2vl** | `Qwen/Qwen2-VL-2B-Instruct` | |
+| **qwen2_5vl** | `Qwen/Qwen2.5-VL-3B-Instruct`, `Qwen/Qwen2.5-VL-7B-Instruct` | |
+| **medvlm** | `JZPeterPan/MedVLM-R1` | |
+| **lingshu** | `lingshu-medical-mllm/Lingshu-7B` | |
+| **llava** | `llava-hf/llava-1.5-7b-hf` | |
+| **llavamed** | `microsoft/llava-med-v1.5-mistral-7b` | LLaVA-Med needs llava env (see setup). |
 
-- Qwen2-VL-2B-Instruct
-    - MODEL_TYPE="qwen2vl"
-    - MODEL_NAME="Qwen/Qwen2-VL-2B-Instruct"
-- Qwen2.5-VL-3B-Instruct
-    - MODEL_TYPE="qwen2_5vl"
-    - MODEL_NAME="Qwen/Qwen2.5-VL-3B-Instruct"
-- Qwen2.5-VL-7B-Instruct
-    - MODEL_TYPE="qwen2_5vl"
-    - MODEL_NAME="Qwen/Qwen2.5-VL-7B-Instruct"
-- Qwen2.5-VL-32B-Instruct
-    - MODEL_TYPE="qwen2_5vl"
-    - MODEL_NAME="Qwen/Qwen2.5-VL-32B-Instruct"
-- Qwen3-VL-4B-Instruct
-    - MODEL_TYPE="qwen3vl"
-    - MODEL_NAME="Qwen/Qwen3-VL-4B-Instruct"
-- Qwen3-VL-4B-Thinking
-    - MODEL_TYPE="qwen3vl"
-    - MODEL_NAME="Qwen/Qwen3-VL-4B-Thinking"
-- Qwen3-VL-8B-Instruct
-    - MODEL_TYPE="qwen3vl"
-    - MODEL_NAME="Qwen/Qwen3-VL-8B-Instruct"
-- Qwen3-VL-8B-Thinking
-    - MODEL_TYPE="qwen3vl"
-    - MODEL_NAME="Qwen/Qwen3-VL-8B-Thinking"
-- Qwen3-VL-32B-Instruct
-    - MODEL_TYPE="qwen3vl"
-    - MODEL_NAME="Qwen/Qwen3-VL-32B-Instruct"
-- Qwen3-VL-32B-Thinking
-    - MODEL_TYPE="qwen3vl"
-    - MODEL_NAME="Qwen/Qwen3-VL-32B-Thinking"
-- InternVL3_5-8B
-    - MODEL_TYPE="intern"
-    - MODEL_NAME="OpenGVLab/InternVL3_5-8B"	   
-- gemma-3-4b-it
-    - MODEL_TYPE="gemma3"
-    - MODEL_NAME="google/gemma-3-4b-it"		   
-- medgemma-4b-it
-    - MODEL_TYPE="gemma3"
-    - MODEL_NAME="google/medgemma-4b-it"	   
-- Lingshu-7B
-    - MODEL_TYPE="lingshu"
-    - MODEL_NAME="lingshu-medical-mllm/Lingshu-7B"	   
-- Lingshu-32B
-    - MODEL_TYPE="lingshu"
-    - MODEL_NAME="lingshu-medical-mllm/Lingshu-32B"
-- llava-1.5-7b-hf
-    - MODEL_TYPE="llava"
-    - MODEL_NAME="llava-hf/llava-1.5-7b-hf"	   
-- llava-med-v1.5-mistral-7b
-    - MODEL_TYPE="llavamed"
-    - MODEL_NAME="microsoft/llava-med-v1.5-mistral-7b"
-- MedVLM-R1
-    - MODEL_TYPE="medvlm"
-    - MODEL_NAME="JZPeterPan/MedVLM-R1"
+**Note:** Gemma3, Qwen3-VL, InternVL3.5, and OctoMed are wired for vLLM inference and constrained decoding. For other models, check adapter support in `src/models/` before adding to config.
+
+---
+
+## Results
+
+Output CSVs are written under:
+
+`{results_dir}/{source_csv}/{task_name}/{model_name}/{task_name}_results_{experiment}.csv`
+
+Resume is by row `index` (except for retrieval experiments, which overwrite). See [docs/04-running-the-pipeline.md](docs/04-running-the-pipeline.md) for details.

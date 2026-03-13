@@ -1,9 +1,9 @@
 paths:
   base_dir: "/data/fries/users/rdcunha/vista_bench_cached/vista_bench"
-  # results_dir: "/data/fries/users/rdcunha/vb_results/results_retrieval_v24"
-  results_dir: "/home/rdcunha/vista_project/results"
+  results_dir: "/data/fries/users/rdcunha/vb_results/path_test"
   ct_dir: "/data/fries/datasets/vista_bench_ryan/downloaded_ct_scans/chaudhari_lab/ct_data/ct_scans/vista/nov25"
-  valid_tasks: "tasks/valid_tasks_v1_2.json"
+  path_tile_base: "/data/fries/datasets/vista_bench_ryan/download_path"
+  valid_tasks: "tasks/valid_tasks_v1_3.json"
   prompts: "tasks/prompts_by_task.json"
   image_prompts: "tasks/image_valid_tasks.json"
 
@@ -14,22 +14,23 @@ runtime:
   cache_dir: "/data/fries/users/rdcunha/model_cache"
   batch_size: 64
   max_new_tokens: 1024
+  use_constrained_decoding_for_binary: false
 
 models:
-  # - type: "gemma3"
-  #   name: "google/medgemma-1.5-4b-it"
+  - type: "gemma3"
+    name: "google/medgemma-1.5-4b-it"
 
-  # - type: "intern"
-  #   name: "OpenGVLab/InternVL3_5-8B-hf"
+  - type: "intern"
+    name: "OpenGVLab/InternVL3_5-8B-hf"
   
   - type: "gemma3"
     name: "google/medgemma-4b-it"
 
-  # - type: "qwen3vl"
-  #   name: "Qwen/Qwen3-VL-8B-Instruct"
+  - type: "qwen3vl"
+    name: "Qwen/Qwen3-VL-8B-Instruct"
 
-  # - type: "octomed"
-  #   name: "OctoMed/OctoMed-7B"
+  - type: "octomed"
+    name: "OctoMed/OctoMed-7B"
 
 tasks:
   # - radiation_oligoprogression_answer
@@ -64,7 +65,7 @@ tasks:
   # - died_any_cause_2_yr
 
 experiments:
-  - no_image # no image
+  # - no_image # no image
   # - axial_all_image # 50 axial images
   # - no_timeline # image
   # - no_report # timeline + image
@@ -74,13 +75,16 @@ experiments:
   # - report # timeline + report
   # - retrieved_timeline # retrieved timeline
   # - retrieved_timeline_per_iteration
-  - retrieved_timeline_per_iteration_summarization  # summarized timeline
+  # - retrieved_timeline_per_iteration_summarization  # summarized timeline
   # - retrieved_timeline_with_image # retrieved timeline per iteration + 50 axial slices
   # - retrieved_timeline_per_iteration_summarization_with_image  # summarized timeline + 50 axial slices
+  # - path  # pathology: image prompts only
+  # - path_image_and_report  # pathology slides + path_note_text
+  - path_full  # pathology slides + path_note_text + max patient timeline
 
 # Retrieval (for retrieved_timeline experiment)
 retrieval:
-  enabled: true
+  enabled: false
   corpus_dir: "/data/fries/datasets/vista_bench_ryan/thoracic_cohort_lumia"
   cache_dir: "/data/fries/users/rdcunha/bm25_cache"
   max_iterations: 5
@@ -112,4 +116,4 @@ subsample: true
 # Weill eval: which GPU nodes to use (0-7). Used by eval/weill.sh.
 # Override with WEILL_GPUS env or command-line args if needed.
 weill:
-  gpu_nodes: [7]
+  gpu_nodes: [3,4,5,6,7]

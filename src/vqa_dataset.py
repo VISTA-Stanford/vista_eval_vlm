@@ -63,7 +63,7 @@ class PromptDataset(Dataset):
             df: Dataframe containing the data.
             prompt_col: The column name to use for the text prompt.
             add_options: Whether to append options to the prompt.
-            experiment: Experiment type - 'no_image', 'axial_all_image', 'no_timeline', 'no_report', 'timeline_only', 'report', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_with_image', 'retrieved_timeline_per_iteration_summarization_with_image'
+            experiment: Experiment type - 'no_image', 'axial_all_image', 'no_timeline', 'no_report', 'timeline_only', 'report', 'path', 'path_image_and_report', 'path_full', 'retrieved_timeline', ...
             storage_client: GCP Storage client for loading NIfTI files from bucket (used when file not under ct_dir).
             model_type: Model type string (e.g., 'gemma3') to determine preprocessing.
             ct_dir: Optional path from config paths.ct_dir. If set and nifti_path (split to filename) exists under ct_dir, load from disk; else use GCP.
@@ -127,8 +127,27 @@ class PromptDataset(Dataset):
         if self.experiment in ('no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization'):
             img = None
         else:
-            # First check for image_path (existing behavior)
-            if pd.notna(image_path) and os.path.exists(str(image_path)):
+            # Path / path_image_and_report / path_full: load pathology tile paths from path_tile_paths (list)
+            if self.experiment in ('path', 'path_image_and_report', 'path_full'):
+                path_tile_paths = row.get('path_tile_paths', None)
+                if path_tile_paths is not None and len(path_tile_paths) > 0:
+                    img_list = []
+                    for p in path_tile_paths:
+                        p_str = str(p).strip()
+                        if p_str and os.path.exists(p_str):
+                            try:
+                                with Image.open(p_str) as PIL_img:
+                                    PIL_img.load()
+                                    if PIL_img.mode != 'RGB':
+                                        PIL_img = PIL_img.convert('RGB')
+                                    img_list.append(pad_to_size(PIL_img.copy(), self.target_size))
+                            except Exception as e:
+                                pass
+                    if img_list:
+                        img = img_list
+
+            # First check for image_path (existing behavior) if not path experiment or no path tiles
+            if img is None and pd.notna(image_path) and os.path.exists(str(image_path)):
                 try:
                     with Image.open(image_path) as PIL_img:
                         PIL_img.load()
