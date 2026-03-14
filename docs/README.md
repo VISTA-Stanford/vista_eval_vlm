@@ -41,6 +41,7 @@ Flow: **Config** (`all_tasks.yaml`) drives **task and experiment selection**. Fo
 
 | Doc | Description |
 |-----|--------------|
+| [00-data-setup.md](00-data-setup.md) | Data overview, getting Vista Bench from BigQuery or by downloading from GCS (gs://), and the expected folder layout under `base_dir`. |
 | [01-pathology-and-path-tools.md](01-pathology-and-path-tools.md) | How to obtain and use pathology (WSI) data: subsample → download → tile → `path_tile_base`/`test_patch`; config; how `run_bq` and `vqa_dataset` use path data. |
 | [02-ct-scans.md](02-ct-scans.md) | NIfTI source (BigQuery/bucket), `download_subsampled_ct`, `ct_dir`, and how CT is loaded and sliced in `vqa_dataset`. |
 | [03-vista-bench-data-cohort.md](03-vista-bench-data-cohort.md) | Where task and cohort data come from: BigQuery dataset, local cache, valid_tasks, timeline CSVs, path_subsampled, full parquet, retrieval CSVs. |
