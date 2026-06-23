@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="plan-sha256" content="e48c077a18addae3e59f6bb06b26535d5da7a7c3f0112087edaac1a83d41eb95"/>
+<title>VISTA VLM eval on GCP — Bench v1_5 (plan)</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<style>
+:root{
+  --bg:#ffffff; --fg:#1a1a1a; --muted:#5b6470; --card:#f6f8fa; --border:#d8dee4;
+  --accent:#d6336c; --accent2:#e67e22; --accent3:#5c7cfa; --ext:#7f8c8d;
+  --chip:#eef1f4; --resp:#eef6ff;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0f1419; --fg:#e6e9ee; --muted:#9aa4b2; --card:#1a2027; --border:#2b333d;
+    --accent:#ff6b9d; --accent2:#f0922e; --accent3:#8aa0ff; --ext:#9aa4b2;
+    --chip:#222b35; --resp:#16222e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+.wrap{max-width:1100px;margin:0 auto;padding:28px 22px 120px;}
+h1{font-size:24px;margin:0 0 4px;}
+h2{font-size:19px;margin:34px 0 10px;border-bottom:1px solid var(--border);padding-bottom:6px;}
+h3{font-size:16px;margin:18px 0 6px;}
+a{color:var(--accent);}
+.muted{color:var(--muted);}
+code{background:var(--chip);padding:1px 5px;border-radius:4px;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;}
+pre.code{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;overflow:auto;font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:12px 0;}
+.header-card{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 18px;}
+.kv{font-size:13px;}
+.kv b{display:block;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;}
+table{border-collapse:collapse;width:100%;font-size:13.5px;margin:8px 0;}
+th,td{border:1px solid var(--border);padding:7px 9px;text-align:left;vertical-align:top;}
+th{background:var(--chip);}
+.chip{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11.5px;font-weight:600;border:1px solid var(--border);background:var(--chip);}
+.chip.pend{background:#f4b40022;color:var(--accent2);border-color:var(--accent2);}
+.chip.revise{background:#e67e2222;color:var(--accent2);border-color:var(--accent2);}
+.diagram-box{position:relative;height:520px;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--card);margin:10px 0;}
+.diagram-box.fs{position:fixed;inset:0;height:100vh;width:100vw;z-index:9999;border-radius:0;}
+.diagram-box pre.mermaid{margin:0;height:100%;}
+.diagram-box svg{display:block;}
+.dctl{position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:5;}
+.dctl button{font-size:12px;padding:3px 9px;border:1px solid var(--border);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer;}
+.hint{position:absolute;bottom:8px;left:10px;font-size:11px;color:var(--muted);z-index:5;background:var(--bg);padding:2px 7px;border-radius:5px;opacity:.85;}
+details{border:1px solid var(--border);border-radius:8px;margin:8px 0;background:var(--card);}
+details>summary{cursor:pointer;padding:10px 14px;font-weight:600;list-style:none;}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"\25B8";display:inline-block;margin-right:8px;transition:transform .15s;}
+details[open]>summary::before{transform:rotate(90deg);}
+.det-body{padding:2px 16px 14px;}
+.files{font:12.5px/1.5 ui-monospace,Menlo,monospace;color:var(--muted);}
+.verify{border-left:3px solid var(--accent3);padding:4px 10px;margin:8px 0;background:var(--bg);border-radius:0 6px 6px 0;font-size:13px;}
+textarea.section-feedback,textarea.global{width:100%;min-height:54px;margin-top:8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:7px;font:13px/1.4 inherit;resize:vertical;}
+.oq{border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:8px 0;background:var(--card);}
+.oq select{font-size:13px;padding:2px 6px;border-radius:5px;margin-left:8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);}
+.oq .q{margin:6px 0;}
+.lean{font-size:13px;color:var(--muted);}
+.footer-bar{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);padding:10px 22px;display:flex;gap:12px;align-items:center;z-index:50;}
+.footer-bar textarea{flex:1;min-height:38px;margin:0;}
+.btn{padding:8px 16px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:8px;cursor:pointer;font-weight:600;font-size:13.5px;white-space:nowrap;}
+.legend-swatch{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:middle;margin-right:5px;}
+.toast{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);background:#16a085;color:#fff;padding:9px 16px;border-radius:8px;z-index:200;opacity:0;transition:opacity .2s;font-size:13px;}
+.toast.show{opacity:1;}
+ul.tight{margin:4px 0;padding-left:20px;}
+ul.tight li{margin:2px 0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Stand up VISTA multimodal VLM eval on GCP — Bench v1_5</h1>
+<div class="muted">EHR-timeline + CT + pathology · open-weight VLM roster · GCP GPU VM in the BAA project</div>
+
+<div class="card header-card">
+  <div class="kv"><b>Status</b><span class="chip pend">Draft ⏳</span></div>
+  <div class="kv"><b>Repo</b>vista_eval_vlm</div>
+  <div class="kv"><b>Branch</b>main (untracked)</div>
+  <div class="kv"><b>Compute</b>GCP GPU VM (A100/H100)</div>
+  <div class="kv"><b>Bench</b>vista_bench_v1_5</div>
+  <div class="kv"><b>Source</b><a href="gcp-vlm-eval-v1_5-multimodal-standup.md">plan .md</a></div>
+  <div class="kv"><b>Plan SHA-256</b><code>e48c077a18ad</code></div>
+  <div class="kv"><b>Generated</b>2026-06-22</div>
+</div>
+
+<h2>TL;DR</h2>
+<div class="card">
+The VLM harness (<code>vista_eval_vlm</code>) already implements every experiment type end-to-end, so this is a <b>stand-up + re-target</b>, not new pipeline code. The work: provision a GPU VM in the BAA GCP project (the bench BQ dataset and CT/WSI buckets already live there — no cross-institution PHI sync, and 4–8B VLMs fit on one A100/H100, so B200s aren't needed), bump the harness from v1_3 to <b>v1_5</b> — including the version-hardcoded path resolvers, not just two files — and materialize three modalities (EHR-timeline, CT NIfTI, pathology WSI). Frontier API models and the Weill B200s are deferred levers.
+</div>
+
+<h2>Review history</h2>
+<table>
+<thead><tr><th>Pass</th><th>Reviewer</th><th>Verdict</th><th>Key findings surfaced</th><th>Applied</th></tr></thead>
+<tbody>
+<tr>
+  <td>1</td>
+  <td>Codex (gpt-5.5)<br/><a href="reviews/gcp-vlm-eval-v1_5-multimodal-standup-feedback.md">feedback</a></td>
+  <td><span class="chip revise">Revise</span></td>
+  <td>v1_5 retarget touches more than 2 files (cache/timeline/path resolvers are version-hardcoded); runtime samples 100 tiles not 125; timeline CSVs are a hard gate; CT prefix drifted to <code>feb26</code>; registry seam wider than one JSON.</td>
+  <td>All 6 findings + 5 verification hardenings. 0 disagreements.</td>
+</tr>
+</tbody>
+</table>
+
+<h2>Repo map — where this sits</h2>
+<div class="diagram-box" id="box-repo">
+  <div class="dctl"><button onclick="dReset('box-repo')">Reset</button><button onclick="dFull('box-repo')">Fullscreen</button></div>
+  <pre class="mermaid">
+flowchart LR
+  subgraph srcs["Upstream sources"]
+    vb["vista_bench<br/>TASK_REGISTRY plus BQ materialize"]:::ext
+    bq["BQ vista_bench_v1_5<br/>3 tables"]:::ext
+    ctb["gs su-vista-uscentral1<br/>CT NIfTI feb26"]:::ext
+    wsib["hidden WSI bucket"]:::ext
+  end
+  subgraph seam["Task registry seam"]
+    mt["meds_tools task_def<br/>or new vista_bench exporter"]:::mod
+    js["task JSONs<br/>valid_tasks_v1_5, prompts, image_prompts"]:::mod
+  end
+  subgraph focus["vista_eval_vlm standup, this plan"]
+    vm["GCP GPU VM<br/>A100 or H100"]:::add
+    orch["run_bq.py orchestrator<br/>v1_5 retarget"]:::add
+  end
+  subgraph outs["Outputs"]
+    res["per task, model, experiment<br/>results CSVs"]:::add
+    met["metrics<br/>accuracy, weighted-F1"]:::add
+  end
+  ve["vista-eval<br/>vlm_report compare"]:::ext
+  vb --> mt --> js
+  bq --> orch
+  ctb --> orch
+  wsib --> orch
+  js --> orch
+  orch --> res --> met
+  met -.-> ve
+  vm -. hosts .-> orch
+  subgraph legend["Color legend"]
+    l1["THIS plan adds, runs (rose)"]:::add
+    l2["Modified, regenerated (amber)"]:::mod
+    l3["External, untouched (grey)"]:::ext
+  end
+  classDef add fill:#d6336c,stroke:#a61e4d,stroke-width:3px,color:#fff;
+  classDef mod fill:#e67e22,stroke:#ca6f1e,color:#fff;
+  classDef ext fill:#7f8c8d,stroke:#566573,color:#fff,stroke-dasharray:5 5;
+  </pre>
+  <div class="hint">scroll to zoom &bull; drag to pan</div>
+</div>
+
+<h2>Blast radius — knobs, files, outputs</h2>
+<div class="diagram-box" id="box-blast">
+  <div class="dctl"><button onclick="dReset('box-blast')">Reset</button><button onclick="dFull('box-blast')">Fullscreen</button></div>
+  <pre class="mermaid">
+flowchart LR
+  subgraph knobs["Knobs and files"]
+    k1["query_utils.py<br/>VISTA_BENCH_DATASET to v1_5"]:::add
+    k2["task_data_utils.py<br/>cache, timeline, path resolvers"]:::mod
+    k3["all_tasks.yaml<br/>GCP paths, v1_5 registry,<br/>constrained decoding"]:::mod
+    k4["subsample_path.py<br/>parameterize by version"]:::mod
+    k5["bq_gcp.sh<br/>venv, GPU, MAX_MODELS"]:::mod
+    k6["task JSONs in bucket<br/>valid_tasks_v1_5 plus 2"]:::add
+    k7["vista_bench exporter<br/>optional, Open Q1"]:::deferred
+  end
+  subgraph runtime["Runtime"]
+    orch["run_bq.py<br/>TaskOrchestrator"]:::mod
+    ds["vqa_dataset.py<br/>CT slices, WSI tiles"]:::mod
+  end
+  subgraph outc["Outputs and consumers"]
+    res["results CSVs<br/>per task, model, experiment"]:::add
+    met["metrics<br/>accuracy, weighted-F1"]:::add
+    ve["vista-eval vlm_report<br/>optional compare"]:::ext
+  end
+  k1 --> orch
+  k2 --> orch
+  k3 --> orch
+  k4 --> orch
+  k5 --> orch
+  k6 --> orch
+  k7 -.-> k6
+  orch --> ds --> res --> met
+  met -.-> ve
+  subgraph legend["Color legend"]
+    la["THIS plan adds (rose)"]:::add
+    lm["Modified (amber)"]:::mod
+    ld["Deferred, optional (blue dashed)"]:::deferred
+    le["External (grey)"]:::ext
+  end
+  classDef add fill:#d6336c,stroke:#a61e4d,stroke-width:3px,color:#fff;
+  classDef mod fill:#e67e22,stroke:#ca6f1e,color:#fff;
+  classDef deferred fill:#5c7cfa,stroke:#3b5bdb,color:#fff,stroke-dasharray:5 5;
+  classDef ext fill:#7f8c8d,stroke:#566573,color:#fff,stroke-dasharray:5 5;
+  </pre>
+  <div class="hint">scroll to zoom &bull; drag to pan</div>
+</div>
+
+<h2>Order of operations</h2>
+<div class="diagram-box" id="box-flow">
+  <div class="dctl"><button onclick="dReset('box-flow')">Reset</button><button onclick="dFull('box-flow')">Fullscreen</button></div>
+  <pre class="mermaid">
+flowchart TD
+  p0["Phase 0<br/>GCP VM, ADC, HF token ⏳"]:::pend
+  p1["Phase 1<br/>v1_5 dataset, registry, resolvers ⏳"]:::pend
+  p2["Phase 2<br/>EHR timeline text ⏳"]:::pend
+  p3["Phase 3<br/>CT NIfTI ⏳"]:::pend
+  p4["Phase 4<br/>Pathology WSI ⏳"]:::pend
+  p5["Phase 5<br/>Models and sweep ⏳"]:::pend
+  p6["Phase 6<br/>Results and metrics ⏳"]:::pend
+  p0 --> p1
+  p1 -->|gate, timeline CSVs must exist| p2
+  p1 --> p3
+  p1 -->|gate, bucket layout Open Q2| p4
+  p2 --> p5
+  p3 --> p5
+  p4 --> p5
+  p5 --> p6
+  subgraph legend["Status legend"]
+    s1["PENDING ⏳"]:::pend
+    s2["SHIPPED ✅"]:::done
+    s3["BLOCKED 🛑"]:::block
+  end
+  classDef pend fill:#f4b400,stroke:#b8860b,color:#000;
+  classDef done fill:#16a085,stroke:#0e6655,color:#fff;
+  classDef block fill:#e74c3c,stroke:#922b21,color:#fff;
+  </pre>
+  <div class="hint">scroll to zoom &bull; drag to pan</div>
+</div>
+
+<h2>Versioned data layout contract</h2>
+<div class="card">
+Bumping <code>VISTA_BENCH_DATASET</code> + the config is <b>not sufficient</b> — these resolvers are version-hardcoded and must each move to v1_5 or be intentionally left shared.
+<table>
+<thead><tr><th>Artifact</th><th>Current resolver</th><th>v1_5 decision</th></tr></thead>
+<tbody>
+<tr><td>BQ table source</td><td><code>VISTA_BENCH_DATASET = "vista_bench_v1_1"</code> (query_utils.py:236)</td><td>to <code>vista_bench_v1_5</code></td></tr>
+<tr><td>BQ local cache</td><td><code>bigquery_data_2_3/(source_csv)</code> (run_bq.py:245)</td><td>new v1_5 cache or delete so BQ is queried (avoid stale shadowing)</td></tr>
+<tr><td>Timeline CSVs</td><td>root or <code>v1_2/</code> fallback (task_data_utils.py:14,38,45)</td><td>confirm where v1_5 timeline CSVs live</td></tr>
+<tr><td>Path subsampled CSVs</td><td><code>v1_3/(source_csv)/</code> (run_bq.py:262)</td><td>v1_5 output base + update <code>resolve_path_subsampled_csv_path</code></td></tr>
+<tr><td>CT NIfTI prefix</td><td><code>nov25</code> (vqa_dataset.py:12,15)</td><td>v1_5 bench uses <code>feb26</code> primary, <code>nov25</code> fallback — verify</td></tr>
+<tr><td>Task JSONs</td><td><code>tasks/valid_tasks_v1_3.json</code></td><td><code>tasks/valid_tasks_v1_5.json</code> + prompts + image_prompts</td></tr>
+</tbody>
+</table>
+<span class="lean">Open Q2 (authoritative bucket layout) gates this table.</span>
+</div>
+
+<h2>Knobs &amp; contracts</h2>
+<div class="card">
+<table>
+<thead><tr><th>Contract</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>BQ project / dataset</td><td><code>som-nero-plevriti-deidbdf</code> / <code>vista_bench_v1_5</code>; tables <code>progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr</code>, <code>diagnostic_tasks</code>, <code>tb_classification_tasks</code> (radiation dropped in v1_5)</td></tr>
+<tr><td>Task registry JSON</td><td>entries need <code>task_name</code>, <code>task_source_csv</code>, <code>is_binary</code> (drives constrained Yes/No decoding); text prompts need <code>[PATIENT_TIMELINE]</code></td></tr>
+<tr><td>Model roster (type keys)</td><td><code>gemma3</code> (MedGemma-4b, MedGemma-1.5-4b), <code>qwen3vl</code> (Qwen3-VL-8B), <code>intern</code> (InternVL3.5-8B), <code>octomed</code> (OctoMed-7B) — vLLM, constrained-decoding wired</td></tr>
+<tr><td>CT buckets</td><td><code>gs://su-vista-uscentral1</code>, prefix <code>chaudhari_lab/ct_data/ct_scans/vista/feb26</code> (nov25 fallback)</td></tr>
+<tr><td>Pathology tiles</td><td>tile at 896 px / 10x; runtime samples up to <b>100</b> tiles/slide (run_bq.py:461) — not 125</td></tr>
+<tr><td>Constrained decoding</td><td><code>use_constrained_decoding_for_binary</code> currently <code>false</code> (all_tasks.yaml:17) — set intentionally</td></tr>
+<tr><td>Output path</td><td><code>(results_dir)/(source_csv)/(task)/(model)/(task)_results_(experiment).csv</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Phases</h2>
+<div id="steps"></div>
+
+<h2>Gotchas &amp; contract notes</h2>
+<div id="gotchas"></div>
+
+<h2>Open questions</h2>
+<div id="oqs"></div>
+
+</div>
+
+<div class="footer-bar">
+  <textarea class="global" id="global-fb" placeholder="Overall feedback on the plan..."></textarea>
+  <button class="btn" id="copy-btn" onclick="copyFeedback()">Copy feedback</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const PLAN_SHA="e48c077a18addae3e59f6bb06b26535d5da7a7c3f0112087edaac1a83d41eb95";
+const PLAN_STEM="gcp-vlm-eval-v1_5-multimodal-standup";
+
+// ---- content data ----
+const STEPS=[
+ {id:"step-0",t:"Phase 0 — GCP infra &amp; access",chip:"pend",
+  body:"GPU VM in/peered to BAA project <code>som-nero-plevriti-deidbdf</code>, region <b>us-central1</b> (matches buckets+BQ, avoids egress). 1x A100-80GB or H100 (L4 for the 4B-only subset). ADC with BQ read on v1_5 + Storage read on the bench + CT + hidden WSI buckets. <code>HF_TOKEN</code> for gated MedGemma. Clone the fork; <code>./scripts/setup.sh</code> (skip the llava env).",
+  files:"scripts/setup.sh",
+  verify:"hostname; gcloud project; bq ls vista_bench_v1_5 lists 3 tables; gsutil ls the feb26 + nov25 CT prefixes; nvidia-smi; vllm+torch import. Stop on any auth/dataset/GPU failure."},
+ {id:"step-1",t:"Phase 1 — Bump to v1_5: dataset + registry + resolvers",chip:"pend",
+  body:"Set <code>VISTA_BENCH_DATASET</code> to v1_5 (currently v1_1) and apply the whole data-layout contract. Produce the three task JSONs as <b>separate outputs</b> — the meds_tools script only makes <code>prompts_by_task.json</code> from an existing <code>valid_tasks.json</code>; <code>valid_tasks_v1_5.json</code> and <code>image_valid_tasks.json</code> have no generator (Open Q1). Set the constrained-decoding flag intentionally.",
+  files:"query_utils.py, task_data_utils.py, configs/all_tasks.yaml, (optional) vista_bench export_task_registry.py",
+  verify:"JSON structural validation (task coverage, prompt presence + [PATIENT_TIMELINE], image-prompt coverage); BQ schema+rowcount per table; print resolved data SOURCE per task and assert local cache is v1_5 or absent (cache-shadowing guard). Stop on unresolved table/task, missing prompt, stale cache."},
+ {id:"step-2",t:"Phase 2 — EHR patient-timeline (hard-gated)",chip:"pend",
+  body:"Sync the bench bucket. <b>Hard gate:</b> <code>no_image</code>, <code>timeline_only</code>, <code>report</code>, <code>no_report</code>, <code>path_full</code> all return None without the timeline CSVs. Confirm <code>(task)_subsampled.csv</code> AND <code>(task)_subsampled_no_img_report.csv</code> exist per source; if absent build them (full_test_ehr_vb_download.py) before any timeline/path_full run.",
+  files:"data_tools/full_dataset_utils/full_test_ehr_vb_download.py",
+  verify:"input-file inventory per experiment; nonzero inner-join of timeline person_id vs v1_5 BQ; 1-task x 1-model smoke writes a non-empty CSV with model_response. Stop on missing/empty CSV."},
+ {id:"step-3",t:"Phase 3 — CT (NIfTI)",chip:"pend",
+  body:"<code>ct_coverage.py</code> for per-task availability. Resolve the CT prefix (feb26 vs nov25, Open Q3) then <code>download_subsampled_ct.py</code> into <code>ct_dir</code>. Run axial_all_image / no_timeline / all_vb_image_only.",
+  files:"data_tools/ct_info/download_subsampled_ct.py, ct_coverage.py",
+  verify:"sample 20 v1_5 nifti_path, normalize via _nifti_path_to_blob_and_filename, assert local/GCS blob exists; CT smoke asserts used_image.sum() above 0 (PromptDataset silently falls back to text-only — hard-fail this). Stop on 0 blobs / all used_image 0."},
+ {id:"step-4",t:"Phase 4 — Pathology (WSI), heaviest lift",chip:"pend",
+  body:"Subsample the path cohort for v1_5: <code>subsample_v1_3_path.py</code> defaults hardcode bigquery_v1_3 / valid_tasks_v1_3 / v1_3 — running as-is regenerates v1_3. Parameterize into <code>subsample_path.py --version</code> rather than copy (v1_6 is on the horizon). Download WSIs from the hidden bucket (cost/space cap). Tile at 896px/10x; runtime samples 100 tiles/slide (Open Q5). Run path / path_image_and_report / path_full.",
+  files:"data_tools/csv_helper/subsample_v1_3_path.py -> subsample_path.py, path_tools/download_path_subsampled.py, path_tools/tile_wsi.py",
+  verify:"path subsampled rowcount above 0; WSI download count; tile-manifest rowcount; folder stem matches path_image_path; result rows carry the chosen tile count and used_image==1. Stop on all rows dropped / tile-count mismatch."},
+ {id:"step-5",t:"Phase 5 — Models &amp; sweep",chip:"pend",
+  body:"Roster: gemma3 (MedGemma-4b, 1.5-4b), qwen3vl (Qwen3-VL-8B), intern (InternVL3.5-8B), octomed (OctoMed-7B). Run via <code>eval/bq_gcp.sh</code> (edit venv, GPU, MAX_MODELS), single-GPU sequential; adapt weill.sh round-robin if multi-GPU.",
+  files:"eval/bq_gcp.sh",
+  verify:"one results CSV per (task, model, experiment), resume intact; nvidia-smi headroom. Stop on OOM (drop batch_size/model count)."},
+ {id:"step-6",t:"Phase 6 — Results",chip:"pend",
+  body:"<code>final_metrics.py</code> / <code>results_analyzer.py</code> for per-task accuracy + weighted-F1. Optionally feed into vista-eval <code>vlm_report.py</code> to compare vs embedding baselines.",
+  files:"src/results/final_metrics.py, results_analyzer.py",
+  verify:"per-task metric sanity: evaluated-row count == expected; no all-empty model_response; label-parser coverage reported; accuracy + weighted-F1 incl. multiclass."}
+];
+const GOTCHAS=[
+ {id:"g-upstream",t:"Do NOT merge upstream/main",body:"<code>upstream/main</code> is Ryan's separate MMBU benchmark; it deletes the whole VISTA BQ + retrieval + CT/pathology integration. Only <code>api_models.py</code> (frontier models) is worth porting later — and only as a BAA-endpoint rewrite (public OpenAI/Gemini APIs violate the BAA on this de-id data)."},
+ {id:"g-cache",t:"BQ local cache can shadow v1_5",body:"run_bq.py loads <code>bigquery_data_2_3</code> cache first if present, before querying BQ — a stale v1_1/v1_2 cache silently shadows v1_5. Phase 1 verification prints the resolved source and asserts the cache is v1_5 or absent."},
+ {id:"g-ct-silent",t:"CT load failures fall back to text-only silently",body:"PromptDataset catches NIfTI load exceptions and continues, so a CT experiment can write a non-empty CSV with used_image=0. Verification hard-fails unless used_image.sum() above 0."},
+ {id:"g-tiles",t:"Tile budget 100 vs 125",body:"The MedGemma tiling spec mentions 125 patches, but runtime samples up to 100 tiles/slide (run_bq.py:461). Pick deliberately (Open Q5) and assert path_tile_paths length downstream."},
+ {id:"g-phi",t:"PHI repo",body:"Touches BQ / OMOP / DICOM / WSI. Commits go through /phi-vet then /commit-review. Frontier/public-API models are out of scope on this data."}
+];
+const OQS=[
+ {n:1,q:"Registry regeneration / seam: reuse meds_tools 02_task_to_prompt.py (covers only prompts_by_task.json from an existing valid_tasks.json) + hand-build valid_tasks_v1_5.json and image_valid_tasks.json, OR add a durable vista_bench exporter for all three?",lean:"Lean: exporter — v1_5 adds diagnostic tasks and the sweep will recur (v1_6 pending), so realistic reuse exists."},
+ {n:2,q:"Authoritative v1_5 local-artifact layout: root (source_csv)/, v1_5/(source_csv)/, or reuse of bigquery_data_2_3 / v1_3 names? Gates the data-layout contract.",lean:"Do not silently reuse v1_2/v1_3 names for v1_5 artifacts."},
+ {n:3,q:"CT NIfTI prefix: vista_bench v1_5 primary is feb26 (eval repo docs say nov25). Use feb26, nov25, or both-with-fallback?",lean:"Default: feb26 primary + nov25 fallback, verified on VM."},
+ {n:4,q:"Diagnostic scope: include the v1_5 diagnostic suite (stage/PD-L1/histology/mets)? Pairs naturally with pathology but only if text + image prompt templates are authored/reviewed.",lean:"Gate inclusion on prompt coverage."},
+ {n:5,q:"Pathology tile budget: run at 100 (runtime default) or change the cap to 125? Plus the slide/patient cap for cost+disk.",lean:""},
+ {n:6,q:"WSI bucket: confirm the exact (hidden) bucket name + read grant for the GCP principal.",lean:""},
+ {n:7,q:"GPU shape: single A100/H100 sequential, or multi-GPU VM for parallel model runs?",lean:""}
+];
+
+// ---- render ----
+function lsGet(k){try{return localStorage.getItem(PLAN_STEM+"::"+PLAN_SHA+"::"+k)||""}catch(e){return""}}
+function lsSet(k,v){try{localStorage.setItem(PLAN_STEM+"::"+PLAN_SHA+"::"+k,v)}catch(e){}}
+function ta(id,ph){return '<textarea class="section-feedback" data-fb="'+id+'" placeholder="'+(ph||'Comments on this section...')+'"></textarea>';}
+
+document.getElementById("steps").innerHTML=STEPS.map(s=>
+ '<details data-section="'+s.id+'"><summary>'+s.t+' <span class="chip pend">PENDING</span></summary>'+
+ '<div class="det-body"><p>'+s.body+'</p>'+
+ '<div class="files">files: '+s.files+'</div>'+
+ '<div class="verify"><b>Verify:</b> '+s.verify+'</div>'+
+ ta(s.id)+'</div></details>').join("");
+
+document.getElementById("gotchas").innerHTML=GOTCHAS.map(g=>
+ '<details data-section="'+g.id+'"><summary>'+g.t+'</summary>'+
+ '<div class="det-body"><p>'+g.body+'</p>'+ta(g.id)+'</div></details>').join("");
+
+document.getElementById("oqs").innerHTML=OQS.map(o=>{
+ const id="OQ"+o.n;
+ return '<div class="oq" data-section="'+id+'"><b>OQ'+o.n+'</b>'+
+  '<select data-oq="'+id+'"><option>Pending</option><option>Resolved</option><option>Deferred</option></select>'+
+  '<div class="q">'+o.q+'</div>'+
+  (o.lean?'<div class="lean">'+o.lean+'</div>':'')+
+  ta(id,"Notes / decision...")+'</div>';
+}).join("");
+
+// restore + persist
+function wireInputs(){
+ document.querySelectorAll('textarea[data-fb]').forEach(t=>{
+   const k="fb::"+t.dataset.fb; t.value=lsGet(k);
+   t.addEventListener('input',()=>{lsSet(k,t.value);updateBadge();});
+ });
+ document.querySelectorAll('select[data-oq]').forEach(s=>{
+   const k="oq::"+s.dataset.oq; const v=lsGet(k); if(v)s.value=v;
+   s.addEventListener('change',()=>{lsSet(k,s.value);updateBadge();});
+ });
+ const g=document.getElementById('global-fb'); g.value=lsGet("global");
+ g.addEventListener('input',()=>{lsSet("global",g.value);updateBadge();});
+}
+function pendingCount(){
+ let n=0;
+ document.querySelectorAll('textarea[data-fb]').forEach(t=>{if(t.value.trim())n++;});
+ document.querySelectorAll('select[data-oq]').forEach(s=>{if(s.value!=="Pending")n++;});
+ if(document.getElementById('global-fb').value.trim())n++;
+ return n;
+}
+function updateBadge(){const n=pendingCount();document.getElementById('copy-btn').textContent=n?("Copy feedback ("+n+")"):"Copy feedback";}
+function copyFeedback(){
+ let out="# Feedback on "+PLAN_STEM+"\n";
+ document.querySelectorAll('[data-section]').forEach(sec=>{
+   const id=sec.getAttribute('data-section');
+   const t=sec.querySelector('textarea[data-fb]'); const sel=sec.querySelector('select[data-oq]');
+   const txt=t?t.value.trim():""; const st=sel?sel.value:"";
+   if(txt||(sel&&st!=="Pending")){
+     out+="\n## "+id+"\n"; if(sel)out+="Status: "+st+"\n"; if(txt)out+=txt+"\n";
+   }
+ });
+ const g=document.getElementById('global-fb').value.trim();
+ if(g)out+="\n## Overall\n"+g+"\n";
+ navigator.clipboard.writeText(out).then(()=>toast("Feedback copied — paste into Claude"));
+}
+function toast(m){const e=document.getElementById('toast');e.textContent=m;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),2200);}
+
+// ---- mermaid + pan/zoom ----
+const panz={};
+mermaid.initialize({startOnLoad:false,securityLevel:'loose',theme:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'default'),flowchart:{useMaxWidth:false}});
+async function renderDiagrams(){
+ await mermaid.run({querySelector:'pre.mermaid'});
+ document.querySelectorAll('.diagram-box').forEach(box=>{
+   const svg=box.querySelector('svg'); if(!svg)return;
+   svg.removeAttribute('style'); svg.style.width='100%'; svg.style.height='100%';
+   const inst=svgPanZoom(svg,{zoomEnabled:true,controlIconsEnabled:false,fit:true,center:true,minZoom:0.3,maxZoom:8});
+   panz[box.id]=inst;
+ });
+}
+function dReset(id){const i=panz[id];if(i){i.resize();i.fit();i.center();}}
+function dFull(id){
+ const box=document.getElementById(id); box.classList.toggle('fs');
+ setTimeout(()=>{const i=panz[id];if(i){i.resize();i.fit();i.center();}},60);
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.diagram-box.fs').forEach(b=>{b.classList.remove('fs');setTimeout(()=>dReset(b.id),60);});});
+window.addEventListener('resize',()=>{Object.keys(panz).forEach(id=>{const i=panz[id];if(i){i.resize();i.fit();i.center();}});});
+
+wireInputs(); updateBadge(); renderDiagrams();
+</script>
+</body>
+</html>
