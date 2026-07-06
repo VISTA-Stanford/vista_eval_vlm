@@ -41,9 +41,10 @@ For experiments that use CT images, [PromptDataset](../src/vqa_dataset.py) in `v
 1. Reads `nifti_path` from each row.
 2. Resolves blob path and filename via `_nifti_path_to_blob_and_filename` (handles `/mnt/` prefixes, bucket prefix, and `.nii.gz` naming).
 3. Loads the NIfTI from `ct_dir` if the file exists locally, else from GCP Storage.
-4. Samples axial slices from the volume. The number and spacing depend on the experiment:
-   - **50 slices** (uniformly spaced): `no_timeline`, `all_vb_image_only`, `axial_all_image`, `retrieved_timeline_with_image`, `retrieved_timeline_per_iteration_summarization_with_image`, `no_report`.
-   - **30 slices:** `axial_all_image` and the retrieval+image variants use a 0.1-spacing scheme over depth.
+4. Samples axial slices from the volume. The number and spacing depend on the experiment. Every branch spaces slices evenly across `[0, depth)` via `index = int(i/(n-1) * (depth-1))`:
+   - **50 slices:** `no_timeline`, `all_vb_image_only`.
+   - **30 slices:** `axial_all_image`, `retrieved_timeline_with_image`, `retrieved_timeline_per_iteration_summarization_with_image`.
+   - **10 slices:** `no_report`.
 5. Preprocessing:
    - **Gemma-style models:** Multi-window CT (wide, mediastinum, brain) via `window()`, then RGB PIL image, resized/padded to 448.
    - **Other models:** `normalize_slice()` then grayscale PIL, resized/padded to 512.

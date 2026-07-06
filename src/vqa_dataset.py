@@ -191,12 +191,19 @@ class PromptDataset(Dataset):
                         if img_data is not None:
                             # Handle different experiment types
                             if self.experiment in ('axial_all_image', 'retrieved_timeline_with_image', 'retrieved_timeline_per_iteration_summarization_with_image'):
-                                # 50 axial slices (same sampling as axial_all_image)
+                                # 30 axial slices, evenly spaced across the volume depth.
+                                # (Previously used a buggy i*0.1 scheme that overshot 1.0 for i>10 and
+                                # silently clamped every later slice to the last; now matches the even
+                                # spacing used by the 50- and 10-slice branches below.)
                                 if len(img_data.shape) > 2:
                                     depth = img_data.shape[2]
                                     img_list = []
-                                    for i in range(30):
-                                        position = i * 0.1
+                                    num_slices = 30
+                                    for i in range(num_slices):
+                                        if num_slices > 1:
+                                            position = i / (num_slices - 1)
+                                        else:
+                                            position = 0.0
                                         index = int(position * (depth - 1))
                                         if index >= depth:
                                             index = depth - 1
