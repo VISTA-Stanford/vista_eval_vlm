@@ -8,10 +8,13 @@ EHR adapter.
 Byte-identity (golden gate 3): the legacy no-imaging-report string was produced
 by ``get_described_events_window`` (window = 6 months before ``embed_time``) +
 ``get_llm_event_string(exclude_report=True)`` (drops any code containing
-"STANFORD"). We reproduce that as ``window(before=6mo, after=0)`` +
-``code_filter(exclude_stanford=True)`` and then render with
-``exclude_report=False`` — the ``code_filter`` predicate is the *same* substring
-test the renderer used, so identical rows drop.
+"STANFORD"). A config/preset ``select`` chain of ``window(before=6mo, after=0)`` +
+``code_filter(exclude_stanford=True)`` reproduces that (the adapter then renders
+with ``exclude_report=False``) — the ``code_filter`` predicate is the *same*
+substring test the renderer used, so identical rows drop. These filter primitives
+are the *mechanism*; the concrete per-preset chains are wired in the hot-path pass
+(``presets.py`` currently carries a cohort-source ``variant`` marker, not the
+resolved ``select`` chain — see its ``_ehr_block`` note).
 
 Event DataFrame columns (produced by the EHR adapter's LUMIA ingest, matching
 ``get_llm_event_string``): ``time`` (datetime), ``code``, ``description``,

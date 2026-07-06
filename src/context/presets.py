@@ -26,7 +26,23 @@ import copy
 def _ehr_block(variant: str = "timeline"):
     """EHR text block. ``variant`` records which timeline source the cohort feeds
     (``timeline`` = full, ``no_img_report`` = imaging-report-skipped,
-    ``passthrough`` = pre-rendered from parquet/retrieval)."""
+    ``passthrough`` = pre-rendered from parquet/retrieval).
+
+    ⚠ DEFERRED-TO-WIRING (fresh-Claude review 2026-07-06): the concrete LUMIA-live
+    ``select`` filter chain is **not** emitted here yet — only the ``variant`` label
+    is. The hot-path wiring pass resolves ``variant`` -> a ``select`` chain and
+    validates gate 3 against the VM. Intended chains (per the plan's retire-
+    ``remove_imaging_report.py`` / LUMIA-live decision):
+      * ``no_img_report`` -> ``[{fn: window, before: "6mo", after: "0d"},
+        {fn: code_filter, exclude_stanford: true}]`` (reproduces the legacy
+        ``get_described_events_window`` window + ``exclude_report=True`` STANFORD skip).
+      * ``timeline`` -> full timeline; whether the full ``patient_string`` also
+        excludes STANFORD codes is gate-3-VM-gated (confirm before encoding).
+      * ``passthrough`` -> no ``select`` (the adapter auto-passes a pre-rendered
+        timeline string through; filters are inapplicable to already-rendered text).
+    Encoding the chains here now would bake in VM-gated assumptions, so it waits
+    for the wiring pass where gate 3 can verify byte-identity.
+    """
     return {
         "id": "ehr",
         "modality": "text",

@@ -89,11 +89,17 @@ class Assembler:
         )
 
     def to_flat_item(self, blocks: list[ContextBlock]) -> dict[str, Any]:
-        """Collapse blocks to the legacy flat item shape ``{question, image}``.
+        """Collapse blocks to the legacy flat item **container shape**
+        ``{question, image}`` that ``model.create_template`` consumes.
 
         ``question`` = text-block payloads joined in order; ``image`` = all
-        image-block payloads gathered into a list (or ``None``). This is the
-        exact shape ``model.create_template`` consumes today.
+        image-block payloads gathered into a list (or ``None``). This produces the
+        container shape, not the final prompt string: today's ``create_template``
+        receives ``question = dynamic_prompt`` (the task template with
+        ``[PATIENT_TIMELINE]`` already substituted). The hot-path wiring is
+        responsible for building that templated text into the text block(s) before
+        assembly — template stitching stays in the orchestrator (see the module
+        docstring), not here.
         """
         texts = [b.payload for b in blocks if b.is_text and b.payload]
         images: list = []

@@ -10,8 +10,13 @@ Fully inference-time and symmetric with CT/pathology (no offline prep, no
 The flat renderer and the truncator are the **canonical** functions from
 ``meds_timeline_utils`` (imported, not copied) so the string is byte-identical to
 today's ``patient_string`` by construction — this is the "no third formatter
-copy" discipline. The STANFORD/report skip is applied as a ``code_filter`` row
-drop, so we render with ``exclude_report=False``.
+copy" discipline. The adapter **always** renders with ``exclude_report=False``;
+the STANFORD/report skip is delegated to a ``code_filter(exclude_stanford=True)``
+step in the EHR ``select`` chain (same substring predicate). NOTE: the concrete
+per-preset ``select`` chains (e.g. ``window(6mo)`` + ``code_filter`` for the
+no-imaging-report cohort) are wired when the hot-path pass consumes the presets
+and validates gate 3 on the VM — the mechanism lives here; the preset wiring does
+not yet (see ``presets.py``).
 
 LUMIA field coverage (VM-gated, see ``_lumia_event_to_row``): ``markup.md``
 documents ``<event>`` with only ``type/code/name/note_id/provider_id/care_site_id``
