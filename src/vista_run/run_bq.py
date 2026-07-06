@@ -1,7 +1,6 @@
 import os
 import argparse
 import json
-import random
 import yaml
 import torch
 import pandas as pd
@@ -99,14 +98,18 @@ class TaskOrchestrator:
         # 4.25. Initialize GCP Storage Client for NIfTI images
         self.storage_client = storage.Client(project=self.project_id)
 
-        # 5. Initialize Model
+        # 5. Initialize model adapter. Weights + processor load LAZILY via
+        # _ensure_model_loaded() — kept out of __init__ so the Phase-2 config-context
+        # viewer can construct the orchestrator weight-free (adapter construction is
+        # cheap; adapter.load() is the heavy GPU/weight step).
         self.adapter = load_model_adapter(
-            self.model_type, 
-            self.model_name, 
-            self.cfg['model'].get("device", "auto"), 
+            self.model_type,
+            self.model_name,
+            self.cfg['model'].get("device", "auto"),
             self.cfg['runtime']['cache_dir']
         )
-        self.model, self.processor = self.adapter.load()
+        self.model = None
+        self.processor = None
 
         # 6. Initialize retrieval (optional)
         retrieval_cfg = self.cfg.get("retrieval", {})
@@ -134,6 +137,17 @@ class TaskOrchestrator:
             "TOKENIZERS_PARALLELISM": "false"
         })
 
+    def _ensure_model_loaded(self):
+        """Load model weights + processor on first use (idempotent).
+
+        Kept out of __init__ so the config-context viewer (Phase 2) can build the
+        orchestrator's data/prompt path without a GPU or weights. `run_inference`
+        calls this before any inference, preserving the original load-once behavior.
+        """
+        if self.model is None:
+            self.model, self.processor = self.adapter.load()
+        return self.model, self.processor
+
     def _count_prompt_tokens(self, text: str) -> int:
         """Count token length of prompt text using model tokenizer."""
         if text is None:
@@ -153,6 +167,8 @@ class TaskOrchestrator:
         return len(text.split())
 
     def run_inference(self, task_names=None):
+        # Load model weights before any inference (kept out of __init__ for the viewer).
+        self._ensure_model_loaded()
         # Determine which tasks to run
         tasks_to_run = self.valid_tasks
         if task_names:
@@ -483,48 +499,23 @@ class TaskOrchestrator:
             print(f"!!! Path CSV has no 'path_image_path' column. Columns: {list(df.columns)}")
             return None
 
-        def folder_name_from_path_image_path(path_image_path):
-            if pd.isna(path_image_path) or path_image_path is None:
-                return None
-            s = str(path_image_path).strip()
-            if not s:
-                return None
-            # Last part of split by backslash (filename or path tail)
-            last_after_backslash = s.split("\\")[-1]
-            # Last part after forward slash (filename in case path had no backslash)
-            filename = last_after_backslash.split("/")[-1]
-            # Remove .tiff or .tif to get folder name
-            folder_name = Path(filename).stem
-            return folder_name or None
+        # Tile sampling is lifted into the pathology adapter (folder resolution +
+        # Random(seed) seeded once + per-row random.sample in row order + all-if-<=n
+        # + str(resolve()) + the empty-tile row drop) — byte-identical to the former
+        # inline loop; see context/adapters/pathology.PathologyAdapter.materialize.
+        from context.adapters.pathology import PathologyAdapter
+        path_adapter = PathologyAdapter(
+            config={"select": {"fn": "random_n", "n": num_tiles_per_slide, "seed": seed}}
+        )
 
         sample_val = df[path_image_col].dropna().astype(str).str.strip()
         sample_val = sample_val[sample_val != ""]
         if len(sample_val) > 0:
-            example_folder = folder_name_from_path_image_path(sample_val.iloc[0])
+            example_folder = path_adapter.folder_name_from_path_image_path(sample_val.iloc[0])
             if example_folder:
                 print(f"    Using column '{path_image_col}'; example folder: {test_patch_dir}/{example_folder}")
 
-        random.seed(seed)
-        path_tile_paths_list = []
-        for idx, row in df.iterrows():
-            folder_name = folder_name_from_path_image_path(row.get(path_image_col))
-            if not folder_name:
-                path_tile_paths_list.append([])
-                continue
-            folder = test_patch_dir / folder_name
-            if not folder.is_dir():
-                path_tile_paths_list.append([])
-                continue
-            jpgs = sorted(folder.glob("*.jpg")) + sorted(folder.glob("*.jpeg"))
-            if len(jpgs) <= num_tiles_per_slide:
-                chosen = [str(p.resolve()) for p in jpgs]
-            else:
-                chosen = [str(p.resolve()) for p in random.sample(jpgs, num_tiles_per_slide)]
-            path_tile_paths_list.append(chosen)
-
-        df = df.copy()
-        df['path_tile_paths'] = path_tile_paths_list
-        df = df[[len(p) > 0 for p in path_tile_paths_list]].copy()
+        df = path_adapter.materialize(df, test_patch_dir, path_image_col, drop_empty=True)
         if df.empty:
             print(f"!!! No rows with tiles under {test_patch_dir}/<folder_name> for task '{task_name}'")
             print(f"    (Folder name = last segment of path_image_path after \\ then /, with .tiff/.tif removed)")

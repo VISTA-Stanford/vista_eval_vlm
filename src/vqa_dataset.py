@@ -6,7 +6,10 @@ from torch.utils.data import Dataset
 from pathlib import Path
 import io
 import tempfile
-from vista_run.utils.utils_inference import pad_to_512, pad_to_size, normalize_slice
+from vista_run.utils.utils_inference import pad_to_512, pad_to_size
+# CT windowing/normalization now live in context.windowing (single home; the CT
+# adapter shares them). multi_window_rgb == legacy `window`, grayscale == normalize_slice.
+from context.windowing import multi_window_rgb, grayscale
 
 # Bucket prefix for NIfTI files (same as download_subsampled_ct / weill)
 DEFAULT_NIFTI_BUCKET_PREFIX = "chaudhari_lab/ct_data/ct_scans/vista/nov25"
@@ -38,23 +41,6 @@ def _nifti_path_to_blob_and_filename(nifti_path: str, bucket_name: str = "su-vis
         bucket_filename = filename
     blob_path = f"{prefix}/{bucket_filename}"
     return blob_path, bucket_filename
-
-def norm(ct_vol: np.ndarray, min_val: float, max_val: float) -> np.ndarray:
-    """Window and normalize CT imaging Houndsfield values to values 0 - 255."""
-    ct_vol = np.clip(ct_vol, min_val, max_val)  # Clip the imaging value range
-    ct_vol = ct_vol.astype(np.float32)
-    ct_vol -= min_val
-    ct_vol /= (max_val - min_val)  # Norm to values between 0 - 1.0
-    ct_vol *= 255.0  # Norm to values been 0 - 255.0
-    return ct_vol
-
-def window(ct_vol: np.ndarray) -> np.ndarray:
-    """Window CT slice imaging with three windows (wide, mediastinum(chest), brain).
-    Imaging will appear color when visualized, RGB channels contain different
-    representations of the data.
-    """
-    window_clips = [(-1024, 1024), (-135, 215), (0, 80)]
-    return np.stack([norm(ct_vol, clip[0], clip[1]) for clip in window_clips], axis=-1)
 
 class PromptDataset(Dataset):
     def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None):
@@ -93,14 +79,14 @@ class PromptDataset(Dataset):
         """
         if self.is_gemma:
             # Apply windowing function for gemma models
-            windowed_slice = window(ct_slice)
+            windowed_slice = multi_window_rgb(ct_slice)
             # Round slice voxels to nearest integer number
             windowed_slice = np.round(windowed_slice, 0).astype(np.uint8)
             # Convert to PIL Image (RGB mode since windowing creates 3 channels)
             pil_img = Image.fromarray(windowed_slice, mode='RGB')
         else:
             # Standard normalization for non-gemma models
-            normalized_slice = normalize_slice(ct_slice)
+            normalized_slice = grayscale(ct_slice)
             pil_img = Image.fromarray(normalized_slice, mode='L')
         
         # Resize to target size (448 for gemma, 512 for others)
