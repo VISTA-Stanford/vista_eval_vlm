@@ -2,7 +2,7 @@ Reference: docs/claude_ops.md
 
 # VLM eval roadmap: modality-adapter ContextBlocks + leaf selectors + config-context viewer
 
-**Status: Draft** (2026-07-05) · *re-baselined around the ContextBlock modality-adapter architecture (Phil's feedback + sketch). Two Codex passes + a fresh-Claude pass applied; **Phil's OQ pass + LUMIA/meds_tools research + fresh-Claude review applied 2026-07-05** — selection is leaf-only (hierarchy upstream in VISTABench); EHR serialization **re-homed as an offline prep step**; meds_tools **depended, pinned by SHA**; inline **deferred to Phase 1.5**. Phase 1 unblocked.*
+**Status: Draft** (2026-07-06) · *re-baselined around the ContextBlock modality-adapter architecture (Phil's feedback + sketch). Two Codex passes + a fresh-Claude pass applied; **Phil's OQ pass + LUMIA/meds_tools research + fresh-Claude review applied 2026-07-05**; **serialization interrogation applied 2026-07-06** — selection is leaf-only (hierarchy upstream in VISTABench); **EHR consumes full LUMIA timelines as input (given upstream) — the EHR filter chain runs LIVE at inference over the structured LUMIA, rendered to today's flat format; no offline prep, no CSV re-materialization, no `meds_reader`/ontology/`meds_tools` in-repo**; inline **deferred to Phase 1.5**. Phase 1 unblocked.*
 
 > This roadmap **subsumes** the in-flight *GCP v1_5 multimodal VLM eval stand-up* plan
 > (branch `docs/vlm-eval-gcp-v1_5-standup-plan`). That plan becomes **Phase 0** here — the runnable
@@ -38,9 +38,23 @@ shaped this plan. Anchors:
    Phase-0 legacy behavior if timing demands — **not** blocked on the framework.
 
 **Fresh-Claude review (2026-07-05) resolved three items the plan had wrongly called "no blocking
-preconditions":** (a) **EHR serialization layer** → **re-home the offline prep** (see Phase 1); (b)
-**meds_tools install reality** → **depend, pin by SHA**, relax the spurious floor upstream (see Reuse);
-(c) **inline scope** → **defer to Phase 1.5** (above). With these, Phase 1 is unblocked.
+preconditions":** (a) the **EHR serialization layer**; (b) **meds_tools install reality**; (c) **inline
+scope** → **defer to Phase 1.5** (above).
+
+**Serialization interrogation (2026-07-06 — Phil) supersedes (a) and (b).** The 2026-07-05 answer to (a)
+was "re-home the offline prep"; interrogating what *serialization* actually denotes here dissolved that.
+"Serialize" conflated two transforms: **`OMOP → LUMIA`** (the DB + ontology-heavy one) and **`LUMIA →
+flat patient_string`** (pure `xml.etree` + string). **Decision: assume the full `OMOP → LUMIA` step is done
+upstream and the per-patient LUMIA timeline (`gs://vista_bench/thoracic_cohort_lumia/{person_id}.xml`) is
+given as input.** The only serialization left in-repo is `LUMIA → flat`, which needs no `meds_reader`, no
+ontology, no `meds_tools`. Consequences: **(a′)** the EHR adapter **ingests LUMIA and runs the filter chain
++ flat-render + truncate LIVE at inference** — full parity with the CT/pathology/assembly axes; **no offline
+prep, no `patient_string` CSV re-materialization**. **(b′)** the `meds_tools` **SHA-pin / `py>=3.14` floor /
+`uv.sources`** apparatus is **moot** — it was all about the `get_described_events_window` *fetch*, which is
+no longer called. With these, Phase 1 is unblocked. ⚠ **One VM-verifiable dependency:** byte-identical
+reproduction of today's flat string requires the LUMIA corpus to carry the flat renderer's fields
+(`numeric_value`/`unit`/note `text_value`, a distinct `description`) and to cover the eval cohorts — a
+Phase-1 precondition below; if it doesn't, gate 1 becomes a *declared-delta* (OQ-K), not a blocker.
 
 ---
 
@@ -52,10 +66,11 @@ Two coupled aims, sequenced as one roadmap:
    single `experiment` string simultaneously chooses the data loader, the text composition, *and* the
    image selection+preprocessing — branched across three files. The aim: a new
    `(CT-slice-selector × EHR-filter-chain × pathology-patch-selector × assembly)` combination becomes a
-   **config edit**, not a three-file code change. ⚠ **Caveat (fresh-Claude):** EHR filter/serialize is
-   an **offline/prep** step (re-materialization), so changing the EHR filter chain re-materializes the
-   `patient_string` CSVs; CT slice / pathology patch / truncation / assembly are **inference-time**
-   config edits.
+   **config edit**, not a three-file code change. **Every axis is a live inference-time edit** — including
+   the EHR filter chain, which runs over the **given LUMIA timeline** (parse → filter → flat-render →
+   truncate) with **no re-materialization** (serialization interrogation 2026-07-06 — supersedes the earlier
+   "EHR is offline/prep" caveat, which was an artifact of re-fetching from `meds_reader` rather than
+   consuming LUMIA).
 
 2. **Add a config-context VIEWER (HTML).** Render exactly what a given config feeds each model — the
    **assembled ContextBlocks** (composed prompt text plus the selected CT slices / pathology tiles as
@@ -69,7 +84,7 @@ The `experiment` string is a **god-enum doing three jobs**, branched in three pl
 | Job | Where it branches today | Symptom |
 |---|---|---|
 | Which **data loader** | `run_bq.py:run_inference` + 6 `_load_*` methods | every new combo needs a new `_load_*` |
-| How **text/EHR** is composed | `run_bq.py:_build_prompts_for_experiment` (`:732`) + offline `remove_imaging_report.py` | timeline / +report / +path_note / retrieval hardcoded per-name; serialize is offline |
+| How **text/EHR** is composed | `run_bq.py:_build_prompts_for_experiment` (`:732`) + DB-refetch fork `remove_imaging_report.py` | timeline / +report / +path_note / retrieval hardcoded per-name; the filtered variant re-fetches from `meds_reader` + re-serializes offline instead of filtering the LUMIA it already has |
 | How **images** are selected + preprocessed | `vqa_dataset.py:__getitem__` (`:112`) | CT slice logic **duplicated across 3 branches (covering 6 experiments)** |
 
 Concrete coupling debt this roadmap pays down:
@@ -81,9 +96,10 @@ Concrete coupling debt this roadmap pays down:
   (`02-ct-scans.md:45`) already contradict the code.
 - **CT preprocessing is keyed off `is_gemma`** (`vqa_dataset.py:78,94`), not config.
 - **Pathology tile sampling is hardcoded** in `run_bq.py:461` (`num_tiles_per_slide = 100`, `seed = 42`).
-- **The EHR string builder is a divergent offline fork** (`meds_timeline_utils.py:185`, used at
+- **The EHR string builder is a divergent DB-refetch fork** (`meds_timeline_utils.py:185`, used at
   `remove_imaging_report.py:69`) with **no composable selection** — you cannot say "only radiology
-  notes" or "codes within 1yr" without editing code.
+  notes" or "codes within 1yr" without editing code. Worse, its "no imaging report" variant **re-fetches
+  the whole timeline from `meds_reader` and re-serializes** rather than filtering the LUMIA it already has.
 - **Assembly is implicit and flat** — no way to place a scan inline at its acquisition point (Phase 1.5).
 - **The one good seam already exists:** `timeline_truncation: {mode, k}` is config-driven via
   `truncate_timeline`. The leaf selectors + EHR filter chain generalize it.
@@ -98,40 +114,46 @@ that was missing.
   (`contrastive-3d-onc`, `MerlinOnc`, `vista-ct`) are 3D MONAI/torch encoder pipelines — none expose a
   2D-axial-slice-for-VLM selector. ⇒ **The CT slice selectors are built locally** (pure-numpy index
   math). The `(inputs, ctx) -> selection` signature could later host a learned selector (OQ-C, deferred).
-- **EHR timeline — REUSABLE, but it is an OFFLINE step (fresh-Claude — load-bearing).** **"LUMIA" is a
-  meds2text XML/JSON *serialization format*** (`OMOP → BQ → MEDS → meds_reader → LUMIA text`), not a
-  module; corpus `gs://vista_bench/thoracic_cohort_lumia/{person_id}.xml` (schema `meds2text/docs/markup.md`).
-  **Today serialization runs offline** in `remove_imaging_report.py:69` (the local fork
-  `meds_timeline_utils.get_llm_event_string` *with* `exclude_report`/STANFORD skip, `:185,189,215-217`),
-  writing a `patient_string` column to CSVs; **inference reads the pre-serialized string** (`run_bq.py`
-  `find_bq_timeline_column` → `truncate_timeline` + concat, `:305,732+`). **Decision: the EHR adapter
-  re-homes this offline prep** (not serialize at inference) — so `meds_reader` DB + ontology stay OUT of
-  the inference VM. Reusable pieces:
-  - **Fetch + window:** `meds_tools.patient_timeline.get_described_events_window(database, lookup_table,
-    subject_id, end_time, start_time=None, days_before=None)` — **already imported/used in-repo** at
-    `remove_imaging_report.py:17`, `meds_get_report_note.py:80` (commented out only in the *inference*
-    file `run_bq.py:18`), so meds_tools is already a **de-facto prep dependency**.
-  - **Serialize:** `meds_tools.get_llm_event_string(df, include_text=True, max_text_len=None)` — **no
-    `exclude_report` kwarg**, so the STANFORD/report skip becomes a **DataFrame-level filter step
-    upstream** (the net-new `note_type_filter`/`code_filter` seam), applied at prep.
+- **EHR timeline — REUSABLE, and now fully at inference (serialization interrogation 2026-07-06 —
+  load-bearing).** **"LUMIA" is a meds2text XML *serialization format*** (`OMOP → BQ → MEDS → meds_reader →
+  LUMIA`), not a module; the full per-patient timeline is **given as input**: corpus
+  `gs://vista_bench/thoracic_cohort_lumia/{person_id}.xml` (schema `meds2text/docs/markup.md`). LUMIA is
+  **structured** (`<eventstream>/<encounter>/<events>/<entry timestamp>/<event type code name>`), so the
+  whole filter chain maps directly onto it — `window`→`<entry timestamp>`, `note_type_filter`→`<event type>`
+  (+ provider `speciality`), `code_filter`/STANFORD-skip→`<event code>`. **Decision: the EHR adapter ingests
+  LUMIA and runs filter → flat-render → truncate LIVE at inference** — `meds_reader` DB + ontology never
+  enter the repo (they produced LUMIA upstream). Today's DB-refetch fork (`remove_imaging_report.py`,
+  `find_bq_timeline_column` at `run_bq.py:257`) is **retired**, not re-homed. Reusable / net-new pieces:
+  - **Ingest (net-new, cheap):** read + parse the per-patient LUMIA `.xml` (stdlib `xml.etree`) → an event
+    DataFrame. Replaces `get_described_events_window` — the *only* DB+ontology consumer — entirely. No
+    `meds_tools`, no `meds_reader`, no ontology.
+  - **Filter (net-new seam):** `window` / `note_type_filter` / `code_filter(exclude_stanford)` as DataFrame
+    ops over the parsed events. The STANFORD/report skip is just a `code_filter` row-drop (the old
+    `exclude_report=True` kwarg disappears).
+  - **Flat-render:** reproduce today's line format `[time] | code (description) | VALUE numeric+unit | text`
+    **field-for-field** — the local `meds_timeline_utils.get_llm_event_string` (`:185`, imports only
+    `re`+`pandas`) is the **spec**; vendor it into the EHR adapter (same discipline as lifting
+    `truncate_timeline` verbatim). Chosen over LUMIA-native output to keep golden gate 1 byte-identical.
   - **Truncate:** lift `truncate_timeline` (`meds_timeline_utils.py:62`, `max_chars`/`last_k_events`) —
-    stays at **inference**. ⚠ It has a latent quirk: `first_4_rows` is init `''` and never populated, so
-    it prepends `'' + '\n'`. **Lift verbatim (byte-preserving for golden gate 1) — do NOT "fix" it during
-    the lift.**
+    at **inference**. ⚠ Latent quirk: `first_4_rows` is init `''` and never populated, so it prepends
+    `'' + '\n'`. **Lift verbatim (byte-preserving for golden gate 1) — do NOT "fix" it during the lift.**
   - **Summarize (optional):** lifting `_summarize_timeline_for_context[_batch]`
     (`src/retrieval/iterative_retrieval.py:62-138`, VLM-wired) is **a small cluster, not a one-liner** —
     it drags `_run_vlm_text_only`/`_batch`, `_extract_answer`, `TIMELINE_SUMMARY_TEMPLATE`, and a
     **raw-timeline-on-exception fallback** (`:92,137`). **Decide the fallback (fail loud vs swallow)** —
-    per `claude_ops.md`, don't default silently.
+    per `claude_ops.md`, don't default silently. (Model-backed → not weight-free; the viewer rejects/marks it.)
   - ⚠ **"No third formatter copy" — a third copy ALREADY exists** in
     `src/data_tools/OMOP_meds_query/test_meds_tools.py:6`; consolidate it too.
-  - **Pin (OQ-G — depend, pin by SHA):** `meds_tools` @ `e2a2a59` (`github.com:VISTA-Stanford/meds_tools`).
-    ⚠ **Dependency reality (fresh-Claude):** **no `v0.1.0` git tag exists** (pin by SHA; the `version`
-    field says 0.1.0); `pyproject.toml` has a **likely-spurious `requires-python >=3.14` floor** (deps are
-    mundane pandas/google-cloud — **relax it upstream**, don't upgrade the eval VM) and **hardcoded
-    local-path `[tool.uv.sources]`** (`/home/minwoos/repos/vista_bench`, `vista-ct` — won't resolve off
-    the author's machine). Because we **re-home offline**, meds_tools only needs to work in the **prep
-    env** (where it's already installed), never the inference VM — this defuses the floor/local-path risk.
+  - **`meds_tools` (OQ-G) — NO LONGER A DEPENDENCY.** Consuming LUMIA deletes the
+    `get_described_events_window` fetch, so the SHA-pin @ `e2a2a59`, the spurious `requires-python >=3.14`
+    floor, and the hardcoded local-path `[tool.uv.sources]` (`/home/minwoos/repos/…`) are all **moot** —
+    nothing to pin or install.
+  - ⚠ **VM precondition (byte-identical hinges on this):** confirm the LUMIA corpus actually carries the
+    flat renderer's fields — lab `numeric_value`/`unit`, note-body `text_value`, a `description` distinct
+    from `name` — and covers the eval cohorts. `markup.md` documents `<event>` with only
+    `type/code/name/note_id/provider_id` (element text = a state token like `start`) and is abbreviated;
+    diff one real `.xml` against `get_llm_event_string`'s inputs. If a field is absent, gate 1 drops to a
+    **declared-delta** (OQ-K); if coverage is partial, retain a DB-fetch fallback only for the gap.
 - **Pathology tiles — vista_eval_vlm owns it.** `tile_wsi.py` (OpenSlide + Otsu extraction) is canonical
   and good. The *sampling* ("100 random, seed 42", `run_bq.py:461`) lifts into the pathology adapter's
   **patch** selector; leave room for `tissue_top_n`. **Specimen/block/slide is upstream** (OQ-A).
@@ -141,7 +163,7 @@ that was missing.
 | Old job (god-enum) | New home |
 |---|---|
 | **Which data loader** (cohort) | `cohort.source` — *separate concern, Phase 3* |
-| **Text/EHR composition** | **EHR adapter** — filter chain + serialize at **prep** (re-homed offline) → materialized `patient_string`; inference reads it + `truncate` |
+| **Text/EHR composition** | **EHR adapter** — ingest given LUMIA → filter chain → flat-render → `truncate`, **all live at inference** (no prep, no materialized CSV) |
 | **Image modality present** | which **adapters** appear in the block list (`ct`, `pathology`) |
 | **Image selection** | the adapter's **leaf selector** (CT slice; pathology patch) |
 | **Image preprocess** | the adapter's **preprocess** step, `by_model`-resolved off `MODEL_REGISTRY` (OQ-B) |
@@ -170,13 +192,14 @@ Raw input ──(ingest)──> normalized ──(contextualize: select + prepro
 - **`ContextBlock`** — `{id, modality, representation, payload, metadata}`. `metadata` carries the
   acquisition **timestamp** (for Phase-1.5 inline), the selector params applied, and provenance.
 - **`ModalityAdapter`** (ABC) — `ingest(raw) -> normalized`, `contextualize(normalized, cfg) -> ContextBlock`.
-  Adapters: `ehr`, `ct`, `pathology`. In `ADAPTER_REGISTRY`. **The EHR adapter's filter+serialize runs at
-  prep (re-homed offline); its inference-time job is read-materialized-string + truncate.**
+  Adapters: `ehr`, `ct`, `pathology`. In `ADAPTER_REGISTRY`. **The EHR adapter is fully inference-time,
+  symmetric with CT/pathology: `ingest` = read+parse the given LUMIA `.xml`; `contextualize` = filter chain
+  → flat-render → truncate. No prep step, no DB/ontology.**
 - **Leaf selector per modality** — `(candidates, ctx) -> selected`, deterministic today.
   - **CT (slice):** `evenly_spaced_k(k)`, `every_n(n)`, `center`, `center_k(k)`, `slice_range(lo,hi)`, `all`.
   - **Pathology (patch):** `random_n(n, seed)`, `all`; future `tissue_top_n`.
-  - **EHR (filter chain, applied at prep):** `window`, `note_type_filter`, `code_filter(exclude_stanford)`,
-    optional `summarize`, then serialize (→ `meds_tools`) → materialized `patient_string`.
+  - **EHR (filter chain, applied live over LUMIA):** `window`, `note_type_filter`, `code_filter(exclude_stanford)`,
+    optional `summarize`, then flat-render (vendored `get_llm_event_string` spec — not `meds_tools`) → `patient_string`.
   - **Not built here:** study/series (CT), specimen/block/slide (pathology) — upstream in VISTABench (OQ-A).
 - **`Assembler`** — `assemble(blocks, strategy) -> typed content sequence`. `ordered` ships in Phase 1;
   `inline_by_timestamp` in Phase 1.5.
@@ -233,11 +256,12 @@ Introduce `src/context/`; make `PromptDataset` + the prompt builder **stop branc
 - **CT adapter** — **slice** selector + windowing (config not `is_gemma`; `by_model` off `MODEL_REGISTRY`).
 - **Pathology adapter** — **patch** selector lifted from `run_bq.py:461`; must not duplicate `tile_wsi.py`;
   folder resolution (`:486-498`) moves with it.
-- **EHR adapter (offline re-home)** — re-homes `remove_imaging_report.py`'s serialization: filter chain
-  (`window/note_type_filter/code_filter`, optional `summarize`) → serialize (→ `meds_tools`
-  `get_llm_event_string`; STANFORD skip = upstream DataFrame filter) → materialized `patient_string`.
-  Inference reads the materialized string + lifts `truncate_timeline` (verbatim). **Decide the summarize
-  failure mode.**
+- **EHR adapter (LUMIA-in, live)** — `ingest` reads+parses the given LUMIA `.xml` (stdlib `xml.etree`) → event
+  DataFrame; `contextualize` runs the filter chain (`window/note_type_filter/code_filter`, optional `summarize`;
+  STANFORD skip = a `code_filter` row-drop) → **flat-render** to today's line format (vendored
+  `get_llm_event_string` as the field-for-field spec) → `patient_string` → lifts `truncate_timeline`
+  (verbatim). All inference-time; retires the `remove_imaging_report.py` DB-refetch fork. **Decide the
+  summarize failure mode.**
 - **`Assembler`** — `ordered` + the **typed content sequence** + the **`supports_inline` seam** (default
   False, fail-closed preflight). Actual interleaving = Phase 1.5.
 - **`normalize_experiments`** + **`presets.py`** — resolve a block-list entry (or bare legacy name) to a
@@ -266,7 +290,7 @@ src/context/
     base.py          # ModalityAdapter ABC
     ct.py            # slice selector + windowing -> ContextBlock
     pathology.py     # patch selector -> ContextBlock
-    ehr.py           # (prep) filter chain + serialize(-> meds_tools); (inference) read patient_string + truncate
+    ehr.py           # ingest+parse LUMIA .xml -> filter chain -> flat-render (vendored get_llm_event_string) -> truncate (all inference)
   selectors/
     ct_selectors.py  # evenly_spaced_k, every_n, center, center_k, slice_range, all
     path_selectors.py# random_n(seed), all  [+ future tissue_top_n]
@@ -294,13 +318,13 @@ experiments:
       - id: ehr
         modality: text
         adapter: ehr
-        config:                                   # NOTE: select+serialize apply at PREP (re-materialize)
+        config:                                   # NOTE: select+serialize apply LIVE at inference over the given LUMIA
           select:
             - { fn: window, before: 365d, after: 0d }
             - { fn: note_type_filter, keep: [radiology, pathology] }
             - { fn: code_filter, exclude_stanford: true }
             # - { fn: summarize, model: <id> }     # optional cluster lift; failure mode must be decided
-          serialize:  { style: timeline_xml }
+          serialize:  { style: flat_timeline }    # LUMIA -> today's flat line format (byte-for-byte spec = get_llm_event_string)
           truncation: { mode: last_k_events, k: 100 }   # applied at INFERENCE
       - id: ct
         modality: volume3d
@@ -313,14 +337,14 @@ experiments:
     cohort: path
     assembly: ordered
     blocks:
-      - { id: ehr,  modality: text,      adapter: ehr,       config: { select: [], serialize: {style: timeline_xml, include_path_note: true}, truncation: {mode: last_k_events, k: 100} } }
+      - { id: ehr,  modality: text,      adapter: ehr,       config: { select: [], serialize: {style: flat_timeline, include_path_note: true}, truncation: {mode: last_k_events, k: 100} } }
       - { id: path, modality: patches2d, adapter: pathology, config: { select: { fn: random_n, n: 100, seed: 42 } } }
 
   - axial_all_image                                # bare string still works -> presets.py expands it
 ```
 
-⚠ Changing an EHR `select`/`serialize` value **re-materializes the `patient_string` CSVs** (prep step);
-CT slice / pathology patch / `truncation` / `assembly` are live inference-time config edits.
+✅ Changing an EHR `select`/`serialize` value is a **live inference-time edit** (re-filters the given LUMIA in
+memory) — **no re-materialization** — at full parity with CT slice / pathology patch / `truncation` / `assembly`.
 
 ### Normalized experiment contract (Codex + fresh-Claude — load-bearing)
 
@@ -347,23 +371,27 @@ contract (`_setup_output_and_resume` deletes + no-resume, `:719`); the 6 loaders
 **defaults = prior runtime (OQ-H): 100 tiles/slide, per-preset slice counts (30/50/10).**
 
 A **staged golden-output test** (Phase 1 verification) — a single "pure no-op" claim isn't credible because
-Phase 1 also moves windowing dispatch and re-homes the EHR serializer. Per legacy preset, **sorted by
+Phase 1 also moves windowing dispatch and switches the EHR source to LUMIA (+ vendors the flat renderer).
+Per legacy preset, **sorted by
 `(person_id, index)`** before diffing (fresh-Claude: `run_bq` writes as-processed + appends on resume — the
 harness must impose ordering; `index` is a unique per-file join key):
 
-1. **Legacy-equivalence (byte-identical).** Legacy windowing dispatch + local serializer: full-string
-   `dynamic_prompt` + selected slice/tile indices + image **hashes** identical. The true no-op gate.
-   (Lifting `truncate_timeline` verbatim — incl. the `first_4_rows=''` quirk — keeps this byte-identical.)
+1. **Legacy-equivalence (byte-identical) — imaging + structure.** Legacy windowing dispatch: full-string
+   `dynamic_prompt` + selected slice/tile indices + image **hashes** identical. The true no-op gate for the
+   CT/pathology/assembly/truncation surface. (Lifting `truncate_timeline` verbatim — incl. the
+   `first_4_rows=''` quirk — keeps truncation byte-identical; the EHR *string* equivalence is gate 3.)
 2. **`by_model` preprocessing delta.** Flip windowing `is_gemma → by_model`; image bytes identical *per model*.
-3. **EHR re-home / meds_tools delta.** The re-homed serializer + upstream filter vs the current offline fork
-   on a canonical MEDS window, within a **declared allowlist** — where **"ordering" means within-line field
-   order ONLY; event/line order must be identical** (both serializers iterate chronologically, so it holds;
-   inline placement in P1.5 depends on it). ⚠ **The gate must regenerate the materialized `patient_string`
-   CSVs and confirm inference consumes the new strings** — comparing two offline serializers alone proves
-   nothing about the live path.
+3. **EHR LUMIA-render delta.** The LUMIA-ingest + live filter + flat-render vs the current `patient_string`
+   for the same patient/window, within a **declared allowlist** — where **"ordering" means within-line field
+   order ONLY; event/line order must be identical** (both render chronologically, so it holds; inline
+   placement in P1.5 depends on it). ⚠ **Runs entirely on the live inference path — there is no CSV to
+   regenerate.** Assert the LUMIA-derived `dynamic_prompt` equals the current one within the allowlist, and
+   that a *filtered* config (e.g. `note_type_filter`) drops exactly the right events live. **Conditioned on
+   the LUMIA field-coverage check** (Reuse ⚠): a missing field moves this to a declared-delta (OQ-K), not a failure.
 
-> **OQ-K:** gate 1 byte-equality is the target, verified on one example first; a declared-delta fallback
-> yielding equivalent results is acceptable — cross-version repro (pre-v1.5) is not a goal.
+> **OQ-K:** byte-equality is the target — gate 1 for imaging/structure, gate 3 for the EHR string — verified
+> on one example first; a **declared-delta fallback** yielding equivalent results is acceptable (for the EHR
+> string this is the LUMIA-field-coverage escape hatch); cross-version repro (pre-v1.5) is not a goal.
 
 ## Config-context viewer — detailed spec (Phase 2)
 
@@ -400,11 +428,13 @@ harness must impose ordering; `index` is a unique per-file join key):
 - **Downstream `experiments` consumers (update together):** `final_metrics.py:47`, `all_model_response.py`
   (`:37,65,75`), `check_image_usage.py`, `ct_experiment_plot.py` (`:186` `set()` **and** delete
   `parse_experiment_comments` `:53-66` + rewire the `:190` call site).
-- **EHR (offline re-home):** `src/data_tools/OMOP_meds_query/remove_imaging_report.py` (the serialization
-  step moves into the EHR adapter's prep path), `src/data_tools/utils/meds_timeline_utils.py` (lift
-  `truncate_timeline` verbatim), `src/retrieval/iterative_retrieval.py` (lift the `_summarize…` cluster;
-  decide the fallback), and consolidate the third serializer copy in
-  `src/data_tools/OMOP_meds_query/test_meds_tools.py:6`. STANFORD/report skip → upstream DataFrame filter.
+- **EHR (LUMIA-in, live):** retire the DB-refetch fork `src/data_tools/OMOP_meds_query/remove_imaging_report.py`
+  (its `get_described_events_window` fetch → LUMIA ingest+parse in the EHR adapter);
+  `src/data_tools/utils/meds_timeline_utils.py` (vendor `get_llm_event_string` as the flat-render spec + lift
+  `truncate_timeline` verbatim); `src/retrieval/iterative_retrieval.py` (lift the `_summarize…` cluster;
+  decide the fallback); consolidate the third formatter copy in
+  `src/data_tools/OMOP_meds_query/test_meds_tools.py:6`. STANFORD/report skip → a `code_filter` row-drop.
+  **No `meds_tools`/`meds_reader`/ontology dependency.**
 - `configs/all_tasks.yaml` — new schema. **Phase 0.5:** `vqa_dataset.py:198-205`, `docs/02-ct-scans.md:45`.
 - `docs/02-ct-scans.md`, `docs/01-pathology-and-path-tools.md`, `docs/04-running-the-pipeline.md`,
   `docs/05-retrieval.md` — update to the adapter/selector/filter-chain/assembly model.
@@ -422,19 +452,21 @@ wrongly called "no preconditions" — EHR layer, meds_tools install, inline scop
 - **D** — inline **fails closed** at preflight via `supports_inline` on `BaseVLMAdapter` (default False).
 - **E** — drop the buggy `i*0.1` sampler.
 - **F** — cohort axis stays Phase 3.
-- **G** — **depend, pin by SHA `e2a2a59`** (no `v0.1.0` tag); relax the spurious `py>=3.14` floor upstream;
-  meds_tools stays a **prep-time** dep (already installed there), off the inference VM.
+- **G** — **superseded (2026-07-06):** `meds_tools` is **not a dependency** — LUMIA-as-input deletes the
+  `get_described_events_window` fetch, so the SHA-pin / `py>=3.14` floor / `uv.sources` concerns are moot.
 - **H** — defaults = prior runtime: 100 tiles/slide, per-preset slice counts.
 - **I** — canonical smoke → PFS `progression_recurrence_free_survival_1_yr` (`_2_yr` alt); no mortality task exists.
 - **J** — viewer token-budget bar; output → su-vista PHI mount; side-by-side optional.
 - **K** — gate-1 byte-identical target (verified on one example); declared-delta fallback OK.
 - **L** — v1_5 substrate inlined; **mixed baseline** (BQ `v1_1` + task JSON `v1_3`).
-- **EHR layer (fresh-Claude)** — **re-home the offline prep** (not serialize at inference).
+- **EHR layer (fresh-Claude, superseded 2026-07-06)** — was "re-home the offline prep"; now **consume the
+  given LUMIA and run filter + flat-render + truncate LIVE at inference** (no prep, no CSV, no DB/ontology).
 - **Inline scope (fresh-Claude)** — **defer to Phase 1.5**; Phase 1 ships the `supports_inline` seam only.
 
 **Small decisions still open (non-blocking):** (i) PFS **1yr vs 2yr** smoke; (ii) `summarize` on/off for the
 first sweep **and its failure mode** (fail loud vs swallow); (iii) side-by-side in the first viewer cut.
-**Verify on VM:** the **prep** env satisfies the meds_tools install (or relax the floor upstream) — see below.
+**Verify on VM:** the LUMIA corpus carries the flat renderer's fields (`numeric_value`/`unit`/`text_value`/
+`description`) and covers the eval cohorts — see below.
 
 ## Pre-implementation checklist
 
@@ -442,11 +474,11 @@ first sweep **and its failure mode** (fail loud vs swallow); (iii) side-by-side 
 - [ ] All **four** readers consume normalized names/labels; `ct_experiment_plot.parse_experiment_comments` deleted + `:190` rewired.
 - [ ] Output path + resume + retrieval-overwrite preserved; defaults = prior runtime.
 - [ ] Leaf selection only (CT slice, path patch, EHR filter chain); study/series & specimen/block/slide upstream (OQ-A); counts read off the block.
-- [ ] EHR filter+serialize re-homed as prep (writes `patient_string`); STANFORD skip = upstream DataFrame filter; `truncate_timeline` lifted **verbatim**; summarize fallback decided; **no third formatter copy** (incl. `test_meds_tools.py:6`).
+- [ ] EHR adapter ingests given LUMIA + filters LIVE at inference (`window/note_type_filter/code_filter`); STANFORD skip = a `code_filter` row-drop; flat-render matches `get_llm_event_string` field-for-field; `truncate_timeline` lifted **verbatim**; summarize fallback decided; **no third formatter copy** (incl. `test_meds_tools.py:6`).
 - [ ] Assembler emits a typed content sequence; `ordered` ships; `supports_inline` on `BaseVLMAdapter` (default False); `inline_by_timestamp` **fails closed at preflight**; real interleaving = Phase 1.5.
 - [ ] Viewer output → su-vista PHI mount + `.gitignore`; weight-free for deterministic selectors; model-backed step rejected-or-marked; model-load split out of `TaskOrchestrator.__init__`.
-- [ ] meds_tools pinned by SHA `e2a2a59` (prep env only); floor relaxed or install confirmed; equivalence fixture green within allowlist.
-- [ ] Staged golden green (sorted by `(person_id, index)`): gate 1 byte-identical, gate 2 `by_model` image-hash-identical, gate 3 EHR re-home within allowlist **with regenerated `patient_string` CSVs**.
+- [ ] LUMIA field-coverage confirmed on a real `.xml` (`numeric_value`/`unit`/`text_value`/`description`) + cohort coverage; **no `meds_tools`/`meds_reader`/ontology dependency**; equivalence fixture green within allowlist.
+- [ ] Staged golden green (sorted by `(person_id, index)`): gate 1 byte-identical (imaging/structure), gate 2 `by_model` image-hash-identical, gate 3 EHR LUMIA-render within allowlist **on the live path (no CSV regen)**.
 
 ## Verification & VM handoff
 
@@ -455,19 +487,22 @@ Executed on the GCP VM (Mac is planner-only). Canonical smoke =
 
 - **Phase 0.5** — 30 `axial_all_image` indices evenly spaced across `[0, depth)`, no clamp; docs match code.
 - **Phase 1 (scope)** — CT slice + pathology patch only; study/series & specimen/block/slide upstream (OQ-A).
-- **Phase 1 (meds_tools install — likeliest breaker, fresh-Claude)** — determine whether `meds_tools` is
-  **already installed/importable in the prep env** (`remove_imaging_report.py`/`meds_get_report_note.py`
-  import it): `python -c "import sys; print(sys.version)"; python -c "from meds_tools import patient_timeline;
-  print(patient_timeline.get_llm_event_string.__doc__)"`. **Expected:** prints; signatures =
-  `get_described_events_window(...)` + `get_llm_event_string(df, include_text, max_text_len)` (**no
-  `exclude_report`**). **Stop:** `ModuleNotFoundError` / a `requires-python >=3.14` or local-path
-  `[tool.uv.sources]` resolution error — then relax the floor upstream (do not upgrade the VM).
+- **Phase 1 (LUMIA field-coverage — likeliest breaker)** — confirm the corpus carries the flat renderer's
+  fields and covers the eval cohorts. Pull one real `.xml` and diff its field set against
+  `get_llm_event_string`'s inputs: `python -c "import xml.etree.ElementTree as ET; r=ET.parse('<one>.xml').getroot();
+  print({a for e in r.iter('event') for a in e.attrib}); print([e.text for e in list(r.iter('event'))[:3]])"`.
+  **Expected:** events expose (or the corpus otherwise carries) `code`, a `description`/`name`, lab
+  `numeric_value`+`unit`, and note-body `text_value`; every eval `person_id` has an `.xml`. **Stop:** a field
+  the flat renderer needs is absent (→ gate 3 becomes a declared-delta, OQ-K) or cohort coverage is partial
+  (→ retain a DB-fetch fallback only for the gap). **No `meds_tools`/`meds_reader`/ontology import is
+  attempted — if the design still needs one, the LUMIA-as-input premise failed; STOP and re-plan.**
 - **Phase 1 (staged golden, sorted)** — harness writes `(index, person_id, dynamic_prompt, selected_indices,
   image_count, path_tile_count, image_hashes, adapter_prompt_string, assembly_mode)` before/after, **sorted by
-  `(person_id, index)`**. Gate 1 byte-identical; gate 2 `by_model` hashes identical per model; gate 3 EHR
-  re-home within allowlist (**within-line field order only; event order identical**) **after regenerating the
-  `patient_string` CSVs** — assert the column feeding `run_bq` changed and one smoke's `dynamic_prompt`
-  reflects it. **Stop:** any gate-1/2 drift; gate-3 outside allowlist; gate 3 not run against regenerated CSVs.
+  `(person_id, index)`**. Gate 1 byte-identical (imaging/structure); gate 2 `by_model` hashes identical per
+  model; gate 3 EHR LUMIA-render within allowlist (**within-line field order only; event order identical**)
+  **on the live inference path — no CSV to regenerate** — assert the LUMIA-derived `dynamic_prompt` matches
+  the current one, and that a *filtered* config drops exactly the right events. **Stop:** any gate-1/2 drift;
+  gate-3 outside allowlist without a declared LUMIA-field delta.
 - **Phase 1 (downstream contract)** — all **four** readers over a config with a legacy string **and** a
   block-list dict; `ct_experiment_plot` shows a correct display label. **Stop:** TypeError on dicts / missing
   experiment / blank display label.
