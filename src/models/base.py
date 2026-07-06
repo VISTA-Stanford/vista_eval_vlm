@@ -31,6 +31,12 @@ def serialize_logprobs(logprobs):
 
 
 class BaseVLMAdapter:
+    # Capability seam for the context assembler (Phase 1). Models that support
+    # mid-prompt image interleaving (assembly `inline_by_timestamp`) flip this to
+    # True in Phase 1.5; until then every model is fail-closed and the assembler
+    # raises at preflight — before weights load — if a config requests inline.
+    supports_inline: bool = False
+
     def __init__(self, model_name, device="auto", cache_dir=None):
         self.model_name = model_name
         self.device = device
