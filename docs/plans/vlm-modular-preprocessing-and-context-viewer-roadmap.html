@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="plan-sha256" content="5ec87cdfecdddf175cb818153a7675abc6a7aa1276847eaff58502ae0c7387f1" />
+<title>VLM eval roadmap — modality-adapter ContextBlocks + leaf selectors + viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<style>
+  :root {
+    --bg:#ffffff; --fg:#1a1d21; --muted:#5b6470; --card:#f6f8fa; --border:#d8dee4;
+    --accent:#0a9bc4; --accent2:#c76d12; --code-bg:#f0f3f6; --link:#0969da;
+    --gate:#d1476b; --ok:#1a8f4c;
+    --chip-pend:#3b82f6; --chip-block:#d1476b; --chip-part:#c76d12; --chip-defer:#8b95a1;
+    --resp-bg:#eef6fb; --resp-border:#0a9bc4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0d1117; --fg:#e6edf3; --muted:#9aa4b2; --card:#161b22; --border:#30363d;
+      --accent:#56cffd; --accent2:#f0b657; --code-bg:#161b22; --link:#6cb6ff;
+      --gate:#ff7b9c; --ok:#4ac97e; --resp-bg:#11212b; --resp-border:#56cffd;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { background:var(--bg); color:var(--fg); font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; margin:0; padding:0 0 140px; }
+  .wrap { max-width:1120px; margin:0 auto; padding:0 22px; }
+  h1 { font-size:24px; margin:22px 0 6px; line-height:1.25; }
+  h2 { font-size:19px; margin:34px 0 10px; padding-bottom:5px; border-bottom:1px solid var(--border); }
+  h3 { font-size:15px; margin:18px 0 6px; }
+  a { color:var(--link); }
+  code { background:var(--code-bg); padding:1px 5px; border-radius:4px; font:12.5px/1.4 "SF Mono",ui-monospace,Menlo,Consolas,monospace; }
+  pre code { padding:0; background:none; }
+  .hdr-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 18px; margin-top:18px; }
+  .hdr-card .meta { color:var(--muted); font-size:13px; margin-top:6px; }
+  .hdr-card .meta b { color:var(--fg); font-weight:600; }
+  .tldr { background:var(--card); border-left:3px solid var(--accent); border-radius:0 8px 8px 0; padding:12px 16px; margin:16px 0; }
+  table { border-collapse:collapse; width:100%; font-size:13px; margin:10px 0; }
+  th,td { border:1px solid var(--border); padding:6px 9px; text-align:left; vertical-align:top; }
+  th { background:var(--card); }
+  .chip { display:inline-block; font-size:11px; font-weight:600; padding:1px 7px; border-radius:10px; color:#fff; white-space:nowrap; }
+  .c-pend{background:var(--chip-pend);} .c-block{background:var(--chip-block);} .c-part{background:var(--chip-part);} .c-defer{background:var(--chip-defer);} .c-pivot{background:#7c3aed;} .c-applied{background:var(--ok);}
+  .diagram-wrap { position:relative; border:1px solid var(--border); border-radius:10px; margin:14px 0; background:var(--card); }
+  .diagram-wrap.fs { position:fixed; inset:0; z-index:50; border-radius:0; margin:0; }
+  .diagram-box { height:520px; overflow:hidden; }
+  .diagram-wrap.fs .diagram-box { height:100vh; }
+  .diagram-ctrls { position:absolute; top:8px; right:10px; z-index:5; display:flex; gap:6px; }
+  .diagram-ctrls button { font-size:12px; padding:3px 9px; border:1px solid var(--border); background:var(--bg); color:var(--fg); border-radius:6px; cursor:pointer; }
+  .hint { position:absolute; bottom:8px; left:12px; font-size:11px; color:var(--muted); z-index:5; }
+  details { border:1px solid var(--border); border-radius:8px; margin:8px 0; background:var(--card); }
+  details > summary { cursor:pointer; padding:10px 14px; font-weight:600; font-size:14px; list-style:none; }
+  details > summary::-webkit-details-marker { display:none; }
+  details > summary::before { content:"▸ "; color:var(--muted); }
+  details[open] > summary::before { content:"▾ "; }
+  .det-body { padding:2px 16px 14px; }
+  .filelist { font-size:12.5px; color:var(--muted); }
+  .verify { font-size:12.5px; border-left:2px solid var(--ok); padding-left:10px; margin:8px 0; color:var(--muted); }
+  .stop { border-left-color:var(--gate); }
+  .knob { border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin:8px 0; background:var(--card); }
+  .knob h4 { margin:0 0 4px; font-size:13.5px; }
+  textarea.section-feedback, #global-fb { width:100%; min-height:52px; margin-top:8px; border:1px dashed var(--border); border-radius:6px; background:var(--bg); color:var(--fg); padding:7px 9px; font:13px/1.45 inherit; resize:vertical; }
+  .oq { border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin:8px 0; background:var(--card); }
+  .oq .oq-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .oq select { font-size:12px; padding:2px 6px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--fg); }
+  .resp { border-left:3px solid var(--resp-border); background:var(--resp-bg); border-radius:0 6px 6px 0; padding:8px 12px; margin:8px 0; font-size:13px; }
+  .resp .lbl { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); font-weight:700; }
+  #fb-footer { position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--border); padding:10px 22px; z-index:40; }
+  #fb-footer .wrap2 { max-width:1120px; margin:0 auto; display:flex; gap:12px; align-items:center; }
+  #copy-fb { font-size:13px; font-weight:600; padding:8px 16px; border:none; border-radius:8px; background:var(--accent); color:#00222c; cursor:pointer; }
+  .muted { color:var(--muted); font-size:12px; }
+  ul.tight { margin:6px 0; padding-left:20px; }
+  ul.tight li { margin:3px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>VLM eval roadmap — modality-adapter ContextBlocks + leaf selectors + config-context viewer</h1>
+
+  <div class="hdr-card">
+    <div><span class="chip c-part">DRAFT</span> &nbsp;ContextBlock modality-adapters. Leaf-only selection; EHR serialization <b>re-homed offline</b>; meds_tools <b>depended (SHA pin)</b>; inline <b>deferred to Phase 1.5</b>. <b>Phase 1 unblocked.</b></div>
+    <div class="meta">
+      <b>Owner:</b> Phil &nbsp;·&nbsp; <b>Branch:</b> <code>worktree-vlm-modular-preprocessing-roadmap</code> &nbsp;·&nbsp;
+      <b>Source:</b> <a href="vlm-modular-preprocessing-and-context-viewer-roadmap.md">roadmap.md</a> &nbsp;·&nbsp;
+      <b>SHA-256:</b> <code>5ec87cdfecdd</code> &nbsp;·&nbsp; <b>Generated:</b> 2026-07-05
+    </div>
+    <div class="meta"><b>Machine posture:</b> local Mac = planner (no runtime); GCP VM = executor. All runs / tests are VM-side.</div>
+  </div>
+
+  <div class="tldr">
+    <b>What this is.</b> Dissolve the <code>experiment</code> god-enum into per-modality <b>adapters</b> that emit
+    uniform <b>ContextBlocks</b> <code>(id, modality, payload, metadata)</code>, selected at the <b>leaf</b> (CT
+    <b>slice</b>, pathology <b>patch</b>, EHR a <b>filter chain</b>) and composed by an <b>assembler</b>
+    (<code>ordered</code> now; <code>inline_by_timestamp</code> in Phase 1.5). ⚠ EHR filter+serialize is an
+    <b>offline/prep</b> step (re-homed) that writes a materialized <code>patient_string</code>; CT slice / patch
+    / truncation / assembly are live inference-time config edits. A weight-free <b>config-context viewer</b>
+    renders exactly what the model receives.
+  </div>
+
+  <h2>Review history</h2>
+  <table>
+    <thead><tr><th>Pass</th><th>Reviewer</th><th>Verdict</th><th>Key findings surfaced</th><th>Applied</th></tr></thead>
+    <tbody>
+      <tr><td>1 (06-30)</td><td>Codex</td><td><span class="chip c-applied">Revise</span></td><td>5-axis plan: downstream <code>set()</code> TypeError, retrieval-overwrite, meds_tools as adapter-not-rewrite.</td><td>Prior draft</td></tr>
+      <tr><td>2 (07-05)</td><td>Phil</td><td><span class="chip c-pivot">Pivot</span></td><td>ContextBlock adapters; flat + inline assembly; hierarchical contract; skip interim knob phase.</td><td>Re-baseline</td></tr>
+      <tr><td>3 (07-05)</td><td>Codex</td><td><span class="chip c-applied">Revise</span></td><td>Inline model-adapter contract; staged golden; meds_tools byte-equivalence; v1_5 substrate; ct_experiment_plot; stale gitignore.</td><td><a href="reviews/vlm-modular-preprocessing-and-context-viewer-roadmap-feedback-2026-07-05.md">feedback</a></td></tr>
+      <tr><td>4 (07-05)</td><td>Phil OQ + LUMIA research</td><td><span class="chip c-applied">Applied</span></td><td>12 OQs: leaf-only (A); meds_tools reuse; summarize=lift (C); PFS smoke (I); substrate inlined (L).</td><td>Revision</td></tr>
+      <tr><td>5 (07-05)</td><td>Fresh Claude</td><td><span class="chip c-applied">Revise</span></td><td>"No preconditions" was wrong: EHR serialize is <b>offline</b> (layer decision); meds_tools drags a py-floor + local-path deps + no tag; inline fail-closed has no mechanism. + golden ordering, truncate quirk, v1_1 baseline.</td><td><a href="reviews/vlm-modular-preprocessing-and-context-viewer-roadmap-feedback-claude.md">feedback-claude</a> — all applied</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Repo map — where this sits</h2>
+  <p class="muted">Cyan = this plan adds; amber = modified; grey = deferred/upstream; blue = external contract.</p>
+  <div class="diagram-wrap">
+    <div class="diagram-ctrls"><button data-act="reset">Reset</button><button data-act="fs">Fullscreen</button></div>
+    <div class="hint">scroll to zoom • drag to pan</div>
+    <div class="diagram-box"><pre class="mermaid">
+flowchart LR
+  subgraph inputs["Raw inputs, v1_5 cohort"]
+    ehrIn["EHR timeline<br/>LUMIA xml"]
+    ctIn["CT NIfTI<br/>volume3d"]
+    wsiIn["Pathology WSI<br/>tile-path lists"]
+  end
+  cfg["configs/all_tasks.yaml<br/>block-list plus assembly"]
+  subgraph prep["Offline prep, re-homed"]
+    ehrPrep["EHR adapter prep<br/>filter chain plus serialize<br/>writes patient_string"]
+  end
+  subgraph fw["src context, THIS PLAN adds"]
+    adapters["ct, pathology adapters<br/>plus ehr read-materialized"]
+    selectors["leaf selectors<br/>ct slice, path patch"]
+    assembler["assembler<br/>ordered now, inline in P1.5"]
+    block["ContextBlock<br/>(id, modality, payload, meta)"]
+  end
+  subgraph infer["Inference, modified"]
+    runbq["run_bq.py<br/>orchestrator"]
+    vqa["vqa_dataset.py<br/>PromptDataset"]
+    models["model adapters<br/>base supports_inline seam"]
+  end
+  viewer["context_viewer.py<br/>THIS PLAN adds"]
+  csv["result CSVs"]
+  readers["4 result readers"]
+  subgraph ext["External contracts"]
+    medstools["meds_tools at e2a2a59<br/>SHA pin, PREP env only"]
+    vbench["vista_bench v1_5<br/>dedups 1 image per person"]
+  end
+  ehrIn --> ehrPrep
+  ehrPrep -. materialized patient_string .-> adapters
+  ctIn --> cfg
+  wsiIn --> cfg
+  cfg --> adapters
+  adapters --> selectors
+  adapters --> block
+  selectors --> block
+  block --> assembler
+  assembler --> vqa
+  vqa --> runbq
+  runbq --> models
+  models --> csv
+  csv --> readers
+  ehrPrep -. reuse serialize .-> medstools
+  vbench -. cohort plus upstream selection .-> cfg
+  assembler --> viewer
+  subgraph legend["Color legend"]
+    lg1["THIS PLAN adds (cyan)"]
+    lg2["modified (amber)"]
+    lg3["prep / upstream (grey)"]
+    lg4["external contract (blue)"]
+  end
+  classDef add fill:#0a9bc422,stroke:#0a9bc4,stroke-width:3px,color:#0a9bc4;
+  classDef mod fill:#c76d1222,stroke:#c76d12,stroke-width:2px,color:#c76d12;
+  classDef defer fill:#8b95a119,stroke:#8b95a1,stroke-dasharray:5 4,color:#8b95a1;
+  classDef ext fill:#3b82f622,stroke:#3b82f6,color:#3b82f6;
+  class adapters,selectors,assembler,block,viewer,lg1 add
+  class cfg,runbq,vqa,models,csv,readers,lg2 mod
+  class ehrPrep,lg3 defer
+  class medstools,vbench,lg4 ext
+    </pre></div>
+  </div>
+
+  <h2>Blast radius — knobs, files, outputs, consumers</h2>
+  <div class="diagram-wrap">
+    <div class="diagram-ctrls"><button data-act="reset">Reset</button><button data-act="fs">Fullscreen</button></div>
+    <div class="hint">scroll to zoom • drag to pan</div>
+    <div class="diagram-box"><pre class="mermaid">
+flowchart LR
+  subgraph knobs["Config knobs"]
+    kSel["leaf selectors<br/>ct slice, path patch"]
+    kEhr["ehr filter chain<br/>window, note_type, code, summarize<br/>PREP-time, re-materializes"]
+    kAsm["assembly ordered<br/>inline seam in P1.5"]
+  end
+  subgraph files["Files touched"]
+    fCtx["src/context/ (new)<br/>adapters, selectors, block, assembler, normalize"]
+    fBase["models/base.py<br/>supports_inline bool default False"]
+    fVqa["vqa_dataset.py<br/>consume adapters, drop 3 CT branches"]
+    fRun["run_bq.py<br/>assembler gets resolved adapter, split model-load"]
+    fEhr["remove_imaging_report, meds_timeline_utils, iterative_retrieval<br/>re-home offline serialize, lift truncate plus summarize"]
+    fView["context_viewer.py (new)"]
+    fCfg["all_tasks.yaml"]
+  end
+  subgraph outs["Outputs"]
+    oStr["patient_string CSVs<br/>re-materialized at prep"]
+    oCsv["(task)_results_(name).csv"]
+    oHtml["viewer HTML<br/>PHI, su-vista mount"]
+  end
+  subgraph cons["Downstream, update together"]
+    cFinal["final_metrics.py 47<br/>set(...) over experiments"]
+    cResp["all_model_response.py"]
+    cPlot["ct_experiment_plot 186<br/>delete parse_experiment_comments"]
+  end
+  medsPin["meds_tools depend, pin by SHA e2a2a59<br/>no v0.1.0 tag, py-floor relax upstream<br/>PREP env only"]
+  kSel --> fCtx
+  kAsm --> fCtx
+  kEhr --> fEhr
+  fCtx --> fBase
+  fCtx --> fVqa
+  fCtx --> fRun
+  fEhr --> oStr
+  oStr --> fRun
+  fCtx --> fView
+  fCtx --> fCfg
+  fVqa --> oCsv
+  fRun --> oCsv
+  fView --> oHtml
+  oCsv --> cFinal
+  oCsv --> cResp
+  oCsv --> cPlot
+  fEhr -. reuse plus equivalence fixture .-> medsPin
+  subgraph legend["Color legend"]
+    lg1["new, THIS PLAN adds (cyan)"]
+    lg2["modified (amber)"]
+    lg3["external pin (blue)"]
+    lg4["output (green)"]
+  end
+  classDef add fill:#0a9bc422,stroke:#0a9bc4,stroke-width:3px,color:#0a9bc4;
+  classDef mod fill:#c76d1222,stroke:#c76d12,stroke-width:2px,color:#c76d12;
+  classDef ext fill:#3b82f622,stroke:#3b82f6,color:#3b82f6;
+  classDef out fill:#1a8f4c22,stroke:#1a8f4c,color:#1a8f4c;
+  class fCtx,fBase,fView,lg1 add
+  class fVqa,fRun,fEhr,fCfg,cFinal,cResp,cPlot,lg2 mod
+  class medsPin,lg3 ext
+  class oStr,oCsv,oHtml,lg4 out
+    </pre></div>
+  </div>
+
+  <h2>Order of operations</h2>
+  <div class="diagram-wrap">
+    <div class="diagram-ctrls"><button data-act="reset">Reset</button><button data-act="fs">Fullscreen</button></div>
+    <div class="hint">scroll to zoom • drag to pan</div>
+    <div class="diagram-box"><pre class="mermaid">
+flowchart TD
+  p0["Phase 0 ⚠️ v1_5 GCP stand-up<br/>MIXED baseline, BQ v1_1 plus task JSON v1_3"]:::part
+  p05["Phase 0.5 ⏳ overshoot bug-fix<br/>standalone"]:::pend
+  p1["Phase 1 ⏳ modality-adapter framework<br/>leaf selectors, EHR offline re-home, ordered assembler, supports_inline seam"]:::pend
+  p15["Phase 1.5 deferred: inline_by_timestamp<br/>wire interleaving when a consumer exists"]:::defer
+  p2["Phase 2 ⏳ config-context viewer"]:::pend
+  p3["Phase 3 deferred cohort axis A"]:::defer
+  note["Fresh-Claude 3 items resolved<br/>EHR offline re-home, meds_tools SHA-pin, inline to P1.5"]:::ok
+  p0 --> p05
+  p05 --> p1
+  p1 --> p15
+  p1 --> p2
+  p1 -.-> p3
+  p0 -->|first sweep on legacy behavior| p2
+  note -. unblocks .-> p1
+  subgraph legend["Status legend"]
+    lgN["PENDING (blue)"]:::pend
+    lgP["PARTIAL (amber)"]:::part
+    lgD["DEFERRED (grey)"]:::defer
+    lgO["resolved (green)"]:::ok
+  end
+  classDef pend fill:#3b82f622,stroke:#3b82f6,color:#3b82f6;
+  classDef part fill:#c76d1222,stroke:#c76d12,color:#c76d12;
+  classDef defer fill:#8b95a119,stroke:#8b95a1,stroke-dasharray:5 4,color:#8b95a1;
+  classDef ok fill:#1a8f4c22,stroke:#1a8f4c,color:#1a8f4c;
+    </pre></div>
+  </div>
+
+  <h2>Knobs &amp; contracts</h2>
+
+  <div class="knob">
+    <h4>EHR is an OFFLINE re-home (fresh-Claude — load-bearing)</h4>
+    <p>Serialization runs offline today (<code>remove_imaging_report.py:69</code> writes a <code>patient_string</code> column; inference reads it + truncates). <b>Decision: the EHR adapter re-homes the offline prep</b> — so <code>meds_reader</code> DB + ontology stay OFF the inference VM. Changing an EHR <code>select</code>/<code>serialize</code> value <b>re-materializes the CSVs</b>; CT slice / patch / truncation / assembly are live inference-time edits.</p>
+  </div>
+
+  <div class="knob">
+    <h4>meds_tools = depend, pin by SHA (OQ-G — dependency reality)</h4>
+    <ul class="tight">
+      <li>Pin by <b>SHA <code>e2a2a59</code></b> — <b>no <code>v0.1.0</code> git tag exists</b>.</li>
+      <li><code>requires-python >=3.14</code> is a <b>likely-spurious floor</b> (deps are mundane) → relax upstream, don't upgrade the VM.</li>
+      <li><code>[tool.uv.sources]</code> has <b>hardcoded local paths</b> (<code>/home/minwoos/…</code>) → won't resolve off the author's machine.</li>
+      <li>Already a <b>de-facto PREP dep</b> (<code>remove_imaging_report.py:17</code>, <code>meds_get_report_note.py:80</code>) → stays in the prep env only, never the inference VM.</li>
+      <li>Canonical <code>get_llm_event_string</code> has <b>no <code>exclude_report</code></b> → STANFORD skip = upstream DataFrame filter. A <b>third</b> serializer copy exists (<code>test_meds_tools.py:6</code>) — consolidate.</li>
+    </ul>
+  </div>
+
+  <div class="knob">
+    <h4>Leaf selectors + reuse notes</h4>
+    <ul class="tight">
+      <li><b>CT slice:</b> <code>evenly_spaced_k</code>, <code>every_n</code>, <code>center</code>, <code>center_k</code>, <code>slice_range</code>, <code>all</code>.</li>
+      <li><b>Pathology patch:</b> <code>random_n(n, seed)</code>, <code>all</code>; future <code>tissue_top_n</code>.</li>
+      <li><b>Truncate:</b> lift <code>truncate_timeline</code> <b>verbatim</b> — the <code>first_4_rows=''</code>-never-populated quirk is byte-preserving for golden gate 1; don't "fix" it during the lift.</li>
+      <li><b>Summarize:</b> a small cluster lift (<code>_summarize_timeline_for_context</code> + <code>_run_vlm_*</code> + <code>TIMELINE_SUMMARY_TEMPLATE</code>) with a raw-timeline-on-exception fallback to decide.</li>
+      <li><b>Not built here:</b> study/series & specimen/block/slide — upstream in VISTABench (verified: <code>vista_bench</code> dedups one image per person). Re-add is a cross-repo change.</li>
+    </ul>
+  </div>
+
+  <div class="knob">
+    <h4>Inline capability contract (seam in Phase 1; wired in Phase 1.5)</h4>
+    <p>Adapters front-load all images before text (<code>gemma3.py:43-77</code>, <code>qwen3.py:46-73</code>); 8+ registry models, only gemma3/qwen3 would get a rewrite → fail-closed is the <b>common</b> case. Spec: add <code>supports_inline: bool = False</code> to <code>BaseVLMAdapter</code>; the assembler receives the <b>resolved adapter</b> (not a bare <code>model_type</code>, avoiding a <code>context→models</code> import cycle) and <b>raises at preflight</b> (before weights load) when a config requests inline on an unsupported model (OQ-D).</p>
+    <textarea class="section-feedback" data-section="knobs" placeholder="Feedback on knobs / contracts…"></textarea>
+  </div>
+
+  <h2>Phases</h2>
+
+  <details data-section="phase-0">
+    <summary><span class="chip c-part">PARTIAL</span> Phase 0 — v1_5 GCP stand-up (mixed baseline)</summary>
+    <div class="det-body">
+      <p><b>First v1_5 sweep runs here on legacy behavior.</b> Substrate inlined (OQ-L). ⚠ <b>Mixed baseline:</b> BQ dataset = <code>vista_bench_v1_1</code> (<code>query_utils.py:236</code>) <b>+</b> task JSON = <code>v1_3</code> (<code>all_tasks.yaml:6</code>) — not uniform v1_3. Bump: dataset → <code>vista_bench_v1_5</code>; CT prefix <code>nov25</code>→<code>feb26</code>; task JSONs → v1_5; BQ cols <code>task, split, label, person_id, embed_time</code> + <code>nifti_path, _accession_number, path_image_path, path_note_text</code>; WSI 896px/10×. Project <code>som-nero-plevriti-deidbdf</code>, us-central1.</p>
+      <textarea class="section-feedback" data-section="phase-0" placeholder="Feedback on Phase 0…"></textarea>
+    </div>
+  </details>
+
+  <details data-section="phase-05">
+    <summary><span class="chip c-pend">PENDING</span> Phase 0.5 — standalone overshoot bug-fix</summary>
+    <div class="det-body">
+      <p>Fix the <code>i*0.1</code> overshoot (<code>vqa_dataset.py:198-205</code>); correct <code>02-ct-scans.md:45</code>. Lands before the golden baseline. Old buggy sampler <b>dropped</b> (OQ-E).</p>
+      <textarea class="section-feedback" data-section="phase-05" placeholder="Feedback on Phase 0.5…"></textarea>
+    </div>
+  </details>
+
+  <details data-section="phase-1">
+    <summary><span class="chip c-pend">PENDING</span> Phase 1 — modality-adapter framework (unblocked)</summary>
+    <div class="det-body">
+      <ul class="tight">
+        <li><b>ContextBlock</b> + <b>ADAPTER_REGISTRY</b> + <b>ModalityAdapter</b> ABC.</li>
+        <li><b>CT adapter</b> — slice selector + windowing (<code>by_model</code> off <code>MODEL_REGISTRY</code>).</li>
+        <li><b>Pathology adapter</b> — patch selector lifted from <code>run_bq.py:461</code>; must not duplicate <code>tile_wsi.py</code>.</li>
+        <li><b>EHR adapter (offline re-home)</b> — filter chain + serialize at <b>prep</b> (→ <code>patient_string</code>); STANFORD skip = upstream DataFrame filter; inference reads the string + lifts <code>truncate_timeline</code> verbatim. Decide the summarize fallback.</li>
+        <li><b>Assembler</b> — typed content sequence + <code>ordered</code> + the <code>supports_inline</code> seam (default False, fail-closed preflight).</li>
+        <li><b>normalize_experiments</b> + <b>presets.py</b>; <b>split model-load out of <code>TaskOrchestrator.__init__</code></b>; assembler receives the resolved adapter.</li>
+      </ul>
+      <div class="filelist"><b>Files:</b> <code>src/context/**</code>, <code>models/base.py</code>, <code>vqa_dataset.py</code>, <code>run_bq.py</code>, <code>remove_imaging_report.py</code>, <code>meds_timeline_utils.py</code>, <code>iterative_retrieval.py</code>, <code>all_tasks.yaml</code>, 4 readers</div>
+      <textarea class="section-feedback" data-section="phase-1" placeholder="Feedback on Phase 1…"></textarea>
+    </div>
+  </details>
+
+  <details data-section="phase-15">
+    <summary><span class="chip c-defer">DEFERRED</span> Phase 1.5 — inline_by_timestamp interleaving (when a consumer exists)</summary>
+    <div class="det-body">
+      <p>Wire real mid-prompt interleaving: rewrite <code>create_template</code> for inline-capable models + flip <code>supports_inline = True</code>. Additive on the Phase-1 seam. No experiment names it yet, so it waits.</p>
+      <textarea class="section-feedback" data-section="phase-15" placeholder="Feedback on Phase 1.5…"></textarea>
+    </div>
+  </details>
+
+  <details data-section="phase-2">
+    <summary><span class="chip c-pend">PENDING</span> Phase 2 — config-context viewer (HTML)</summary>
+    <div class="det-body">
+      <p>Same ingest + select + preprocess + assemble path (no weights) → one HTML: assembled <code>ordered</code> ContextBlocks + selected images, paginated by batch, with a <b>token-budget bar</b> (OQ-J).</p>
+      <p class="verify stop"><b>⚠ PHI:</b> writes only to the <b>su-vista PHI mount</b> (OQ-J), never committed; <code>/phi-vet</code> gates commits. Model-backed <code>summarize</code> not weight-free → rejected-or-marked at preflight.</p>
+      <textarea class="section-feedback" data-section="phase-2" placeholder="Feedback on Phase 2…"></textarea>
+    </div>
+  </details>
+
+  <details data-section="phase-3">
+    <summary><span class="chip c-defer">DEFERRED</span> Phase 3 — cohort-source axis (optional)</summary>
+    <div class="det-body"><p>Fold the 6 <code>_load_*</code> into a config <code>cohort.source</code>. Larger blast radius. Gated on OQ-F.</p>
+      <textarea class="section-feedback" data-section="phase-3" placeholder="Feedback on Phase 3…"></textarea>
+    </div>
+  </details>
+
+  <h2>Back-compat &amp; the staged golden test</h2>
+  <details data-section="golden">
+    <summary>Staged golden — 3 gates, sorted by (person_id, index)</summary>
+    <div class="det-body">
+      <p>Preserved: output path, resume, retrieval-overwrite, defaults = prior runtime (100 tiles, per-preset slice counts). ⚠ <b>Sort both frames by <code>(person_id, index)</code> before diffing</b> — <code>run_bq</code> writes as-processed + appends on resume; the harness must impose order.</p>
+      <ul class="tight">
+        <li><b>Gate 1 — byte-identical.</b> Legacy dispatch + local serializer: <code>dynamic_prompt</code> + indices + image <b>hashes</b> identical. (Verbatim <code>truncate_timeline</code> keeps this exact.)</li>
+        <li><b>Gate 2 — <code>by_model</code>.</b> Image bytes identical per model.</li>
+        <li><b>Gate 3 — EHR re-home delta.</b> Re-homed serializer + upstream filter vs current offline fork, within a declared allowlist where <b>"ordering" = within-line field order ONLY; event/line order identical</b>. ⚠ Must <b>regenerate the <code>patient_string</code> CSVs</b> and confirm inference consumes them — comparing two offline serializers alone proves nothing.</li>
+      </ul>
+      <div class="resp"><span class="lbl">OQ-K</span> Gate 1 byte-equality is the target (verified on one example); declared-delta fallback OK; cross-version repro not a goal.</div>
+      <textarea class="section-feedback" data-section="golden" placeholder="Feedback on the golden test…"></textarea>
+    </div>
+  </details>
+
+  <h2>Gotchas</h2>
+  <details data-section="gotchas">
+    <summary>Verified traps</summary>
+    <div class="det-body">
+      <ul class="tight">
+        <li><b>EHR serialize is OFFLINE.</b> <code>remove_imaging_report.py:69</code> writes <code>patient_string</code>; inference reads it. The adapter re-homes prep — don't model it as inference-time.</li>
+        <li><b>Adapters front-load images.</b> <code>gemma3.py:43-77</code>/<code>qwen3.py:46-73</code> — inline needs the content-sequence contract + <code>supports_inline</code> flag.</li>
+        <li><b>Canonical <code>get_llm_event_string</code> has no <code>exclude_report</code></b> → upstream DataFrame filter.</li>
+        <li><b>truncate_timeline quirk:</b> <code>first_4_rows=''</code> never populated → lift verbatim (byte-preserving), don't fix.</li>
+        <li><b>ct_experiment_plot:</b> <code>set()</code> is <code>:186</code>; <code>parse_experiment_comments</code> (<code>:53-66</code>) text-scans raw YAML → delete + rewire <code>:190</code>, don't adapt.</li>
+        <li><b>meds_tools:</b> no <code>v0.1.0</code> tag, spurious <code>py>=3.14</code> floor, local-path sources → SHA pin, prep env only.</li>
+        <li><b>Mixed baseline:</b> BQ <code>v1_1</code> + task JSON <code>v1_3</code>, not uniform v1_3.</li>
+      </ul>
+      <textarea class="section-feedback" data-section="gotchas" placeholder="Feedback on gotchas…"></textarea>
+    </div>
+  </details>
+
+  <h2>Open questions — all resolved; Phase 1 unblocked</h2>
+  <p class="muted">Statuses default to Resolved; reopen any via the dropdown + a note.</p>
+  <div id="oq-root"></div>
+  <div class="resp"><span class="lbl">Still open (non-blocking)</span> (i) PFS <b>1yr vs 2yr</b> smoke; (ii) <code>summarize</code> <b>on/off</b> for the first sweep <b>and its failure mode</b> (fail loud vs swallow); (iii) <b>side-by-side</b> in the first viewer cut. <b>Verify on VM:</b> the <b>prep</b> env satisfies the meds_tools install (or relax the floor upstream).</div>
+
+  <h2>Verification &amp; VM handoff</h2>
+  <p class="muted">On the GCP VM. Canonical smoke = <code>progression_recurrence_free_survival_1_yr</code> (PFS — OQ-I) × <code>gemma3 medgemma-1.5-4b</code>.</p>
+  <ul class="tight">
+    <li><b>Phase 1 meds_tools install (likeliest breaker):</b> is <code>meds_tools</code> already importable in the PREP env? <code>python -c "from meds_tools import patient_timeline; print(patient_timeline.get_llm_event_string.__doc__)"</code>. <b>Stop:</b> ModuleNotFound / py-floor / local-path resolution error → relax the floor upstream.</li>
+    <li><b>Phase 1 staged golden (sorted):</b> gate 1 byte-identical, gate 2 <code>by_model</code> hash parity, gate 3 EHR re-home within allowlist <b>after regenerating the <code>patient_string</code> CSVs</b>.</li>
+    <li><b>Phase 1 downstream:</b> all four readers over legacy string + block-list dict; <code>ct_experiment_plot</code> shows a correct display label.</li>
+    <li><b>Phase 1 assembler seam:</b> a config requesting inline against a <code>supports_inline=False</code> model <b>raises at preflight</b> (before weights load).</li>
+    <li><b>Phase 2 viewer:</b> offline, token-budget bar, PHI output on su-vista mount + not staged, model-backed step rejected-or-marked.</li>
+  </ul>
+  <textarea class="section-feedback" data-section="verification" placeholder="Feedback on verification…"></textarea>
+
+</div>
+
+<div id="fb-footer">
+  <div class="wrap2">
+    <button id="copy-fb">Copy all feedback as Claude prompt</button>
+    <span class="muted">Global note:</span>
+    <textarea id="global-fb" style="flex:1; min-height:38px;" placeholder="Overall feedback…"></textarea>
+  </div>
+</div>
+
+<script>
+const PLAN_STEM = "vlm-modular-preprocessing-and-context-viewer-roadmap";
+const PLAN_SHA  = "5ec87cdfecdddf175cb818153a7675abc6a7aa1276847eaff58502ae0c7387f1";
+
+const OQS = [
+  ["A","v1_5 selection depth","Leaf-only; study/series & specimen/block/slide upstream in VISTABench (code-verified: dedups one image per person). Re-add is a cross-repo vista_bench change."],
+  ["B","CT by_model resolution","Off MODEL_REGISTRY by default; per-config override allowed."],
+  ["C","Model-backed selectors","Generic signature; summarize = lift a small cluster (decide the fallback); learned slice-selector deferred."],
+  ["D","Inline on unsupported models","Fails closed at preflight via supports_inline: bool=False on BaseVLMAdapter."],
+  ["E","Old-overshoot repro","Drop the buggy i*0.1 sampler."],
+  ["F","Cohort axis","Stays Phase 3, deferred."],
+  ["G","meds_tools pin","Depend, pin by SHA e2a2a59 (no v0.1.0 tag); relax the spurious py>=3.14 floor upstream; PREP env only (already installed there), off the inference VM; local-path uv.sources noted."],
+  ["H","Tile + slice defaults","Prior runtime: 100 tiles/slide; per-preset slice counts (30/50/10)."],
+  ["I","Canonical smoke","PFS progression_recurrence_free_survival_1_yr (2yr alt); no mortality task exists."],
+  ["J","Viewer scope","Token-budget bar in; output → su-vista PHI mount; side-by-side optional."],
+  ["K","Byte-identical requirement","Gate-1 byte-identical target (one example); declared-delta fallback OK."],
+  ["L","v1_5 substrate","Inlined; MIXED baseline (BQ v1_1 + task JSON v1_3)."],
+  ["EHR-layer","EHR serialization layer (fresh-Claude)","Re-home the OFFLINE prep (writes patient_string) — NOT serialize at inference. Keeps meds_reader + ontology off the inference VM; gate-3 regenerates the CSVs."],
+  ["Inline-scope","Inline scope (fresh-Claude)","Defer inline to Phase 1.5. Phase 1 ships ContextBlock + ordered + the supports_inline seam only; real interleaving waits for a named experiment."],
+];
+
+function lsKey(s){ return `explainplan::${PLAN_STEM}::${s}`; }
+(function(){ const k=`explainplan::${PLAN_STEM}::__sha`; const p=localStorage.getItem(k);
+  if (p && p!==PLAN_SHA) Object.keys(localStorage).filter(x=>x.startsWith(`explainplan::${PLAN_STEM}::`)).forEach(x=>localStorage.removeItem(x));
+  localStorage.setItem(k, PLAN_SHA); })();
+
+const oqRoot = document.getElementById('oq-root');
+OQS.forEach(([id,title,resolution])=>{
+  const div = document.createElement('div'); div.className = 'oq';
+  div.innerHTML = `
+    <div class="oq-head"><b>OQ-${id}</b> — ${title}
+      <select data-oq="${id}"><option value="Resolved">Resolved</option><option value="Reopen">Reopen</option><option value="Deferred">Deferred</option></select>
+    </div>
+    <div class="resp"><span class="lbl">Resolved</span> ${resolution}</div>
+    <textarea class="section-feedback" data-section="OQ-${id}" placeholder="Reopen / adjust OQ-${id}…"></textarea>`;
+  oqRoot.appendChild(div);
+});
+
+function bindPersistence(){
+  document.querySelectorAll('textarea.section-feedback, #global-fb').forEach(t=>{
+    const sec = t.id==='global-fb'?'global':t.dataset.section;
+    const saved = localStorage.getItem(lsKey(sec)); if (saved) t.value = saved;
+    t.addEventListener('input', ()=>{ localStorage.setItem(lsKey(sec), t.value); updateBadge(); });
+  });
+  document.querySelectorAll('select[data-oq]').forEach(s=>{
+    const sec = 'OQstatus-'+s.dataset.oq; const saved = localStorage.getItem(lsKey(sec)); if (saved) s.value = saved;
+    s.addEventListener('change', ()=>{ localStorage.setItem(lsKey(sec), s.value); updateBadge(); });
+  });
+}
+function pendingCount(){ let n=0;
+  document.querySelectorAll('textarea.section-feedback, #global-fb').forEach(t=>{ if (t.value.trim()) n++; });
+  document.querySelectorAll('select[data-oq]').forEach(s=>{ if (s.value!=='Resolved') n++; }); return n; }
+function updateBadge(){ const n=pendingCount(); document.getElementById('copy-fb').textContent = n?`Copy all feedback as Claude prompt (${n})`:'Copy all feedback as Claude prompt'; }
+
+function buildFeedback(){
+  let out = `# Feedback on ${PLAN_STEM}\n\n`;
+  document.querySelectorAll('#oq-root .oq').forEach(oq=>{
+    const sel = oq.querySelector('select[data-oq]'); const ta = oq.querySelector('textarea'); const id = sel.dataset.oq;
+    if (sel.value!=='Resolved' || ta.value.trim()) out += `## OQ-${id}\nStatus: ${sel.value}\n${ta.value.trim()}\n\n`;
+  });
+  document.querySelectorAll('textarea.section-feedback').forEach(t=>{
+    if (t.dataset.section.startsWith('OQ-')) return; if (t.value.trim()) out += `## ${t.dataset.section}\n${t.value.trim()}\n\n`;
+  });
+  const g = document.getElementById('global-fb'); if (g.value.trim()) out += `## Overall\n${g.value.trim()}\n`;
+  return out;
+}
+document.getElementById('copy-fb').addEventListener('click', async ()=>{
+  const md = buildFeedback();
+  try { await navigator.clipboard.writeText(md); flash('Copied to clipboard'); }
+  catch { const w=window.open('','_blank'); if(w){w.document.body.style.whiteSpace='pre-wrap';w.document.body.textContent=md;} }
+});
+function flash(m){ const b=document.getElementById('copy-fb'); b.textContent=m; setTimeout(updateBadge,1400); }
+
+mermaid.initialize({ startOnLoad:false, theme:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'default'), flowchart:{ useMaxWidth:false } });
+window.addEventListener('DOMContentLoaded', async ()=>{
+  bindPersistence(); updateBadge();
+  await mermaid.run({ querySelector:'pre.mermaid' });
+  document.querySelectorAll('.diagram-wrap').forEach(wrap=>{
+    const svg = wrap.querySelector('svg'); if(!svg) return;
+    svg.removeAttribute('style'); svg.style.width='100%'; svg.style.height='100%';
+    const inst = svgPanZoom(svg, { zoomEnabled:true, controlIconsEnabled:false, fit:true, center:true, minZoom:0.3, maxZoom:8, mouseWheelZoomEnabled:true });
+    wrap._pz = inst;
+    wrap.querySelectorAll('.diagram-ctrls button').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        if (btn.dataset.act==='reset'){ inst.resetZoom(); inst.center(); inst.fit(); }
+        else if (btn.dataset.act==='fs'){ wrap.classList.toggle('fs'); setTimeout(()=>{ inst.resize(); inst.fit(); inst.center(); }, 80); }
+      });
+    });
+  });
+  window.addEventListener('resize', ()=>{ document.querySelectorAll('.diagram-wrap').forEach(w=>{ if(w._pz){ w._pz.resize(); w._pz.fit(); w._pz.center(); } }); });
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') document.querySelectorAll('.diagram-wrap.fs').forEach(w=>{ w.classList.remove('fs'); setTimeout(()=>{ w._pz.resize(); w._pz.fit(); w._pz.center(); },80); }); });
+});
+</script>
+</body>
+</html>
