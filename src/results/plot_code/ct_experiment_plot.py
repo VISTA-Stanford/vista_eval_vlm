@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 from results.results_analyzer import _extract_answer, is_answer_correct, map_label_to_answer
+from context.normalize import experiment_names, display_names
 
 
 def _clean_question(text):
@@ -28,46 +29,6 @@ def extract_experiment_from_filename(filename):
     if match:
         return match.group(1)
     return 'default'
-
-def parse_experiment_comments(config_path):
-    """Parse YAML file to extract experiment names and their comments."""
-    experiment_display_mapping = {}
-    try:
-        with open(config_path, 'r') as f:
-            lines = f.readlines()
-        
-        in_experiments_section = False
-        for line in lines:
-            stripped = line.strip()
-            # Check if we're entering the experiments section
-            if stripped.startswith('experiments:'):
-                in_experiments_section = True
-                continue
-            
-            # Check if we've left the experiments section (next top-level key)
-            if in_experiments_section:
-                if stripped and not stripped.startswith('#') and not stripped.startswith('-') and ':' in stripped:
-                    # We've hit a new top-level section
-                    break
-                
-                # Parse experiment lines: "- experiment_name # comment"
-                if stripped.startswith('-'):
-                    # Remove the leading '-'
-                    content = stripped[1:].strip()
-                    # Split on '#' to separate name from comment
-                    if '#' in content:
-                        parts = content.split('#', 1)
-                        exp_name = parts[0].strip()
-                        comment = parts[1].strip()
-                        experiment_display_mapping[exp_name] = comment
-                    else:
-                        # No comment, use the name itself
-                        exp_name = content.strip()
-                        experiment_display_mapping[exp_name] = exp_name
-    except Exception as e:
-        print(f"Warning: Could not parse experiment comments: {e}")
-    
-    return experiment_display_mapping
 
 def get_task_csv_filename(task_name, use_subsampled=False):
     """
@@ -180,14 +141,17 @@ def generate_experiment_comparison_plots(results_path=None, base_path='/home/dcu
                     if valid_models:
                         print(f"Loaded {len(valid_models)} model patterns from config: {sorted(valid_models)}")
                 
-                # Extract valid experiments from config
+                # Extract valid experiments from config (normalized: tolerates
+                # both bare legacy strings and block-list dict entries).
                 experiments_list = config.get('experiments', [])
                 if experiments_list:
-                    valid_experiments = set(experiments_list)
+                    valid_experiments = set(experiment_names(config))
                     print(f"Loaded {len(valid_experiments)} experiments from config: {sorted(valid_experiments)}")
-                
-                # Extract experiment display names from comments
-                experiment_display_mapping = parse_experiment_comments(config_path)
+
+                # Experiment display labels come from the normalized spec's
+                # `display` (config `display:` field, else the name) — replaces the
+                # old YAML-comment scraping.
+                experiment_display_mapping = display_names(config)
         except Exception as e:
             print(f"Warning: Could not load config from {config_path}: {e}")
 

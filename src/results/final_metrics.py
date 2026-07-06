@@ -16,6 +16,7 @@ import yaml
 
 # Ensure these imports exist in your environment
 from results.results_analyzer import _extract_answer, is_answer_correct, map_label_to_answer
+from context.normalize import experiment_names
 
 
 def extract_experiment_from_filename(filename):
@@ -44,7 +45,9 @@ def load_config(config_path):
             valid_models.add(name.replace("/", "_"))
             if "/" in name:
                 valid_models.add(name.split("/")[-1])
-    experiments = set(config.get("experiments", []))
+    # `experiments` may contain bare legacy strings AND block-list dicts; resolve
+    # to normalized name tokens so `set(...)` never hits an unhashable dict.
+    experiments = set(experiment_names(config))
     return results_dir, base_dir, tasks, valid_models, experiments
 
 

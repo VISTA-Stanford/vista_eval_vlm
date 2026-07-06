@@ -13,6 +13,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 from results.results_analyzer import is_answer_correct, map_label_to_answer
+from context.normalize import experiment_names, display_names
 
 # Experiments that include CT scan slices (no_image excluded)
 CT_EXPERIMENTS = [
@@ -29,46 +30,6 @@ def extract_experiment_from_filename(filename):
         return match.group(1)
     return 'default'
 
-
-def parse_experiment_comments(config_path):
-    """Parse YAML file to extract experiment names and their comments."""
-    experiment_display_mapping = {}
-    try:
-        with open(config_path, 'r') as f:
-            lines = f.readlines()
-        
-        in_experiments_section = False
-        for line in lines:
-            stripped = line.strip()
-            # Check if we're entering the experiments section
-            if stripped.startswith('experiments:'):
-                in_experiments_section = True
-                continue
-            
-            # Check if we've left the experiments section (next top-level key)
-            if in_experiments_section:
-                if stripped and not stripped.startswith('#') and not stripped.startswith('-') and ':' in stripped:
-                    # We've hit a new top-level section
-                    break
-                
-                # Parse experiment lines: "- experiment_name # comment"
-                if stripped.startswith('-'):
-                    # Remove the leading '-'
-                    content = stripped[1:].strip()
-                    # Split on '#' to separate name from comment
-                    if '#' in content:
-                        parts = content.split('#', 1)
-                        exp_name = parts[0].strip()
-                        comment = parts[1].strip()
-                        experiment_display_mapping[exp_name] = comment
-                    else:
-                        # No comment, use the name itself
-                        exp_name = content.strip()
-                        experiment_display_mapping[exp_name] = exp_name
-    except Exception as e:
-        print(f"Warning: Could not parse experiment comments: {e}")
-    
-    return experiment_display_mapping
 
 
 def load_config(config_path):
@@ -89,11 +50,12 @@ def load_config(config_path):
                 valid_models.append(file_model_name)
                 model_name_mapping[file_model_name] = model_name
         
-        # Extract experiments
-        valid_experiments = config.get('experiments', [])
-        
-        # Extract experiment display names from comments
-        experiment_display_mapping = parse_experiment_comments(config_path)
+        # Extract experiments (normalized: tolerates bare strings + block dicts)
+        valid_experiments = experiment_names(config)
+
+        # Experiment display labels from the normalized spec (`display:` or name),
+        # replacing the old YAML-comment scraping.
+        experiment_display_mapping = display_names(config)
         
         # Extract tasks
         valid_tasks = config.get('tasks', [])
@@ -315,8 +277,9 @@ def generate_questions_pdf(results_path=None,
 
     valid_models = config['models']
     model_name_mapping = config['model_name_mapping']
-    valid_experiments = config['experiments']
-    experiment_display_mapping = config.get('experiment_display_mapping', {})
+    # Normalize so downstream sorted()/membership never hits a dict entry.
+    valid_experiments = experiment_names(config)
+    experiment_display_mapping = config.get('experiment_display_mapping', {}) or display_names(config)
     valid_tasks = config['tasks']
     
     print(f"Loaded {len(valid_models)} models: {valid_models}")
