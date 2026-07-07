@@ -61,3 +61,10 @@ logs/*
 
 # figures
 figures/*
+
+# golden-test dumps (PHI: real de-identified prompts / timelines / image hashes).
+# The harness writes under the config results_dir (su-vista mount, outside the repo),
+# but this glob is a defensive backstop against an --out that points inside the tree.
+*_golden.jsonl
+*_golden.meta.json
+golden/
