@@ -83,12 +83,17 @@ def _lumia_event_to_row(entry_ts, event_el, provider_speciality: dict) -> dict:
         except (TypeError, ValueError):
             return None
 
+    # unit: LUMIA carries it as `unit_source_value` (OMOP source unit), not `unit`.
+    # numeric_value: NOT a discrete LUMIA field — the lab value is embedded in the
+    # event element text (-> text_value). Left as None here; the missing discrete
+    # `VALUE: {num}{unit}` reconstruction is the declared gate-3 delta (OQ-K),
+    # confirmed by the VM field-coverage check (2026-07-07). See the vm-status doc.
     return {
         "time": entry_ts,
         "code": code,
         "description": description,
         "numeric_value": _num(attrib.get("numeric_value")),
-        "unit": attrib.get("unit"),
+        "unit": attrib.get("unit") or attrib.get("unit_source_value"),
         "text_value": text_value,
         # non-renderer fields, used by filters:
         "type": attrib.get("type"),

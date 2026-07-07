@@ -1,10 +1,28 @@
 # Next steps
 
-_Last updated: 2026-07-06_
+_Last updated: 2026-07-07_
 
-- **VM smoke pending:** [docs/vm-status/2026-07-06-golden-harness.md](vm-status/2026-07-06-golden-harness.md)
-  — bank the Task-3b legacy golden baseline + run the LUMIA field-coverage check (likeliest breaker) on
-  the GCP VM. Commit+push first (SHA set at commit time); before/after diff is a later handoff.
+- **VM smoke UNBLOCKED 2026-07-07 — Step 1 + no_image baseline GREEN:** [docs/vm-status/2026-07-06-golden-harness.md](vm-status/2026-07-06-golden-harness.md)
+  — the substrate the prior handoff marked BLOCKED lives in the GCS bucket `gs://vista_bench/` (not the
+  `/data/fries` layout). **base_dir = bucket root** (staged to `/mnt/su-vista-uscentral1/vistabench/vlm/`;
+  cohort via BQ `vista_bench_v1_1`, timelines from `<source_csv>/<task>.csv` — `subsample:false`, no
+  `_subsampled` variants). VM config = `configs/all_tasks.vm.yaml` (do NOT commit as default).
+  **Step 1 (LUMIA field-coverage) DONE:** `time/code/description/text_value` present; `numeric_value`
+  **not a discrete field** (baked into element text → declared delta OQ-K); `unit` present as
+  `unit_source_value` → **one-line adapter remap applied** (`ehr.py`, 0%→42.3%). LUMIA-as-input premise
+  holds (class-2, not a re-plan). **Steps 2–3 (no_image) PASS:** weight-free, 1,238/1,238 timelines
+  matched, full legacy baseline banked (row_count/sort/non-null all verified), golden stays on the PHI
+  mount (repo git clean). **`axial_all_image` = class-3 DEVIATION → HANDBACK to Mac planner:** the legacy
+  CT loader is pinned to a hard-coded `…/vista/nov25` prefix (`DEFAULT_NIFTI_BUCKET_PREFIX` in
+  `vqa_dataset.py`), but **`nov25` is deleted from the bucket — feb26 is the current snapshot.** So the
+  axial byte-identity baseline is unbankable on this VM (all rows would be `image_count=0`). Go-forward
+  (validated): `vista_bench_v1_5` links CTs via `image_study_uid`+`image_series_uid` →
+  `…/vista/feb26/{study}__{series}.nii.gz` (feb26 blob confirmed to exist) — the CT adapter should resolve
+  from the materialized dataset link, drop the hard-coded prefix, and move the substrate v1_1→v1_5. **Mac
+  re-plan owns:** (1) anchor compat on the no_image/EHR arm vs hunt a nov25 archive, (2) v1_5/feb26
+  dataset-linked CT resolution, (3) numeric_value declared-delta OQ-K — fold into a superseding plan doc.
+  See the *DEVIATION → Mac planner* block in the vm-status doc. UNCOMMITTED on VM: `ehr.py` unit fix +
+  `all_tasks.vm.yaml` + this doc + vm-status doc.
 - **Modular VLM preprocessing + context-viewer roadmap** — plan + **6 review passes** + explain-plan HTML
   (`8567ac8decbc`). **Foundation + Task 3a COMMITTED+pushed** (`cba3de6`): Phase 0.5 overshoot fix, additive
   `src/context/` framework, reader normalization, `supports_inline` seam, 3a wiring (lazy model-load split,
