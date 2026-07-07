@@ -106,6 +106,12 @@ class PromptDataset(Dataset):
 
         # 2. Handle Image based on experiment type
         img = None
+        # selected_indices records WHICH leaf units this item chose, so the golden-output
+        # harness (src/vista_run/golden_harness.py) can diff selection byte-for-byte across
+        # the Task-3b dissolution — CT: list of axial slice indices; pathology: list of
+        # loaded tile paths; single-image / no-image: None. Additive + inference-neutral:
+        # it does not touch `question` or `image`, only surfaces already-computed choices.
+        selected_indices = None
         image_path = row.get('image_path', None)
         
         # Skip image loading for 'no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', and 'retrieved_timeline_per_iteration' experiments
@@ -118,6 +124,7 @@ class PromptDataset(Dataset):
                 path_tile_paths = row.get('path_tile_paths', None)
                 if path_tile_paths is not None and len(path_tile_paths) > 0:
                     img_list = []
+                    loaded_tile_paths = []
                     for p in path_tile_paths:
                         p_str = str(p).strip()
                         if p_str and os.path.exists(p_str):
@@ -127,10 +134,12 @@ class PromptDataset(Dataset):
                                     if PIL_img.mode != 'RGB':
                                         PIL_img = PIL_img.convert('RGB')
                                     img_list.append(pad_to_size(PIL_img.copy(), self.target_size))
+                                    loaded_tile_paths.append(p_str)
                             except Exception as e:
                                 pass
                     if img_list:
                         img = img_list
+                        selected_indices = loaded_tile_paths
 
             # First check for image_path (existing behavior) if not path experiment or no path tiles
             if img is None and pd.notna(image_path) and os.path.exists(str(image_path)):
@@ -184,6 +193,7 @@ class PromptDataset(Dataset):
                                 if len(img_data.shape) > 2:
                                     depth = img_data.shape[2]
                                     img_list = []
+                                    slice_indices = []
                                     num_slices = 30
                                     for i in range(num_slices):
                                         if num_slices > 1:
@@ -193,9 +203,11 @@ class PromptDataset(Dataset):
                                         index = int(position * (depth - 1))
                                         if index >= depth:
                                             index = depth - 1
+                                        slice_indices.append(index)
                                         axial_slice = img_data[:, :, index]
                                         img_list.append(self._process_ct_slice(axial_slice))
                                     img = img_list
+                                    selected_indices = slice_indices
                                 else:
                                     img = None
                             elif self.experiment in ('no_timeline', 'all_vb_image_only'):
@@ -203,6 +215,7 @@ class PromptDataset(Dataset):
                                 if len(img_data.shape) > 2:
                                     depth = img_data.shape[2]
                                     img_list = []
+                                    slice_indices = []
                                     num_slices = 50
                                     for i in range(num_slices):
                                         if num_slices > 1:
@@ -212,15 +225,18 @@ class PromptDataset(Dataset):
                                         index = int(position * (depth - 1))
                                         if index >= depth:
                                             index = depth - 1
+                                        slice_indices.append(index)
                                         axial_slice = img_data[:, :, index]
                                         img_list.append(self._process_ct_slice(axial_slice))
                                     img = img_list
+                                    selected_indices = slice_indices
                                 else:
                                     img = None
                             elif self.experiment == 'no_report':
                                 if len(img_data.shape) > 2:
                                     depth = img_data.shape[2]
                                     img_list = []
+                                    slice_indices = []
                                     num_slices = 10
                                     for i in range(num_slices):
                                         if num_slices > 1:
@@ -230,9 +246,11 @@ class PromptDataset(Dataset):
                                         index = int(position * (depth - 1))
                                         if index >= depth:
                                             index = depth - 1
+                                        slice_indices.append(index)
                                         axial_slice = img_data[:, :, index]
                                         img_list.append(self._process_ct_slice(axial_slice))
                                     img = img_list
+                                    selected_indices = slice_indices
                                 else:
                                     img = None
                     except Exception as e:
@@ -246,8 +264,10 @@ class PromptDataset(Dataset):
             "image_path": image_path,
             "image": img,
             "options": row.get("options", None),
+            # Leaf selections chosen above (golden-harness capture; None when no image).
+            "selected_indices": selected_indices,
             # Pass the raw row so the Orchestrator can access all original metadata for saving
-            "raw_row": row 
+            "raw_row": row
         }
 
         return item
