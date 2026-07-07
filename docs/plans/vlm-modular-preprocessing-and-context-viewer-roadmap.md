@@ -393,6 +393,43 @@ harness must impose ordering; `index` is a unique per-file join key):
 > on one example first; a **declared-delta fallback** yielding equivalent results is acceptable (for the EHR
 > string this is the LUMIA-field-coverage escape hatch); cross-version repro (pre-v1.5) is not a goal.
 
+### Golden harness — implementation (authored 2026-07-06, VM-runnable)
+
+Built **before** the 3b dissolution so 3b is developed against it, not blind. Two new
+weight-free scripts + one additive instrumentation:
+
+- **`src/vista_run/golden_harness.py`** — captures the per-example tuple `(index, person_id,
+  dynamic_prompt, adapter_prompt_string, assembly_mode, image_count, path_tile_count,
+  selected_indices, image_hashes)` and writes **JSONL sorted by `(person_id, index)`** (the
+  harness imposes the sort; `run_bq` writes as-processed + appends on resume). It reproduces the
+  data → prompt → selection path **without weights**: mirrors the `run_inference` per-experiment
+  loader dispatch (`_load_experiment_data`), calls `_build_prompts_for_experiment`, then iterates
+  `PromptDataset` directly (single-process, deterministic). **Never** calls `run_inference` /
+  `_ensure_model_loaded`; **rejects retrieval experiments** (they pass `self.model`). Images are
+  hashed as `sha256(mode|size|dtype|shape|bytes)` per PIL; `image_count`/`selected_indices` are
+  read at the item boundary (the CSV only keeps 0/1 `used_image`); `adapter_prompt_string` is the
+  post-`truncate_timeline` `timeline_col`, snapshotted from the in-memory row (the CSV drops it).
+  CLI: `--config --type --name --task --experiments --tag [--limit] [--out]`. `--limit` caps rows
+  after the sort for the OQ-K "verify one example first" smoke.
+- **`src/vista_run/diff_golden.py`** — joins BEFORE/AFTER dumps on `index` and gates them.
+  **Structure fields** (`image_hashes`, `selected_indices`, `image_count`, `path_tile_count`,
+  `assembly_mode`) are a **hard** byte-identity gate (Gate 1 imaging/selection/assembly + Gate 2
+  per-model image identity — run once per model file pair). **Text fields** (`dynamic_prompt`,
+  `adapter_prompt_string`) are `--mode strict` (byte-identical; use for the passthrough post-3b
+  run) or `--mode allowlist` (Gate 3 — a `normalize_text` hook; a normalised match is a *declared
+  delta*, OQ-K). The allowlist normaliser is intentionally minimal (trailing-whitespace only) until
+  the VM surfaces the real LUMIA-render vs `patient_string` deltas — not speculated now.
+- **`src/vqa_dataset.py` `__getitem__`** — additive, inference-neutral: exposes the already-computed
+  leaf selections on the returned item as `selected_indices` (CT: slice-index list; pathology:
+  loaded tile-path list; single/no-image: `None`). Does not touch `question` or `image`, so it is
+  byte-safe. 3b's new CT/path adapters must expose the same field so the golden diffs the **real**
+  selection code on both sides (chosen over re-deriving the formula in the harness, which would test
+  a copy, not the path).
+
+**Golden output is PHI** (real de-identified prompts/timelines/hashes) → written only under the
+config `results_dir` (su-vista mount, outside the repo) and git-ignored (`*_golden.jsonl`,
+`*_golden.meta.json`, `golden/`); `/phi-vet` gates every commit.
+
 ## Config-context viewer — detailed spec (Phase 2)
 
 - **Generator:** `src/results/context_viewer.py`, CLI `--config --task --experiment --model [--limit]
@@ -418,6 +455,11 @@ harness must impose ordering; `index` is a unique per-file join key):
   duplicate `tile_wsi.py`; folder resolution (`run_bq.py:486-498`) moves with the sampler.
 - **New:** `src/results/context_viewer.py`. `.gitignore` (`configs/*`/`logs/*`/`figures/*` at `:46,60,63`) +
   viewer glob; write only to the su-vista PHI mount.
+- **New (golden harness, done):** `src/vista_run/golden_harness.py` (weight-free per-example capture) +
+  `src/vista_run/diff_golden.py` (gate assertions); `.gitignore` backstop `*_golden.jsonl` /
+  `*_golden.meta.json` / `golden/`. See the *Golden harness — implementation* subsection above.
+- `src/vqa_dataset.py` — **also** (golden): `__getitem__` exposes `selected_indices` on the item
+  (additive, inference-neutral); 3b's CT/path adapters must expose the same field.
 - `src/models/base.py` — add `supports_inline: bool = False` to `BaseVLMAdapter`; inline-capable models flip
   it in Phase 1.5.
 - `src/vqa_dataset.py` — `__getitem__` consumes resolved adapters; remove the 3 inline CT branches;

@@ -2,16 +2,20 @@
 
 _Last updated: 2026-07-06_
 
-- **Modular VLM preprocessing + context-viewer roadmap** — plan drafted + **6 review passes applied**
-  (Codex ×2, Phil pivot + 12-OQ pass, LUMIA/meds_tools research, fresh-Claude, **serialization
-  interrogation 2026-07-06**) + explain-plan HTML (in-sync `8567ac8decbc`). **UNCOMMITTED**, Reviewed: No.
-  Selection is leaf-only (study/series & specimen/block/slide upstream in VISTABench); **EHR consumes
-  full LUMIA timelines as input — filter + flat-render + truncate LIVE at inference** (no offline prep,
-  no CSV re-materialization, `meds_tools`/`meds_reader`/ontology dropped); inline → Phase 1.5.
-  next: `/read-plan` → resolve 3 small non-blocking decisions (PFS 1yr-vs-2yr smoke · `summarize`
-  on/off + failure mode · viewer side-by-side) + the **VM LUMIA field-coverage check** (corpus carries
-  `numeric_value`/`unit`/`text_value`/`description` + covers eval cohorts) → implement Phase 0.5
-  (overshoot fix) then Phase 1.
+- **VM smoke pending:** [docs/vm-status/2026-07-06-golden-harness.md](vm-status/2026-07-06-golden-harness.md)
+  — bank the Task-3b legacy golden baseline + run the LUMIA field-coverage check (likeliest breaker) on
+  the GCP VM. Commit+push first (SHA set at commit time); before/after diff is a later handoff.
+- **Modular VLM preprocessing + context-viewer roadmap** — plan + **6 review passes** + explain-plan HTML
+  (`8567ac8decbc`). **Foundation + Task 3a COMMITTED+pushed** (`cba3de6`): Phase 0.5 overshoot fix, additive
+  `src/context/` framework, reader normalization, `supports_inline` seam, 3a wiring (lazy model-load split,
+  pathology `materialize`, CT windowing shim). **Golden harness authored + Codex-reviewed 2026-07-06**
+  (`golden_harness.py` + `diff_golden.py` + `selected_indices` instrumentation) — UNCOMMITTED, VM baseline
+  pending (see top pointer). Selection is leaf-only; **EHR consumes full LUMIA timelines as input — filter +
+  flat-render + truncate LIVE at inference** (no offline prep, `meds_tools`/`meds_reader`/ontology dropped);
+  inline → Phase 1.5.
+  next: land golden harness (`/commit-review`) → VM banks baseline + LUMIA check → **implement Task 3b**
+  (`__getitem__`/`_build_prompts` dissolution + LUMIA-live config-gate) developed against the golden, then
+  Phase 2 viewer. Still-open small decisions: `summarize` on/off + failure mode · viewer side-by-side.
   → [plans/vlm-modular-preprocessing-and-context-viewer-roadmap.md](plans/vlm-modular-preprocessing-and-context-viewer-roadmap.md)
 - **VLM eval GCP / v1_5 stand-up (Phase 0, subsumed)** — the roadmap subsumes this as Phase 0; its
   v1_5 substrate is inlined. Standalone plan on branch `docs/vlm-eval-gcp-v1_5-standup-plan`, Reviewed: No.
