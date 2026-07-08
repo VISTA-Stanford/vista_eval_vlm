@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="plan-sha256" content="5aea55ad1425f26911588278d1620fcbcb5077090d6b642a4e6137e86a803166"/>
+<title>Rung 0 — reproduce Ryan on feb26</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<style>
+:root{
+  --bg:#f7f8fa; --card:#ffffff; --ink:#1a1f2b; --muted:#5b6472; --line:#e3e7ee;
+  --accent:#0e7490; --accent2:#7c3aed; --warn:#b45309; --ok:#15803d; --bad:#be123c;
+  --code-bg:#f0f2f6; --chip:#eef2f7;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0f131a; --card:#161c26; --ink:#e6ebf2; --muted:#9aa6b6; --line:#26303d;
+    --accent:#22d3ee; --accent2:#a78bfa; --warn:#f59e0b; --ok:#4ade80; --bad:#fb7185;
+    --code-bg:#0c1119; --chip:#1d2634;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f7f8fa; --card:#ffffff; --ink:#1a1f2b; --muted:#5b6472; --line:#e3e7ee;
+  --accent:#0e7490; --accent2:#7c3aed; --warn:#b45309; --ok:#15803d; --bad:#be123c;
+  --code-bg:#f0f2f6; --chip:#eef2f7;
+}
+:root[data-theme="dark"]{
+  --bg:#0f131a; --card:#161c26; --ink:#e6ebf2; --muted:#9aa6b6; --line:#26303d;
+  --accent:#22d3ee; --accent2:#a78bfa; --warn:#f59e0b; --ok:#4ade80; --bad:#fb7185;
+  --code-bg:#0c1119; --chip:#1d2634;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+.wrap{max-width:1120px;margin:0 auto;padding:28px 20px 120px;}
+h1{font-size:26px;margin:0 0 4px;line-height:1.2}
+h2{font-size:19px;margin:34px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+h3{font-size:15px;margin:0 0 6px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code{background:var(--code-bg);padding:1px 5px;border-radius:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+pre.code{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.tldr{border-left:4px solid var(--accent)}
+.meta{display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--muted);font-size:13px;margin-top:8px}
+.meta b{color:var(--ink);font-weight:600}
+.chip{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11.5px;font-weight:600;background:var(--chip);color:var(--ink);border:1px solid var(--line)}
+.chip.pending{color:var(--warn);border-color:var(--warn)}
+.chip.blocked{color:var(--bad);border-color:var(--bad)}
+.chip.resolved{color:var(--ok);border-color:var(--ok)}
+.chip.open{color:var(--warn);border-color:var(--warn)}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.diagram-wrap{position:relative;height:520px;overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.diagram-wrap.full{position:fixed;inset:0;height:100vh;z-index:50;border-radius:0}
+.diagram-controls{position:absolute;top:8px;right:8px;z-index:5;display:flex;gap:6px}
+.diagram-controls button{font-size:11.5px;padding:3px 8px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:6px;cursor:pointer}
+.diagram-hint{position:absolute;bottom:8px;left:10px;z-index:5;font-size:11px;color:var(--muted);background:var(--card);padding:2px 7px;border-radius:6px;border:1px solid var(--line);opacity:.9}
+pre.mermaid{margin:0}
+details{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:9px 0;padding:0 14px}
+details[open]{padding-bottom:12px}
+summary{cursor:pointer;padding:11px 0;font-weight:600;list-style:none;display:flex;align-items:center;gap:9px}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";color:var(--muted);font-size:12px}
+details[open] summary::before{content:"▾"}
+.files{font-size:12.5px;color:var(--muted);margin:6px 0}
+.files code{font-size:12px}
+.gate{border-left:3px solid var(--ok);padding:4px 10px;margin:8px 0;background:var(--code-bg);border-radius:0 6px 6px 0;font-size:13px}
+.stop{border-left:3px solid var(--bad);padding:4px 10px;margin:8px 0;background:var(--code-bg);border-radius:0 6px 6px 0;font-size:13px}
+textarea.section-feedback,textarea#global-feedback,.oq textarea{width:100%;min-height:56px;margin-top:8px;background:var(--code-bg);border:1px dashed var(--line);border-radius:8px;color:var(--ink);padding:8px;font:13px/1.5 inherit;resize:vertical}
+.oq{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0;background:var(--card)}
+.oq-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.oq select{background:var(--code-bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:3px 7px;font-size:12.5px}
+.oq .q{margin-top:8px;font-size:13.5px}
+.warnbox{border-left:4px solid var(--warn);background:var(--code-bg);border-radius:0 8px 8px 0;padding:10px 14px;margin:10px 0}
+.copybar{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);padding:10px 20px;display:flex;justify-content:center;gap:12px;align-items:center;z-index:40}
+.copybar button{font-size:14px;font-weight:600;padding:8px 18px;border-radius:9px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
+.copybar button.secondary{background:var(--card);color:var(--ink);border-color:var(--line)}
+.toast{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:8px;font-size:13px;z-index:60;opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.show{opacity:1}
+.small{font-size:12.5px;color:var(--muted)}
+.k{color:var(--accent);font-weight:600}
+.themebtn{position:fixed;top:12px;right:14px;z-index:45;font-size:12px;padding:4px 10px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:7px;cursor:pointer}
+</style>
+</head>
+<body>
+<button class="themebtn" onclick="toggleTheme()">◐ theme</button>
+<div class="wrap">
+
+<h1>Rung 0 — reproduce Ryan's weighted pipeline on feb26</h1>
+<div class="small">operability smoke · gates the CT/feb26/v1.5 rebaseline</div>
+<div class="card">
+  <div class="meta">
+    <span><b>Status:</b> <span class="chip pending">Draft — 0% coded</span></span>
+    <span><b>Branch:</b> <code>worktree-vlm-modular-preprocessing-roadmap</code></span>
+    <span><b>Machine:</b> planner Mac authors · VM <code>som-nero-plevriti-deidbdf</code> executes</span>
+  </div>
+  <div class="meta">
+    <span><b>Source:</b> <a href="vlm-rung0-reproduce-ryan-feb26.md">vlm-rung0-reproduce-ryan-feb26.md</a></span>
+    <span><b>Plan SHA:</b> <code>5aea55ad1425</code></span>
+    <span><b>Generated:</b> 2026-07-08 14:25 PDT</span>
+    <span><b>Gates:</b> <a href="vlm-ct-feb26-v1_5-golden-rebaseline.md">vlm-ct-feb26-v1_5-golden-rebaseline.md</a> (rungs 1–2)</span>
+  </div>
+</div>
+
+<div class="card tldr">
+  <h3>TL;DR</h3>
+  <p>Before cutting the eval substrate to v1.5 or refactoring the CT loader, first prove we can <b>drive the VM
+  and reproduce Ryan's weighted pipeline</b> (loads model weights, emits a results CSV — not the weights-free
+  golden harness the rest of the workstream runs). Keep Ryan's <b>v1_1</b> substrate untouched; change
+  <b>only</b> the CT storage prefix <code>nov25 → feb26</code> by pulling the <code>ct_snapshot_prefix</code>
+  config seam forward and leaving <code>ct_dir</code> unset so the run is <b>forced onto GCS</b> and must exercise
+  the feb26 reroute. Run one model × PFS × <code>{no_image, axial_all_image}</code>, then report accuracy against
+  Ryan's committed baseline. This is a <b>report milestone, not a byte/number gate</b> — and the comparison is
+  confounded (see OQ-R2), so 0c is report-only.</p>
+</div>
+
+<h2>Review history</h2>
+<table>
+  <thead><tr><th>Pass</th><th>Reviewer</th><th>Verdict</th><th>Key findings surfaced</th><th>Applied</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Split + OQ resolve</td><td>Phil steer (2026-07-08)</td><td><span class="chip">Pivot</span></td>
+      <td>Rung 0 extracted into this standalone gating plan; OQ-R2 checked against Ryan's config (hypothesis refuted); OQ-R3 = report-only, ~10% soft.</td>
+      <td>Yes</td>
+    </tr>
+    <tr>
+      <td>Design audit</td>
+      <td>Fresh Claude (<a href="reviews/vlm-rung0-reproduce-ryan-feb26-feedback-claude.md">feedback</a>)</td>
+      <td><span class="chip open">Revise</span></td>
+      <td>±image delta demoted (confounded by report + 30-vs-10 slices); 0c label-derivation bug (raw CSVs lack accuracy cols → <code>valid_tasks.json</code> mapping); overlay-from-<code>all_tasks.yaml</code> not <code>.vm.yaml</code>; <code>path_full</code> active; citation fix. OQ-R2 crux verified correct.</td>
+      <td>All (0 disagreements)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Repo map — where rung 0 sits</h2>
+<div class="diagram-wrap" id="w-repomap">
+  <div class="diagram-controls">
+    <button onclick="dReset('repomap')">Reset</button>
+    <button onclick="dFull('w-repomap')">Fullscreen</button>
+  </div>
+  <div class="diagram-hint">scroll to zoom • drag to pan • ESC exits fullscreen</div>
+<pre class="mermaid" id="repomap">
+flowchart LR
+  classDef added fill:#0e7490,stroke:#22d3ee,stroke-width:3px,color:#fff;
+  classDef modified fill:#7c5a10,stroke:#f59e0b,stroke-width:2px,color:#fff;
+  classDef output fill:#166534,stroke:#4ade80,stroke-width:2px,color:#fff;
+  classDef untouched fill:#2a3340,stroke:#9ca3af,stroke-width:1px,color:#cbd5e1;
+  classDef del fill:#2a3340,stroke:#9ca3af,stroke-width:1px,color:#9ca3af,stroke-dasharray:4 3;
+  classDef target fill:#9f1239,stroke:#fb7185,stroke-width:3px,color:#fff;
+  classDef deferred fill:#3b2a63,stroke:#a78bfa,stroke-width:1px,color:#c4b5fd,stroke-dasharray:4 3;
+
+  subgraph substrate["Substrate untouched v1_1"]
+    bq["vista_bench_v1_1 BQ<br/>query_utils.py:236<br/>valid_tasks_v1_3.json"]
+    subcsv["person_id_subsampled.csv<br/>Ryan cohort, subsample true"]
+  end
+  subgraph storage["CT storage GCS"]
+    nov25["nov25 snapshot<br/>DELETED, zero objects"]
+    feb26["feb26 blobs<br/>(prefix)/(study)__(series).nii.gz"]
+  end
+  subgraph thispr["Rung 0 change, this plan"]
+    seam["ct_snapshot_prefix seam<br/>default feb26<br/>vqa_dataset.py:15"]
+    overlay["VM overlay yaml<br/>1 model, PFS,<br/>no_image + axial_all_image"]
+  end
+  vqa["vqa_dataset.py resolver<br/>source-log, ct_dir unset"]
+  run["run_bq.py WEIGHTED<br/>loads weights :171"]
+  out["results CSVs<br/>model_response + label"]
+  base["Ryan baseline<br/>all_model_response.csv"]
+  subgraph downstream["Rungs 1 to 2 rebaseline doc, gated"]
+    r1["Rung 1: v1_5 cut<br/>Axes A plus B"]
+    r2["Rung 2: 3b refactor<br/>Axis C golden"]
+  end
+
+  bq --> vqa
+  subcsv --> vqa
+  seam --> vqa
+  feb26 --> vqa
+  nov25 -.->|reprocessed to| feb26
+  overlay --> run
+  vqa --> run
+  run --> out
+  out -->|0c compare| base
+  out -->|rung 0 green gates| r1
+  r1 --> r2
+
+  subgraph legend["Color legend"]
+    lg_add["added, this PR (cyan)"]
+    lg_mod["modified (amber)"]
+    lg_out["output (green)"]
+    lg_tgt["feb26 reroute target (rose)"]
+    lg_unt["untouched (grey)"]
+    lg_del["deleted (grey dashed)"]
+    lg_def["deferred, gated (violet)"]
+  end
+
+  class seam,overlay added;
+  class vqa,run modified;
+  class out output;
+  class bq,subcsv,base untouched;
+  class nov25 del;
+  class feb26 target;
+  class r1,r2 deferred;
+  class lg_add added;
+  class lg_mod modified;
+  class lg_out output;
+  class lg_tgt target;
+  class lg_unt untouched;
+  class lg_del del;
+  class lg_def deferred;
+</pre>
+</div>
+
+<h2>Blast radius — knobs to files to outputs</h2>
+<div class="diagram-wrap" id="w-blast">
+  <div class="diagram-controls">
+    <button onclick="dReset('blast')">Reset</button>
+    <button onclick="dFull('w-blast')">Fullscreen</button>
+  </div>
+  <div class="diagram-hint">scroll to zoom • drag to pan</div>
+<pre class="mermaid" id="blast">
+flowchart LR
+  classDef added fill:#0e7490,stroke:#22d3ee,stroke-width:3px,color:#fff;
+  classDef modified fill:#7c5a10,stroke:#f59e0b,stroke-width:2px,color:#fff;
+  classDef output fill:#166534,stroke:#4ade80,stroke-width:2px,color:#fff;
+  classDef untouched fill:#2a3340,stroke:#9ca3af,stroke-width:1px,color:#cbd5e1;
+  classDef gate fill:#7c2d12,stroke:#fb923c,stroke-width:2px,color:#fff;
+
+  subgraph knobs["Knobs, overlay only"]
+    k1["ct_snapshot_prefix = feb26"]
+    k2["ct_dir unset, force GCS"]
+    k3["experiments: no_image + axial_all_image"]
+    k4["1 model medgemma-1.5-4b-it, PFS"]
+  end
+  f1["vqa_dataset.py<br/>prefix read + source-log"]
+  f2["VM overlay yaml<br/>from committed all_tasks.yaml"]
+  pre["0a preflight<br/>feb26 blob-existence sweep"]
+  rb["run_bq.py WEIGHTED"]
+  o1["results CSV no_image"]
+  o2["results CSV axial_all_image"]
+  cmp["0c compare vs baseline<br/>image_and_timeline, timeline_only"]
+
+  k1 --> f1
+  k2 --> f1
+  k3 --> f2
+  k4 --> f2
+  f1 --> pre
+  pre -->|blobs exist, gate GPU| rb
+  f2 --> rb
+  rb --> o1
+  rb --> o2
+  o1 --> cmp
+  o2 --> cmp
+
+  subgraph legend2["Color legend"]
+    l_add["knob, added (cyan)"]
+    l_mod["modified file (amber)"]
+    l_gate["preflight gate (orange)"]
+    l_out["output (green)"]
+    l_unt["compare step (grey)"]
+  end
+  class k1,k2,k3,k4 added;
+  class f1 modified;
+  class f2 added;
+  class pre gate;
+  class rb modified;
+  class o1,o2 output;
+  class cmp untouched;
+  class l_add added;
+  class l_mod modified;
+  class l_gate gate;
+  class l_out output;
+  class l_unt untouched;
+</pre>
+</div>
+
+<h2>Order of operations — 0a to 0c, then the ladder</h2>
+<div class="diagram-wrap" id="w-flow">
+  <div class="diagram-controls">
+    <button onclick="dReset('flow')">Reset</button>
+    <button onclick="dFull('w-flow')">Fullscreen</button>
+  </div>
+  <div class="diagram-hint">scroll to zoom • drag to pan</div>
+<pre class="mermaid" id="flow">
+flowchart TD
+  classDef pending fill:#7c5a10,stroke:#f59e0b,stroke-width:2px,color:#fff;
+  classDef blocked fill:#7f1d1d,stroke:#fb7185,stroke-width:2px,color:#fff;
+  classDef gate fill:#7c2d12,stroke:#fb923c,stroke-width:2px,color:#fff;
+
+  s0a["0a preflight, no weights ⏳<br/>overlay loads + feb26 blobs exist<br/>+ v1_1 queryable"]
+  gpu{{"feb26 blob-existence ~100 percent?"}}
+  s0b["0b weighted run ⏳<br/>1 model, PFS,<br/>no_image + axial_all_image"]
+  s0c["0c comparison, REPORT ⏳<br/>derive labels then compare<br/>vs Ryan baseline"]
+  green["Rung 0 green"]
+  r1["Rung 1: v1_5 cut, Axes A+B 🛑"]
+  r2["Rung 2: 3b refactor, Axis C 🛑"]
+
+  s0a --> gpu
+  gpu -->|yes| s0b
+  gpu -->|no, stop before GPU| stopn["STOP: superset assumption broken"]
+  s0b --> s0c
+  s0c --> green
+  green -->|gates| r1
+  r1 --> r2
+
+  class s0a,s0b,s0c pending;
+  class gpu,stopn gate;
+  class r1,r2 blocked;
+</pre>
+</div>
+
+<h2>Knobs &amp; contracts</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Knob</th><th>Value (rung 0)</th><th>Where</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td><code>ct_snapshot_prefix</code></td><td><code>…/vista/feb26</code></td><td><code>vqa_dataset.py:15</code> (was hard-coded <code>DEFAULT_NIFTI_BUCKET_PREFIX</code>)</td><td>The one net-new code seam; pulled forward from rung 1's Axis A.</td></tr>
+      <tr><td><code>ct_dir</code></td><td><b>unset</b></td><td>overlay</td><td>Zero-code force-GCS: <code>ct_dir=None → use_local=False → GCS branch</code> (<code>vqa_dataset.py:163-169</code>).</td></tr>
+      <tr><td><code>use_constrained_decoding_for_binary</code></td><td><b>true</b></td><td>overlay</td><td>Match Ryan's constrained baseline (OQ-R6). Committed default is <code>false</code> (diverges); <code>run_bq.py:909</code> defaults the absent key to <b>True</b>.</td></tr>
+      <tr><td><code>experiments</code></td><td><code>[no_image, axial_all_image]</code></td><td>overlay</td><td>Committed config's sole active experiment is <code>path_full</code> (<code>:83</code>) — must override.</td></tr>
+      <tr><td>model / task</td><td><code>gemma3 medgemma-1.5-4b-it</code> / PFS_1yr</td><td>overlay</td><td>Committed lists 5 models (&gt; <code>MAX_MODELS=4</code>) and PFS commented.</td></tr>
+      <tr><td>substrate</td><td><code>vista_bench_v1_1</code>, <code>subsample: true</code></td><td>inherit from <code>all_tasks.yaml</code></td><td><b>Do not</b> start from a <code>.vm.yaml</code> (VM-side, v1_5 mounts).</td></tr>
+    </tbody>
+  </table>
+  <p class="small">Net-new code = the config prefix read + <code>source=local|gcs</code> logging. Everything else is an uncommitted VM-local overlay.</p>
+</div>
+
+<h2>Steps</h2>
+
+<details data-section="step-0a">
+  <summary><span class="chip pending">⏳ 0a</span> Config overlay + preflight (no weights — gates GPU spend)</summary>
+  <p>The committed <code>configs/all_tasks.yaml</code> will not run the smoke as-is: <b>5 models</b>
+  (&gt; <code>MAX_MODELS=4</code>, <code>eval/bq_gcp.sh:8</code>), PFS commented (<code>:40</code>), and the
+  <b>sole active experiment is <code>path_full</code></b> (<code>:83</code>) — not <code>no_image</code>/<code>axial_all_image</code>
+  (<code>run_bq.py:178</code>'s <code>['no_image']</code> default only fires when <code>experiments:</code> is empty).
+  Author a VM-local uncommitted overlay by <b>starting from the committed <code>all_tasks.yaml</code></b> (already Ryan's
+  v1_1 layout) and overriding only model / task / <code>experiments</code> / <code>ct_snapshot_prefix</code> / unset
+  <code>ct_dir</code>. Preflight: on a small v1_1 PFS sample, classify <code>nifti_path</code> shapes, derive
+  <code>(study, series)</code>, check the feb26 blobs exist, log counts + resolved <code>source</code>.</p>
+  <div class="files">Files: <code>src/vqa_dataset.py</code> (prefix read + source-log) · VM-local overlay (uncommitted)</div>
+  <div class="gate"><b>Expected:</b> overlay loads (1 model ≤ MAX_MODELS); feb26 blob-existence ≈ 100% for v1_1-selected UIDs; every <code>nifti_path</code> shape maps to a valid feb26 reconstruction; <code>vista_bench_v1_1</code> queryable independent of the local BQ cache.</div>
+  <div class="stop"><b>Stop:</b> feb26 blob-existence materially below 100% (superset assumption broken → report ≤5 offending UIDs-as-structure, no PHI); an unhandled <code>nifti_path</code> shape; v1_1 not queryable.</div>
+  <textarea class="section-feedback" data-id="step-0a" placeholder="Feedback on 0a…"></textarea>
+</details>
+
+<details data-section="step-0b">
+  <summary><span class="chip pending">⏳ 0b</span> Weighted run</summary>
+  <p><code>eval/bq_gcp.sh</code> (or <code>run_bq.py</code>) with the 0a overlay, <b>weighted</b> (loads model weights).</p>
+  <div class="files">Files: none (runs the overlay)</div>
+  <div class="gate"><b>Expected:</b> log shows exactly one model, PFS, and <b>both</b> <code>no_image</code> + <code>axial_all_image</code> ran; <code>image_count &gt; 0</code> on CT rows for <code>axial_all_image</code>; results CSVs at <code>{results_dir}/…/{task}_results_{experiment}.csv</code>, non-empty, resumable by <code>index</code>.</div>
+  <div class="stop"><b>Stop:</b> weights / HF auth fail; any CT row loads from <code>source=local</code> (force-GCS breached); <code>row_count == 0</code> for a CT-bearing experiment.</div>
+  <textarea class="section-feedback" data-id="step-0b" placeholder="Feedback on 0b…"></textarea>
+</details>
+
+<details data-section="step-0c">
+  <summary><span class="chip pending">⏳ 0c</span> Ryan-adjacent comparison (REPORT, not a gate)</summary>
+  <div class="warnbox"><b>Derivation — do not skip.</b> The weighted result CSVs contain <code>model_response</code> + raw
+  <code>label</code> only (<code>run_bq.py:806-834</code>) — <b>not</b> <code>predicted_label</code>/<code>ground_truth_label</code>.
+  Those derive downstream via <code>_extract_answer</code> + <code>map_answer_to_label_key(mapping)</code>, where
+  <code>mapping</code> loads from <code>base_dir/tasks/valid_tasks.json</code> — a <b>different file</b> than the run
+  registry <code>valid_tasks_v1_3.json</code>. If it's absent/empty, every <code>predicted_label</code> silently becomes
+  <code>-1</code> → garbage accuracy. So 0c must (a) run the derivation, and (b) confirm the PFS <code>mapping</code> loaded
+  non-empty first.</div>
+  <p><b>Compare</b> accuracy = <code>mean(predicted_label == ground_truth_label)</code> per experiment vs Ryan's committed
+  <code>all_model_response.csv</code>, filtered to PFS and the mapped Ryan label:
+  <code>axial_all_image → image_and_timeline</code>; <code>no_image → timeline_only</code> (OQ-R2). First confirm the
+  comparator exists (exact <code>model_name</code> + <code>task</code> strings present). Report the mapped pairs and the
+  ±image delta, but treat the delta as <b>one weak, confounded signal</b> (report presence + 30-vs-10 slices, small n,
+  decoding mode, ~5% orientation). Success = a sane, same-ballpark read within the OQ-R3 ~10% informal band, not a match claim.</p>
+  <div class="files">Files: none (post-hoc analysis on the VM)</div>
+  <textarea class="section-feedback" data-id="step-0c" placeholder="Feedback on 0c…"></textarea>
+</details>
+
+<h2>Gotchas</h2>
+
+<details data-section="gotcha-confound">
+  <summary>⚠ The 0c comparison is confounded — even the ±image delta</summary>
+  <p>Current arms vs Ryan's arms differ in <b>two</b> ways beyond the image: (1) <b>report presence</b> — current
+  <code>no_image</code>/<code>axial_all_image</code> use the report-<i>inclusive</i> timeline
+  (<code>use_no_report_csv=False</code>), Ryan's <code>timeline_only</code>/<code>image_and_timeline</code> use the
+  report-<i>stripped</i> timeline; (2) <b>slice count</b> — <code>axial_all_image</code>=30 slices
+  (<code>presets.py:84</code>), Ryan's <code>image_and_timeline</code> (raw <code>no_report</code>)=10
+  (<code>presets.py:92</code>). So absolute accuracies aren't comparable, and the ±image delta measures the image's
+  marginal value under different text+dose conditions — one weak directional signal, not confound-robust.</p>
+  <textarea class="section-feedback" data-id="gotcha-confound" placeholder="Feedback…"></textarea>
+</details>
+
+<details data-section="gotcha-noop">
+  <summary>Prefix swap must actually exercise the feb26 reroute (no-op / silent-fallback risks)</summary>
+  <p>Two ways the "reproduce on feb26" claim can be hollow: (1) the resolver's <code>startswith(prefix)</code>
+  early-return means a stored <code>nifti_path</code> shape may reconstruct differently per shape — the 0a preflight
+  classifies shapes before trusting it; (2) the local <code>ct_dir</code> nov25 cache is tried before GCS, so if it
+  survives the run loads local nov25 and never proves the reroute — hence force-GCS (leave <code>ct_dir</code> unset).
+  A local-cache "exact Ryan" run is a separate optional <code>ryan_exact_local</code> outcome, not the gate.</p>
+  <textarea class="section-feedback" data-id="gotcha-noop" placeholder="Feedback…"></textarea>
+</details>
+
+<details data-section="gotcha-declared-deltas">
+  <summary>"Ryan + declared deltas" — not a digit match</summary>
+  <p>This branch carries two deterministic input changes vs Ryan's original code: the 30-slice even-spacing fix
+  (<code>vqa_dataset.py:191-210</code>, <code>04b97d8</code>) on the <code>axial_all_image</code> path, and the
+  <code>unit_source_value</code> EHR remap. Fine for an operability/sanity smoke; if a true digit reproduce is wanted,
+  cherry-pick only the prefix swap onto Ryan's baseline SHA.</p>
+  <textarea class="section-feedback" data-id="gotcha-declared-deltas" placeholder="Feedback…"></textarea>
+</details>
+
+<details data-section="gotcha-phi">
+  <summary>PHI-in-history (workstream-wide)</summary>
+  <p>Real DICOM Study/Series UIDs sit in git <i>history</i> (not the current tree) — see the rebaseline doc's
+  <i>Reprocessing &amp; historical CT test-set visibility</i> section. No history rewrite without Phil's sign-off.
+  Rung-0 reports use counts / field-names / UIDs-as-structure only; <code>/phi-vet</code> gates every commit.</p>
+  <textarea class="section-feedback" data-id="gotcha-phi" placeholder="Feedback…"></textarea>
+</details>
+
+<h2>Open questions</h2>
+<div id="oq-root"></div>
+
+<h2>Overall feedback</h2>
+<div class="card">
+  <textarea id="global-feedback" placeholder="Anything cross-cutting…"></textarea>
+</div>
+
+</div>
+
+<div class="copybar">
+  <button id="copybtn" onclick="copyFeedback()">Copy all feedback as Claude prompt</button>
+  <button class="secondary" onclick="clearFeedback()">Clear saved</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const PLAN_STEM = "vlm-rung0-reproduce-ryan-feb26";
+const PLAN_SHA = "5aea55ad1425f26911588278d1620fcbcb5077090d6b642a4e6137e86a803166";
+const LS = (id)=>`explainplan::${PLAN_STEM}::${id}`;
+const SHA_KEY = `explainplan::${PLAN_STEM}::__sha`;
+
+/* ---- theme ---- */
+function toggleTheme(){
+  const r=document.documentElement;
+  const cur=r.getAttribute('data-theme')|| (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+  r.setAttribute('data-theme', cur==='dark'?'light':'dark');
+}
+
+/* ---- Open Questions ---- */
+const OQ = [
+  {n:"R1", status:"Resolved", q:"Force-GCS vs local-cache-exact. RESOLVED (Phil): force GCS is the gate — pull the ct_snapshot_prefix seam forward, set feb26, unset ct_dir so the smoke can't fall back to local nov25 and must prove the feb26 reroute. Local-cache exact = a separate optional ryan_exact_local bonus."},
+  {n:"R2", status:"Resolved", q:"Experiment-name mapping. RESOLVED (git-history + code): axial_all_image ↔ image_and_timeline (the ↔image_only hypothesis is REFUTED — image_only has zero timeline); no_image ↔ timeline_only. Confound: current arms use the report-inclusive timeline + 30 slices, Ryan's use report-stripped + 10 slices → both absolute accuracy and the ±image delta are confounded. 0c stays report-only."},
+  {n:"R3", status:"Resolved", q:"'Ryan-adjacent' tolerance. RESOLVED (soft): 0c is report-only; ~10% is an informal band, not a hard gate. Softened by the OQ-R2 confounds and small n (~34 rows/cell → SE ~8-9%, band within one SE). Revisit after the first real results."},
+  {n:"R4", status:"Resolved", q:"Prefixed-nifti_path handling. RESOLVED via the config seam + 0a preflight: the resolver reads ct_snapshot_prefix, and 0a classifies stored nifti_path shapes so the executor confirms the feb26 reconstruction per shape."},
+  {n:"R5", status:"Resolved", q:"Task count. RESOLVED (Phil): PFS-only for the first pass. The run is subsample:true either way, so runtime tracks the number of task x experiment arms, not cohort size. Keep the single canonical PFS task x {no_image, axial_all_image} = 2 arms (fastest). Tiny-n caveat stands but is fine for a report-only 0c: PFS baseline has ~34 rows/cell vs ~57 for has_recurrence_1_yr, BOTH from Ryan's subsampled baseline (the earlier '912' was has_recurrence's per-TASK total = 57 x 16 cells, not per-cell or subsample-vs-full). Cheap follow-up if PFS is too noisy: add has_recurrence_1_yr as a second task (one line, no code change)."},
+  {n:"R6", status:"Resolved", q:"Decoding-mode parity. RESOLVED from the repo (git-history + CSV contents): Ryan's baseline used CONSTRAINED decoding, and there is NO committed constrained_all_model_response.csv — the single baseline all_model_response.csv IS the constrained artifact (last-write commit 5e97abd 'add in constrained decoding'; run_bq.py@5e97abd:380 forced Yes/No for every binary task, the knob didn't exist yet; results_dir=results_constrained_decoding_v2; responses 100% Yes/No 11048/2408). Decision: set use_constrained_decoding_for_binary: true in the overlay to match Ryan — this REMOVES the decoding confound from 0c. Trap: run_bq.py:909 defaults the absent key to True. No VM check needed."}
+];
+function statusChipClass(s){return s==="Resolved"?"resolved":s==="Deferred"?"":"open";}
+function renderOQ(){
+  const root=document.getElementById('oq-root');
+  OQ.forEach(o=>{
+    const div=document.createElement('div'); div.className='oq'; div.dataset.section=`oq-${o.n}`;
+    div.innerHTML=`<div class="oq-head"><b>OQ-${o.n}</b>
+      <span class="chip ${statusChipClass(o.status)}" id="chip-${o.n}">${o.status}</span>
+      <select data-oq="${o.n}">
+        <option${o.status==="Pending"?" selected":""}>Pending</option>
+        <option${o.status==="Resolved"?" selected":""}>Resolved</option>
+        <option${o.status==="Deferred"?" selected":""}>Deferred</option>
+      </select></div>
+      <div class="q">${o.q}</div>
+      <textarea data-id="oq-${o.n}" placeholder="Notes on OQ-${o.n}…"></textarea>`;
+    root.appendChild(div);
+  });
+  root.querySelectorAll('select[data-oq]').forEach(sel=>{
+    sel.addEventListener('change',()=>{
+      const n=sel.dataset.oq, chip=document.getElementById('chip-'+n);
+      chip.textContent=sel.value; chip.className='chip '+statusChipClass(sel.value);
+      localStorage.setItem(LS('oqstatus-'+n), sel.value);
+    });
+  });
+}
+
+/* ---- persistence ---- */
+function restore(){
+  if(localStorage.getItem(SHA_KEY)!==PLAN_SHA){
+    // plan regenerated -> stale feedback, wipe
+    Object.keys(localStorage).filter(k=>k.startsWith(`explainplan::${PLAN_STEM}::`)).forEach(k=>localStorage.removeItem(k));
+    localStorage.setItem(SHA_KEY, PLAN_SHA);
+  }
+  document.querySelectorAll('textarea[data-id]').forEach(t=>{
+    const v=localStorage.getItem(LS(t.dataset.id)); if(v) t.value=v;
+    t.addEventListener('input',()=>{localStorage.setItem(LS(t.dataset.id), t.value); updateBadge();});
+  });
+  const g=document.getElementById('global-feedback');
+  const gv=localStorage.getItem(LS('__global')); if(gv) g.value=gv;
+  g.addEventListener('input',()=>{localStorage.setItem(LS('__global'), g.value); updateBadge();});
+  document.querySelectorAll('select[data-oq]').forEach(sel=>{
+    const v=localStorage.getItem(LS('oqstatus-'+sel.dataset.oq));
+    if(v){sel.value=v; sel.dispatchEvent(new Event('change'));}
+  });
+  updateBadge();
+}
+function pendingCount(){
+  let c=0;
+  document.querySelectorAll('textarea[data-id]').forEach(t=>{if(t.value.trim())c++;});
+  if(document.getElementById('global-feedback').value.trim())c++;
+  return c;
+}
+function updateBadge(){
+  const n=pendingCount();
+  document.getElementById('copybtn').textContent =
+    n? `Copy all feedback as Claude prompt (${n} pending)` : `Copy all feedback as Claude prompt`;
+}
+
+/* ---- copy feedback ---- */
+function copyFeedback(){
+  let out=`# Feedback on ${PLAN_STEM}\n\n`;
+  document.querySelectorAll('details[data-section], .oq[data-section]').forEach(sec=>{
+    const id=sec.dataset.section;
+    const ta=sec.querySelector('textarea[data-id]');
+    const txt=ta?ta.value.trim():"";
+    if(id.startsWith('oq-')){
+      const n=id.slice(3);
+      const st=document.querySelector(`select[data-oq="${n}"]`).value;
+      if(txt || st!==defaultStatus(n)){
+        out+=`## OQ-${n}\nStatus: ${st}\n${txt||"(no notes)"}\n\n`;
+      }
+    } else if(txt){
+      out+=`## ${id}\n${txt}\n\n`;
+    }
+  });
+  const g=document.getElementById('global-feedback').value.trim();
+  if(g) out+=`## Overall\n${g}\n\n`;
+  navigator.clipboard.writeText(out).then(()=>toast("Feedback copied — paste into Claude"),
+    ()=>toast("Copy failed — select the text manually"));
+}
+function defaultStatus(n){const o=OQ.find(x=>x.n===n);return o?o.status:"Pending";}
+function clearFeedback(){
+  Object.keys(localStorage).filter(k=>k.startsWith(`explainplan::${PLAN_STEM}::`)&&k!==SHA_KEY).forEach(k=>localStorage.removeItem(k));
+  document.querySelectorAll('textarea[data-id]').forEach(t=>t.value="");
+  document.getElementById('global-feedback').value="";
+  updateBadge(); toast("Saved feedback cleared");
+}
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1900);}
+
+/* ---- diagrams ---- */
+const panzoom={};
+function dReset(id){const i=panzoom[id]; if(i){i.reset();i.fit();i.center();}}
+function dFull(wid){
+  const w=document.getElementById(wid); w.classList.toggle('full');
+  const id=w.querySelector('pre.mermaid').id;
+  setTimeout(()=>{const i=panzoom[id]; if(i){i.resize();i.fit();i.center();}},60);
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.diagram-wrap.full').forEach(w=>w.classList.remove('full'));});
+
+mermaid.initialize({startOnLoad:false, flowchart:{useMaxWidth:false}, theme:'dark',
+  themeVariables:{fontSize:'13px'}});
+
+async function boot(){
+  renderOQ();
+  restore();
+  await mermaid.run({querySelector:'pre.mermaid'});
+  document.querySelectorAll('pre.mermaid').forEach(pre=>{
+    const svg=pre.querySelector('svg'); if(!svg)return;
+    svg.removeAttribute('style'); svg.style.width='100%'; svg.style.height='100%';
+    const inst=svgPanZoom(svg,{zoomEnabled:true,controlIconsEnabled:false,fit:true,center:true,
+      minZoom:0.3,maxZoom:8,mouseWheelZoomEnabled:true});
+    panzoom[pre.id]=inst;
+  });
+  window.addEventListener('resize',()=>Object.values(panzoom).forEach(i=>{i.resize();i.fit();i.center();}));
+}
+boot();
+</script>
+</body>
+</html>
