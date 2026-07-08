@@ -2,29 +2,9 @@
 
 _Last updated: 2026-07-08_
 
-- **VM smoke pending → [docs/vm-status/2026-07-08-rung0-reproduce-ryan-feb26.md](vm-status/2026-07-08-rung0-reproduce-ryan-feb26.md)** — rung-0 reproduce Ryan's **weighted** pipeline on feb26 (v1_1 substrate, only the CT prefix rerouted nov25→feb26 via the new `ct_snapshot_prefix` seam + force-GCS). Gates the rebaseline (rungs 1–2). Plan [plans/vlm-rung0-reproduce-ryan-feb26.md](plans/vlm-rung0-reproduce-ryan-feb26.md) Reviewed:Yes, all OQ-R1–R6 resolved; seam authored on the Mac (UNCOMMITTED — `vqa_dataset.py`/`run_bq.py`/`golden_harness.py`), commit+push before pulling on the VM. next: `/commit-review` (Mac) → VM runs Step 0 (0a preflight gate → 0b weighted → 0c report).
-- **SUPERSEDING PLAN drafted 2026-07-07 → [plans/vlm-ct-feb26-v1_5-golden-rebaseline.md](plans/vlm-ct-feb26-v1_5-golden-rebaseline.md)** (+ explain-plan HTML `5ce6c2ce738a`, UNCOMMITTED, Reviewed:No). Resolves the 3 handed-back Mac decisions: **D1** rebuild the CT golden on feb26 (make the legacy loader feb26-capable first → bank → 3b → diff), **D2** cut substrate v1_1→v1_5 (re-bank the EHR baseline; v1_1→v1_5 is an expected results change, NOT byte-gated), **D3** keep `numeric_value` a declared delta, decide accept-vs-parse after the first gate-3 diff (**repo has NO text→number parser**). Crux: refactor axis (byte-gated, both sides feb26) kept separate from substrate axis. Residual OQ-M (dataset-constant site) / OQ-N (upstream numeric fix scope) / OQ-P (v1_5 cohort timeline materialization — VM-verify). next: Phil reviews the HTML (**feedback pending**) → `/review-plan` (Codex) → `/commit-review` → VM runs the 5-step Verification section.
-- **VM smoke UNBLOCKED 2026-07-07 — Step 1 + no_image baseline GREEN:** [docs/vm-status/2026-07-06-golden-harness.md](vm-status/2026-07-06-golden-harness.md)
-  — the substrate the prior handoff marked BLOCKED lives in the GCS bucket `gs://vista_bench/` (not the
-  `/data/fries` layout). **base_dir = bucket root** (staged to `/mnt/su-vista-uscentral1/vistabench/vlm/`;
-  cohort via BQ `vista_bench_v1_1`, timelines from `<source_csv>/<task>.csv` — `subsample:false`, no
-  `_subsampled` variants). VM config = `configs/all_tasks.vm.yaml` (do NOT commit as default).
-  **Step 1 (LUMIA field-coverage) DONE:** `time/code/description/text_value` present; `numeric_value`
-  **not a discrete field** (baked into element text → declared delta OQ-K); `unit` present as
-  `unit_source_value` → **one-line adapter remap applied** (`ehr.py`, 0%→42.3%). LUMIA-as-input premise
-  holds (class-2, not a re-plan). **Steps 2–3 (no_image) PASS:** weight-free, 1,238/1,238 timelines
-  matched, full legacy baseline banked (row_count/sort/non-null all verified), golden stays on the PHI
-  mount (repo git clean). **`axial_all_image` = class-3 DEVIATION → HANDBACK to Mac planner:** the legacy
-  CT loader is pinned to a hard-coded `…/vista/nov25` prefix (`DEFAULT_NIFTI_BUCKET_PREFIX` in
-  `vqa_dataset.py`), but **`nov25` is deleted from the bucket — feb26 is the current snapshot.** So the
-  axial byte-identity baseline is unbankable on this VM (all rows would be `image_count=0`). Go-forward
-  (validated): `vista_bench_v1_5` links CTs via `image_study_uid`+`image_series_uid` →
-  `…/vista/feb26/{study}__{series}.nii.gz` (feb26 blob confirmed to exist) — the CT adapter should resolve
-  from the materialized dataset link, drop the hard-coded prefix, and move the substrate v1_1→v1_5. **Mac
-  re-plan owns:** (1) anchor compat on the no_image/EHR arm vs hunt a nov25 archive, (2) v1_5/feb26
-  dataset-linked CT resolution, (3) numeric_value declared-delta OQ-K — **now folded into the superseding plan (top bullet).**
-  See the *DEVIATION → Mac planner* block in the vm-status doc. UNCOMMITTED on VM: `ehr.py` unit fix +
-  `all_tasks.vm.yaml` + this doc + vm-status doc.
+- **VM smoke pending → [docs/vm-status/2026-07-08-rung0-reproduce-ryan-feb26.md](vm-status/2026-07-08-rung0-reproduce-ryan-feb26.md)** — rung-0 reproduce Ryan's **weighted** pipeline on feb26 (v1_1 substrate, only the CT prefix rerouted nov25→feb26 via the new `ct_snapshot_prefix` seam + force-GCS). Gates the rebaseline (rungs 1–2). Plan [plans/vlm-rung0-reproduce-ryan-feb26.md](plans/vlm-rung0-reproduce-ryan-feb26.md) Reviewed:Yes, all OQ-R1–R6 resolved; seam + docs **COMMITTED+PUSHED** (`c379822..6680406`). next: **VM** pulls + runs Step 0 (0a preflight gate → 0b weighted → 0c report), readback into the vm-status doc.
+- **Rebaseline rungs 1–2 (gated by rung-0 above) → [plans/vlm-ct-feb26-v1_5-golden-rebaseline.md](plans/vlm-ct-feb26-v1_5-golden-rebaseline.md)** — committed this session (Reviewed:No; HTML stale after the rung-0 trim). v1_5/feb26 dataset-link CT resolution (drop `DEFAULT_NIFTI_BUCKET_PREFIX`) + substrate cut v1_1→v1_5 + 3b CT-dissolution byte-identity golden on feb26 (refactor axis byte-gated, substrate axis not). D3 `numeric_value` a declared delta (repo has NO text→number parser). Residual OQ-M/N/P. next: rung-0 green → `/review-plan` → implement rungs 1–2.
+- **Prior handoff (context) → [docs/vm-status/2026-07-06-golden-harness.md](vm-status/2026-07-06-golden-harness.md)** — 2026-07-07 VM smoke: `no_image`/EHR legacy baseline banked GREEN (1,238/1,238; `unit_source_value` remap + `numeric_value` declared-delta OQ-K); `axial_all_image` = class-3 DEVIATION (hard-coded `nov25` prefix, but nov25 deleted → feb26). That deviation spawned the rung-0 + rebaseline plans above (both now committed).
 - **Modular VLM preprocessing + context-viewer roadmap** — plan + **6 review passes** + explain-plan HTML
   (`8567ac8decbc`). **Foundation + Task 3a COMMITTED+pushed** (`cba3de6`): Phase 0.5 overshoot fix, additive
   `src/context/` framework, reader normalization, `supports_inline` seam, 3a wiring (lazy model-load split,
