@@ -13,6 +13,12 @@ from context.windowing import multi_window_rgb, grayscale
 
 # Bucket prefix for NIfTI files (same as download_subsampled_ct / weill)
 DEFAULT_NIFTI_BUCKET_PREFIX = "chaudhari_lab/ct_data/ct_scans/vista/nov25"
+# Go-forward CT snapshot. `nov25` is deleted from the bucket (zero objects); `feb26` is the
+# only snapshot. The prefix is a config value (`paths.ct_snapshot_prefix`, threaded via
+# PromptDataset(ct_snapshot_prefix=...)) so a future re-materialization is a config/data change,
+# not a code edit — the modular-preprocessing thesis. Rung 0 reroutes Ryan's same (study, series)
+# scans to feb26 through this seam; rung 2 replaces the resolver body with a UID-keyed resolver.
+DEFAULT_CT_SNAPSHOT_PREFIX = "chaudhari_lab/ct_data/ct_scans/vista/feb26"
 
 
 def _nifti_path_to_blob_and_filename(nifti_path: str, bucket_name: str = "su-vista-uscentral1", prefix: str = DEFAULT_NIFTI_BUCKET_PREFIX):
@@ -43,7 +49,7 @@ def _nifti_path_to_blob_and_filename(nifti_path: str, bucket_name: str = "su-vis
     return blob_path, bucket_filename
 
 class PromptDataset(Dataset):
-    def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None):
+    def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None, ct_snapshot_prefix=None):
         """
         Args:
             df: Dataframe containing the data.
@@ -53,12 +59,14 @@ class PromptDataset(Dataset):
             storage_client: GCP Storage client for loading NIfTI files from bucket (used when file not under ct_dir).
             model_type: Model type string (e.g., 'gemma3') to determine preprocessing.
             ct_dir: Optional path from config paths.ct_dir. If set and nifti_path (split to filename) exists under ct_dir, load from disk; else use GCP.
+            ct_snapshot_prefix: CT storage prefix (config paths.ct_snapshot_prefix). None -> DEFAULT_CT_SNAPSHOT_PREFIX (feb26). Threaded into the blob resolver so re-materialization is a config/data change.
         """
         self.df = df.reset_index(drop=True)
         self.prompt_col = prompt_col
         self.add_options = add_options
         self.experiment = experiment
         self.storage_client = storage_client
+        self.ct_snapshot_prefix = ct_snapshot_prefix or DEFAULT_CT_SNAPSHOT_PREFIX
         self.bucket_name = 'su-vista-uscentral1'
         self.model_type = model_type
         self.is_gemma = model_type is not None and 'gemma' in model_type.lower()
@@ -158,10 +166,15 @@ class PromptDataset(Dataset):
                     try:
                         import nibabel as nib
                         blob_path, filename = _nifti_path_to_blob_and_filename(
-                            nifti_path, bucket_name=self.bucket_name
+                            nifti_path, bucket_name=self.bucket_name, prefix=self.ct_snapshot_prefix
                         )
                         local_path = self.ct_dir / filename if self.ct_dir else None
                         use_local = local_path is not None and local_path.exists()
+                        # Source-of-image log for the rung-0 0a preflight: which route each CT row
+                        # takes (local ct_dir vs GCS) + the resolved blob/filename, so force-GCS can
+                        # be verified and nifti_path shapes classified. VM-side logs only (not committed).
+                        _ct_source = "local" if use_local else ("gcs" if self.storage_client is not None else "none")
+                        print(f"[CT] source={_ct_source} prefix={self.ct_snapshot_prefix} blob={blob_path} file={filename} local_exists={use_local} (index: {row.get('index', idx)})")
 
                         if use_local:
                             img_obj = nib.load(str(local_path))

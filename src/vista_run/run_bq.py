@@ -913,9 +913,11 @@ class TaskOrchestrator:
         df_exp = self._build_prompts_for_experiment(df, task_info, experiment, timeline_col)
 
         ct_dir = self.cfg.get('paths', {}).get('ct_dir')
+        ct_snapshot_prefix = self.cfg.get('paths', {}).get('ct_snapshot_prefix')
         dataset = PromptDataset(
             df=df_exp, prompt_col='dynamic_prompt', experiment=experiment,
             storage_client=self.storage_client, model_type=self.model_type, ct_dir=ct_dir,
+            ct_snapshot_prefix=ct_snapshot_prefix,
         )
         num_workers = 4
         loader = DataLoader(

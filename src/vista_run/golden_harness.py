@@ -202,9 +202,11 @@ def capture_experiment(orch, task_info, experiment, model_type, limit=None):
         df_exp = df_exp.head(limit).reset_index(drop=True)
 
     ct_dir = orch.cfg.get("paths", {}).get("ct_dir")
+    ct_snapshot_prefix = orch.cfg.get("paths", {}).get("ct_snapshot_prefix")
     dataset = PromptDataset(
         df=df_exp, prompt_col="dynamic_prompt", experiment=experiment,
         storage_client=orch.storage_client, model_type=model_type, ct_dir=ct_dir,
+        ct_snapshot_prefix=ct_snapshot_prefix,
     )
     is_gemma = model_type is not None and "gemma" in model_type.lower()
 
