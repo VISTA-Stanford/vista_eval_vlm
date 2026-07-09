@@ -1,0 +1,56 @@
+# Rung-0 weighted run config — reproduce Ryan's PFS pipeline on the feb26 CT snapshot.
+#
+# Purpose: the WEIGHTED 0b run (loads medgemma weights, emits result CSVs) for the
+# rung-0 "reproduce Ryan on feb26" milestone. See:
+#   docs/plans/vlm-rung0-reproduce-ryan-feb26.md          (criteria)
+#   docs/vm-status/2026-07-08-rung0-reproduce-ryan-feb26.md (VM readback + turnkey cmd)
+#
+# Runs on the GPU box (phil-sllm-01 is CPU-only). That box shares phil-sllm-01's
+# /mnt/su-vista-* mounts, so the paths below resolve there unchanged.
+#
+# PROVENANCE / RECONCILE: reconstructed on the planner Mac from the two handoff docs
+# above (the VM authored an uncommitted, gitignored `all_tasks.rung0.vm.yaml`; this is
+# the tracked equivalent). base_dir + the rung-0 overrides are quoted directly from the
+# readback; `results_dir` and `runtime.cache_dir` are the golden-harness "results/ +
+# model_cache/ alongside base/" layout. Before the GPU run, diff this against the VM's
+# `configs/all_tasks.rung0.vm.yaml` and reconcile if they differ (the VM copy is proven).
+#
+# Declared deltas baked in (all recorded in the readback UPDATE block):
+#   (1) 86.9% feb26 CT coverage — accepted; 0c stratifies to used_image==1.
+#   (2) subsample: false — staged base carries only the full {task}.csv (no _subsampled),
+#       so this runs Ryan's cohort un-subsampled (larger n; 0c stays Ryan-*adjacent*).
+#   (3) valid_tasks.json (not _v1_3) — the staged registry; label map for 0c loads from it.
+
+paths:
+  base_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/base"
+  results_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/results"
+  # ct_dir intentionally UNSET -> forces GCS (no local nov25 fallback). Do not add it back.
+  ct_snapshot_prefix: "chaudhari_lab/ct_data/ct_scans/vista/feb26"   # nov25 -> feb26 reroute
+  valid_tasks: "tasks/valid_tasks.json"
+  prompts: "tasks/prompts_by_task.json"
+
+model:
+  device: "cuda"
+
+runtime:
+  cache_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/model_cache"
+  batch_size: 64                              # lower if the GPU box OOMs
+  max_new_tokens: 1024
+  use_constrained_decoding_for_binary: true   # match Ryan's constrained baseline (OQ-R6)
+
+# Exactly one model (<= MAX_MODELS=4).
+models:
+  - type: "gemma3"
+    name: "google/medgemma-1.5-4b-it"
+
+# PFS only.
+tasks:
+  - progression_recurrence_free_survival_1_yr
+
+# Both arms of the ±image comparison.
+experiments:
+  - no_image
+  - axial_all_image
+
+# Ryan's full cohort, un-subsampled (declared delta #2).
+subsample: false

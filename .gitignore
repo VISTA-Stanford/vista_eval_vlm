@@ -41,11 +41,13 @@ eval/*
 !eval/bq_gcp.sh
 !eval/gcp.sh
 !eval/weill.sh
+!eval/run_rung0_gpu.sh
 
 # configs
 configs/*
 !configs/
 !configs/all_tasks.yaml
+!configs/all_tasks.rung0.yaml
 !configs/cls_config.yaml
 !configs/det_config.yaml
 !configs/seg_config.yaml
