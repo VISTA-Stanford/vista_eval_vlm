@@ -61,9 +61,18 @@ if [ -z "${VIRTUAL_ENV:-}" ]; then
     fi
 fi
 
+# --- HuggingFace auth + transfer backend ---
+# Xet (hf_xet) can stall mid-download with no timeout and wedge the GPU process (it hung an
+# overnight run 2026-07-09). Default it OFF -> classic HTTPS. Set HF_HUB_DISABLE_XET=0 to opt in.
+export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
+
+# run_bq redirects HF_HOME to the config's cache_dir, which hides a `hf auth login` token
+# (~/.cache/huggingface/token) -> gated-repo 401. Forward it into HF_TOKEN so auth survives the redirect.
+if [ -z "${HF_TOKEN:-}" ] && [ -f "$HOME/.cache/huggingface/token" ]; then
+    HF_TOKEN="$(cat "$HOME/.cache/huggingface/token")"
+fi
 if [ -n "${HF_TOKEN:-}" ]; then
-    export HF_TOKEN
-    export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+    export HF_TOKEN HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 fi
 
 echo "=== rung-0 preflight (halts before GPU spend if the box isn't ready) ==="
@@ -88,11 +97,18 @@ assert p.get("ct_snapshot_prefix", "").endswith("feb26"), "ct_snapshot_prefix is
 assert cfg.get("subsample") is False, "subsample must be false (declared delta #2)."
 assert cfg.get("runtime", {}).get("use_constrained_decoding_for_binary") is True, \
     "runtime.use_constrained_decoding_for_binary must be true (OQ-R6)."
-print("  [ok] config invariants: ct_dir unset, feb26 prefix, subsample=false, constrained=true")
+assert cfg.get("timeline_truncation"), \
+    "timeline_truncation missing -> EHR timelines fed whole (millions of tokens) overflow max_model_len=120000 and kill vLLM. Add e.g. {mode: last_k_events, k: 100}."
+print("  [ok] config invariants: ct_dir unset, feb26 prefix, subsample=false, constrained=true, timeline_truncation set")
 PY
 
-# 3. base_dir mount + task registry readable.
-BASE_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['paths']['base_dir'])")"
+# 3. resolve all config paths once, then check base_dir mount + task registry.
+read -r BASE_DIR RESULTS_DIR CACHE_DIR CT_PREFIX < <(python - "$CONFIG" <<'PY'
+import sys, yaml
+c = yaml.safe_load(open(sys.argv[1])); p = c["paths"]; r = c.get("runtime", {})
+print(p["base_dir"], p["results_dir"], r.get("cache_dir", ""), p.get("ct_snapshot_prefix", ""))
+PY
+)
 [ -d "$BASE_DIR" ] || fail "base_dir not mounted/readable: $BASE_DIR"
 [ -f "$BASE_DIR/tasks/valid_tasks.json" ] || fail "missing $BASE_DIR/tasks/valid_tasks.json"
 echo "  [ok] base_dir mounted: $BASE_DIR"
@@ -102,15 +118,44 @@ python -c "from huggingface_hub import whoami; whoami()" >/dev/null 2>&1 \
     || fail "HuggingFace not authenticated — set HF_TOKEN or run 'hf auth login' (medgemma is gated)."
 echo "  [ok] HuggingFace authenticated"
 
+# 5. disk headroom where the weights download (runtime.cache_dir). medgemma-4b is ~8GB, and
+#    HF may keep blobs + snapshot copies (~2x) — fail before a long download that fills the disk.
+MIN_CACHE_GB="${MIN_CACHE_GB:-20}"
+free_gb() { df -Pk "$1" 2>/dev/null | awk 'NR==2{print int($4/1048576)}'; }
+_cdir="$CACHE_DIR"; while [ -n "$_cdir" ] && [ ! -d "$_cdir" ]; do _cdir="$(dirname "$_cdir")"; done
+CACHE_FREE="$(free_gb "${_cdir:-/}")"
+if [ -n "$CACHE_FREE" ] && [ "$CACHE_FREE" -lt "$MIN_CACHE_GB" ]; then
+    fail "only ${CACHE_FREE}GB free where weights download ($_cdir); need ~${MIN_CACHE_GB}GB. Point runtime.cache_dir at a roomier disk (or raise MIN_CACHE_GB to override)."
+fi
+echo "  [ok] weights-cache disk: ${CACHE_FREE:-?}GB free at $_cdir (need ${MIN_CACHE_GB})"
+
 # --- run (single model, pinned to the config's models[0] so there is one source of truth) ---
 read -r MODEL_TYPE MODEL_NAME < <(python -c "import yaml; m=yaml.safe_load(open('$CONFIG'))['models'][0]; print(m['type'], m['name'])")
+
+# 6. pre-fetch weights on CPU (Xet-disabled, timeout-bounded) BEFORE launching vLLM, into the
+#    same cache_dir vLLM loads from. Decouples the download from the GPU process so a stalled
+#    transfer can never again wedge a VRAM-holding EngineCore. Idempotent: resumes / no-ops if cached.
+PREFETCH_TIMEOUT="${PREFETCH_TIMEOUT:-3600}"
+echo "  [..] pre-fetching $MODEL_NAME into $CACHE_DIR (timeout ${PREFETCH_TIMEOUT}s, Xet off)..."
+timeout "$PREFETCH_TIMEOUT" python - "$MODEL_NAME" "$CACHE_DIR" <<'PY' \
+    || fail "weight pre-fetch failed or timed out for the model above — check HF auth / network; do NOT launch vLLM (it would hang holding GPU)."
+import sys
+from huggingface_hub import snapshot_download
+snapshot_download(sys.argv[1], cache_dir=sys.argv[2])
+PY
+echo "  [ok] weights fully cached (vLLM will load, not download)"
 
 echo "=== preflight PASSED — starting weighted run ==="
 LOG="$REPO_ROOT/logs/rung0_$(date +%Y%m%d_%H%M%S)/run_bq.log"
 mkdir -p "$(dirname "$LOG")"
-echo "Config: $CONFIG"
-echo "Model:  $MODEL_TYPE / $MODEL_NAME"
-echo "Log:    $LOG"
+# Log the resolved paths so the transcript records exactly what ran and WHERE things go.
+echo "Config:        $CONFIG"
+echo "Model:         $MODEL_TYPE / $MODEL_NAME"
+echo "CT prefix:     $CT_PREFIX  (force-GCS)"
+echo "base_dir:      $BASE_DIR"
+echo "results_dir:   $RESULTS_DIR"
+echo "weights cache: $CACHE_DIR  (${CACHE_FREE:-?}GB free) -> hub/models--google--medgemma-1.5-4b-it/"
+echo "Log:           $LOG"
 
 cd "$REPO_ROOT/src"
 python -m vista_run.run_bq --config "$CONFIG" --type "$MODEL_TYPE" --name "$MODEL_NAME" 2>&1 | tee "$LOG"
