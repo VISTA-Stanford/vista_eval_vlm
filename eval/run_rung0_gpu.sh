@@ -8,10 +8,20 @@
 #   configs/all_tasks.rung0.yaml                              (the config this drives)
 #
 # Usage (GPU box, repo on branch worktree-vlm-modular-preprocessing-roadmap):
-#   HF_TOKEN=hf_xxx bash eval/run_rung0_gpu.sh
+#   HF_TOKEN=hf_xxx bash eval/run_rung0_gpu.sh              # env already provisioned
+#   HF_TOKEN=hf_xxx SYNC=1 bash eval/run_rung0_gpu.sh       # bootstrap the env first
+#
+# Env bootstrap (SYNC=1): the ML stack (torch/transformers/vllm) is NOT in pyproject.toml
+# — it lives in requirements-default.txt, and there are NO extras. So a full env is two steps:
+#     uv sync                                     # light deps + creates/updates repo .venv
+#     uv pip install -r requirements-default.txt  # torch 2.8.0 / transformers 4.57.1 / vllm 0.11.0 (CUDA)
+# SYNC=1 runs both into the repo .venv. SKIP IT when reusing phil-sllm-01's already-provisioned
+# .venv on the shared mount (its golden run reached `libcuda.so.1` → vllm was already installed;
+# on a real GPU that venv just works). torch/vllm are CUDA wheels — SYNC=1 only on the GPU box.
 #
 # Optional env overrides:
-#   VENV    virtualenv to `source $VENV/bin/activate` (default: repo .venv if present)
+#   SYNC=1  bootstrap the env (uv sync + requirements-default.txt) into the repo .venv before running
+#   VENV    virtualenv to `source $VENV/bin/activate` (default: repo .venv if present; ignored under SYNC=1)
 #   CONFIG  config path (default: configs/all_tasks.rung0.yaml)
 #   HF_TOKEN  HuggingFace token for the gated medgemma weights (skip if already `hf auth login`'d)
 #
@@ -29,13 +39,26 @@ case "$CONFIG" in /*) : ;; *) CONFIG="$REPO_ROOT/$CONFIG" ;; esac
 
 fail() { echo "PREFLIGHT FAIL: $*" >&2; exit 1; }
 
-# --- activate env ---
-if [ -n "${VENV:-}" ]; then
-    # shellcheck disable=SC1091
-    source "$VENV/bin/activate"
-elif [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
+# --- optional env bootstrap (SYNC=1): light deps via uv sync, then the ML stack ---
+# (torch/transformers/vllm live in requirements-default.txt, not pyproject; no extras exist).
+if [ -n "${SYNC:-}" ]; then
+    command -v uv >/dev/null 2>&1 || fail "SYNC=1 but 'uv' not found on PATH."
+    echo "=== SYNC=1: bootstrapping repo .venv (uv sync + requirements-default.txt) ==="
+    uv sync
     # shellcheck disable=SC1091
     source "$REPO_ROOT/.venv/bin/activate"
+    uv pip install -r requirements-default.txt
+fi
+
+# --- activate env (skip if SYNC=1 already activated the repo .venv) ---
+if [ -z "${VIRTUAL_ENV:-}" ]; then
+    if [ -n "${VENV:-}" ]; then
+        # shellcheck disable=SC1091
+        source "$VENV/bin/activate"
+    elif [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
+        # shellcheck disable=SC1091
+        source "$REPO_ROOT/.venv/bin/activate"
+    fi
 fi
 
 if [ -n "${HF_TOKEN:-}" ]; then
@@ -51,7 +74,7 @@ command -v nvidia-smi >/dev/null 2>&1 \
 GPU_COUNT="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')" || GPU_COUNT=0
 [ "${GPU_COUNT:-0}" -ge 1 ] || fail "nvidia-smi found 0 GPUs."
 python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" \
-    || fail "torch.cuda.is_available()==False (driver/torch mismatch)."
+    || fail "torch missing or torch.cuda.is_available()==False — re-run with SYNC=1 to bootstrap the env, or check the GPU driver."
 echo "  [ok] GPU(s): $GPU_COUNT; torch.cuda available"
 
 # 2. config present + invariants (force-GCS / feb26 / un-subsampled / constrained).

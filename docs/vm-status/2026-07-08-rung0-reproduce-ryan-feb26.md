@@ -30,7 +30,10 @@ A clean rung-0 result unblocks rungs 1–2.
 ```bash
 cd <vista_eval_vlm repo on the VM>
 git fetch && git checkout worktree-vlm-modular-preprocessing-roadmap && git pull
-uv sync --extra dev   # or the repo's usual env sync
+uv sync   # light deps only (BQ/storage/nibabel/...); NO extras exist. The ML stack
+          # (torch/transformers/vllm) lives in requirements-default.txt and is needed ONLY
+          # for the WEIGHTED 0b run on the GPU box — 0a below is weight-free. The GPU-box
+          # harness (eval/run_rung0_gpu.sh, SYNC=1) does both steps; see Step 2.
 # Confirm the seam is present:
 grep -n "ct_snapshot_prefix\|DEFAULT_CT_SNAPSHOT_PREFIX" src/vqa_dataset.py src/vista_run/run_bq.py
 ```
@@ -174,12 +177,12 @@ The 0a preflight only proved feb26 blobs *exist*. Ran the weights-free golden ha
 Derived from the proven `all_tasks.vm.yaml` staging (`base_dir=/mnt/su-vista-uscentral1/vistabench/vlm/base`, the substrate that ran `no_image` green). Rung-0 overrides: 1 model (`gemma3 medgemma-1.5-4b-it`), PFS only, `experiments:[no_image, axial_all_image]`, `paths.ct_snapshot_prefix=…/feb26`, `ct_dir` unset (force-GCS), `use_constrained_decoding_for_binary: true` (Ryan-match, OQ-R6). **Declared deltas baked in:** (1) 86.9% CT coverage; (2) `subsample: false` — staged base carries only the full `{task}.csv`, no `_subsampled` variant, so this runs Ryan's cohort **un-subsampled** (larger n; 0c stays Ryan-*adjacent*, not exact); (3) `valid_tasks.json` (not `_v1_3`) — the staged registry (label mapping for 0c loads from it; non-empty, proven by the green `no_image` run).
 
 ### 0b (weighted) — BACKLOGGED to the GPU machine (not runnable here)
-This box (`phil-sllm-01`) has **no GPU** (`nvidia-smi` absent, `torch.cuda.is_available()==False`) — the weighted medgemma run can't run under Claude Code here; per the machine posture it belongs to the separate user-managed GPU machine. **Turnkey command** (GPU box, repo on this branch, mounts present):
+This box (`phil-sllm-01`) has **no GPU** (`nvidia-smi` absent, `torch.cuda.is_available()==False`) — the weighted medgemma run can't run under Claude Code here; per the machine posture it belongs to the separate user-managed GPU machine. **Turnkey harness** (committed 2026-07-08 as `eval/run_rung0_gpu.sh` + the tracked `configs/all_tasks.rung0.yaml`, the git-travelling equivalent of this box's uncommitted `all_tasks.rung0.vm.yaml` — diff the two first, the VM copy is proven):
 ```bash
-cd src
-python -m vista_run.run_bq --config ../configs/all_tasks.rung0.vm.yaml
-# (or: bash eval/bq_gcp.sh after pointing CONFIG at the rung-0 overlay; MAX_MODELS=4 OK — 1 model)
+# GPU box, repo on this branch, mounts present:
+HF_TOKEN=hf_xxx SYNC=1 bash eval/run_rung0_gpu.sh   # SYNC=1 bootstraps the env (uv sync + requirements-default.txt); drop it if reusing phil-sllm-01's provisioned .venv
 ```
+The wrapper preflights (GPU + torch.cuda, config force-GCS/feb26/constrained invariants, base_dir mount, HF auth) and halts before GPU spend if the box isn't ready; it drives `python -m vista_run.run_bq --config configs/all_tasks.rung0.yaml --type gemma3 --name google/medgemma-1.5-4b-it` (both `--type`/`--name` are argparse-required).
 **0b expected:** exactly one model, PFS, both experiments run; `[CT]` log `source=gcs` throughout; `image_count>0` on CT-present `axial_all_image` rows; result CSVs at `{results_dir}/…/{task}_results_{experiment}.csv`, non-empty, resumable by `index`. **Stop:** weights/HF-auth fail; any `[CT] source=local` (force-GCS breach); `row_count==0`.
 
 ### 0c (report) — recipe for after 0b
