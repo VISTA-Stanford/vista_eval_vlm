@@ -194,3 +194,57 @@ cd src && python -m results.all_model_response   # derive predicted/ground_truth
 - Compare accuracy vs `figures/results_stats/all_model_response.csv` (constrained, sole committed baseline) for PFS, mapped labels: `axial_all_image→image_and_timeline`, `no_image→timeline_only`. Report the two pairs + delta as **one weak, confounded signal** (report-presence + 30-vs-10 slices + un-subsampled n + ~5% orientation-fixed). Success = sane, same-ballpark read within the ~10% informal band — not a match claim.
 
 **Executor state (this UPDATE):** authored `configs/all_tasks.rung0.vm.yaml` (uncommitted, gitignored); banked a partial `axial_all_image` golden on the PHI mount (git-clean); no code changed; working tree edits = this doc + `docs/next.md` only. PHI: counts / structure only.
+
+---
+
+## 0b/0c readback — GPU box `phil-a100x1-80gb-01` (rendered 2026-07-09, author mode on the Mac)
+
+**Status: 0b RAN on the GPU box; readback pending.** The weighted 0b executed on
+`phil-a100x1-80gb-01` (A100-80GB) on 2026-07-09 — log `logs/rung0_20260709_185445/run_bq.log`.
+A Claude session **on that box** completes the readback below — it is the only host with *both*
+the local run log (not in the bucket) and the mounted results bucket — and records each item
+**against its Expected block** in `## VM run results`, per readback mode.
+
+**Machine posture:** `phil-a100x1-80gb-01` is a **NEW executor host** — the posture only knows
+`phil-sllm-01` (CPU executor) + the Mac (planner). Register it as an executor on the first
+`/vm-handoff` there (there is no `docs/machines.md`; posture currently lives in memory).
+
+**Artifacts:**
+- log: `logs/rung0_20260709_185445/run_bq.log` — **local to the GPU box** (NOT in the bucket)
+- CSVs: `/mnt/su-vista-uscentral1/vistabench/vlm/results/progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr_v1_1/progression_recurrence_free_survival_1_yr/medgemma-1.5-4b-it/*_results_{no_image,axial_all_image}.csv`
+
+### 0b — record each result vs its Expected block (Step 2 / UPDATE "0b expected")
+- [ ] exactly one model, PFS, **both** `no_image` + `axial_all_image` ran (grep the log)
+- [ ] `[CT] source=gcs` throughout, `source=local` **== 0** (force-GCS Stop) — *prelim: 359 gcs / 0 local*
+- [ ] `Error in batch` **== 0** AND `Producer error` **== 0** — the two silent-drop paths (the
+      per-batch `except` in `_run_inference_loop` swallows inference errors and continues; a dead
+      engine or producer thread drops rows **without** flipping the exit code). If either > 0,
+      batches were dropped → **re-run the wrapper** (`_setup_output_and_resume` resumes by `index`)
+      **before 0c**. — *prelim: `Error in batch` = 0*
+- [ ] the lone `EngineCore_DP0 died unexpectedly` line (`run_bq.log:515`) is **benign teardown
+      noise** — single line, no traceback, exit 0, `Error in batch`=0, and the highest-token batch
+      (15 @ 106,921) survived while it appeared after a *lower*-token batch. Record as noise, **not** a crash.
+- [ ] CSVs non-empty, resumable by `index`; **real row counts via pandas** (NOT `wc -l` — embedded
+      newlines in text cells inflate it); the two arms' row counts ~equal; empty `model_response`
+      ≈ 0; responses ~all `Yes`/`No` (constrained); `used_image` ≈ **87%** for `axial_all_image` /
+      all-0 for `no_image` — the ~87% should track the **0a 86.9% feb26-coverage declared delta**
+- **STOP** (inherit Step 2 / UPDATE): weights/HF-auth fail; any `source=local`; `row_count==0`.
+
+### 0c — report (Step 3 / UPDATE "0c recipe")
+```bash
+cd src && python -m results.all_model_response
+```
+- [ ] PFS `mapping` loaded **non-empty** from `base_dir/tasks/valid_tasks.json` (else every
+      `predicted_label → -1` → garbage accuracy)
+- [ ] **stratify** `axial_all_image` to `used_image==1` (drops CT-null + the 309 feb26-missing);
+      compare accuracy vs `figures/results_stats/all_model_response.csv` (constrained baseline),
+      mapped labels `axial_all_image→image_and_timeline`, `no_image→timeline_only`; report the two
+      pairs + delta as **one weak, confounded signal** (~10% informal band) — **not** a match claim
+- **STOP:** none — report-only. If mapping/derivation/comparator can't resolve, downgrade to
+  "completed weighted run, sane label distribution" (record which), per Step 3.
+
+### On readback completion (GPU box)
+Fill `## VM run results` with a stamped section (`phil-a100x1-80gb-01`, 2026-07-09, ran at
+`<sha>`) recording each item above vs its Expected block; flip the `docs/next.md` pointer
+(`0b RAN → readback PASS/…`); then `/phi-vet` → `/commit-review` to land the results.
+PHI: counts/metrics/pass-fail only; read large outputs from the CSVs/HTML, never paste rows.
