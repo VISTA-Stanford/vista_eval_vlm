@@ -54,3 +54,10 @@ experiments:
 
 # Ryan's full cohort, un-subsampled (declared delta #2).
 subsample: false
+
+# REQUIRED: without this the EHR timeline is fed whole (multi-year -> millions of tokens ->
+# exceeds medgemma's max_model_len=120000 and the vLLM EngineCore dies). Matches the base
+# all_tasks.yaml / Ryan's pipeline: keep the last k events (safety cap 210000 chars).
+timeline_truncation:
+  mode: "last_k_events"
+  k: 100
