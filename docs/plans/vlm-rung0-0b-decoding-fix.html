@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="plan-sha256" content="58c1d5da9ca4f8eaec5becbc8673b1f0ddf2129019e302cff569ba12b1a73412"/>
+<title>Rung-0 0b decoding fix — plan explainer</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1a1f26; --muted:#5b6470; --line:#e2e6ec;
+    --accent:#0a9396; --accent2:#9b2226; --chip:#eef1f5; --warn:#b5651d; --ok:#2a7d3f; --stop:#a3232a;
+    --code:#0f172a; --codebg:#f1f3f7;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f1318; --card:#161b22; --ink:#e6edf3; --muted:#9aa4b2; --line:#2a323c;
+      --accent:#38c2c6; --accent2:#f08a8f; --chip:#1e2732; --warn:#e0a458; --ok:#5bc47a; --stop:#f0787e;
+      --code:#e6edf3; --codebg:#11161d;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 22px 120px;}
+  h1{font-size:24px;line-height:1.25;margin:0 0 6px}
+  h2{font-size:18px;margin:34px 0 12px;padding-bottom:6px;border-bottom:2px solid var(--line)}
+  h3{font-size:15px;margin:0 0 4px}
+  a{color:var(--accent)}
+  code,kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;background:var(--codebg);color:var(--code);padding:1px 5px;border-radius:4px}
+  pre{background:var(--codebg);color:var(--code);padding:12px 14px;border-radius:8px;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.5;border:1px solid var(--line)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .hdr{display:grid;grid-template-columns:1fr;gap:6px}
+  .hdr .meta{color:var(--muted);font-size:13px}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;background:var(--chip);color:var(--ink);font-size:12px;font-weight:600;margin-right:6px}
+  .pill.draft{background:#ffe8c2;color:#5a3d00}
+  @media (prefers-color-scheme: dark){.pill.draft{background:#4a3a12;color:#ffd591}}
+  .tldr{font-size:15.5px}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin-top:6px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--chip)}
+  .verdict{font-weight:700}
+  .verdict.revise{color:var(--warn)}
+  .diagram-wrap{position:relative;border:1px solid var(--line);border-radius:10px;background:var(--card);height:480px;overflow:hidden;margin:6px 0 4px}
+  .diagram-wrap.full{position:fixed;inset:0;z-index:50;height:100vh;width:100vw;border-radius:0}
+  .diagram-wrap .controls{position:absolute;top:8px;right:8px;z-index:5;display:flex;gap:6px}
+  .diagram-wrap button{font-size:12px;padding:4px 9px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:6px;cursor:pointer}
+  .diagram-wrap button:hover{border-color:var(--accent)}
+  .hint{position:absolute;left:10px;bottom:8px;z-index:5;font-size:11px;color:var(--muted);background:var(--card);padding:2px 7px;border-radius:6px;border:1px solid var(--line);opacity:.85}
+  pre.mermaid{margin:0;border:0;background:transparent;padding:0}
+  details{border:1px solid var(--line);border-radius:9px;margin:8px 0;background:var(--card);overflow:hidden}
+  details>summary{cursor:pointer;padding:11px 14px;font-weight:600;list-style:none;display:flex;justify-content:space-between;gap:10px;align-items:center}
+  details>summary::-webkit-details-marker{display:none}
+  details>summary::after{content:"+";color:var(--muted);font-weight:700}
+  details[open]>summary::after{content:"–"}
+  .det-body{padding:2px 14px 14px}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:4px 12px;font-size:13px;margin:8px 0}
+  .kv .k{color:var(--muted)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:5px;margin-left:6px}
+  .tag.add{background:#c9f7f5;color:#034b4d}
+  .tag.mod{background:#ffe8c2;color:#5a3d00}
+  .tag.new{background:#d7c9f7;color:#3a2664}
+  @media (prefers-color-scheme: dark){.tag.add{background:#0c3f40;color:#8ff0f2}.tag.mod{background:#4a3a12;color:#ffd591}.tag.new{background:#2c2350;color:#c9b8f5}}
+  textarea{width:100%;min-height:52px;margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);font:13px/1.5 inherit;resize:vertical}
+  .section-feedback{min-height:44px}
+  select{padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-size:13px}
+  .oq{border-left:4px solid var(--accent);padding:10px 14px;margin:10px 0;background:var(--card);border-radius:0 8px 8px 0}
+  .oq.resolved{border-left-color:var(--ok)}
+  .oq h3{display:flex;align-items:center;gap:8px}
+  .footbar{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:12px;align-items:center;justify-content:flex-end;z-index:40}
+  .footbar .grow{flex:1}
+  .btn{font-size:13px;font-weight:600;padding:8px 14px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
+  .btn:hover{filter:brightness(1.06)}
+  .badge{display:inline-block;min-width:18px;text-align:center;background:var(--accent2);color:#fff;border-radius:999px;font-size:11px;padding:0 6px;margin-left:6px}
+  .files{font-size:12.5px;color:var(--muted)}
+  .files code{font-size:12px}
+  .lead{color:var(--muted);font-size:13px;margin:-4px 0 10px}
+  .gate{font-size:13px}
+  .stopc{color:var(--stop);font-weight:600}
+  .okc{color:var(--ok);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card hdr">
+    <h1>Rung-0 0b decoding fix — force the binary constraint for PFS, drop insufficient-follow-up rows, make the decode mode fail-closed and observable</h1>
+    <div>
+      <span class="pill draft">Status: Draft</span>
+      <span class="pill">Branch: worktree-vlm-modular-preprocessing-roadmap</span>
+      <span class="pill">Reviewed by Codex: Revise (applied)</span>
+    </div>
+    <div class="meta">Amends <b>OQ-R6</b> of <code>vlm-rung0-reproduce-ryan-feb26.md</code> after a class-3 deviation on the first 0b run. Machine posture: authored on the planner Mac (no code execution); 0b re-run + runtime checks on GPU box <code>phil-a100x1-80gb-01</code>; 0c report CPU-fine.</div>
+    <div class="meta">Source: <code>docs/plans/vlm-rung0-0b-decoding-fix.md</code> · SHA-256 <code>58c1d5da9c</code> · generated 2026-07-09</div>
+  </div>
+
+  <div class="card tldr">
+    <b>TL;DR.</b> The first 0b run scored ~54% <code>predicted_label == -1</code> because constrained decoding never engaged:
+    <code>run_bq.py:910</code> AND-gates the constraint behind the registry <code>is_binary</code> flag, and PFS is a genuine 3-class
+    task (<code>is_binary: False</code>), so the <code>use_constrained_decoding_for_binary: true</code> flag was a silent no-op and
+    medgemma free-generated ~2800-char essays. This plan constrains off the task's <b>Yes/No mapping</b> (not the flag), drops the
+    27% insufficient-follow-up rows from 0c (matching Ryan), and — the real fix — adds a <b>fail-closed preflight that goes RED
+    before weights load</b> so a silent no-op can never run to completion again. Four small code seams + a fresh 0b re-run.
+  </div>
+
+  <h2>Review history</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>Pass</th><th>Reviewer</th><th>Verdict</th><th>Key findings surfaced</th><th>Applied</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td>Codex (gpt-5.5)<br/><span class="files"><code>reviews/vlm-rung0-0b-decoding-fix-feedback.md</code></span></td>
+          <td class="verdict revise">Revise</td>
+          <td>Fail-closed was fake (bad mapping still ran, only logged); 0b/0c "same registry" only by config coincidence; reducer default output <b>is Ryan's committed baseline</b>; drop-count print reports group-count not rows; exact <code>predicted==-1==0</code> STOP; no <code>python</code> on the planner Mac; complex-tier phasing.</td>
+          <td>All applied (0 disagreements)</td>
+        </tr>
+        <tr>
+          <td>Pivot</td>
+          <td>Phil</td>
+          <td class="verdict">OQ-F1 resolved</td>
+          <td>Extract <code>is_binary_yes_no_task</code> to a shared dep-free module (single source of truth for task semantics — the duplication that caused this bug).</td>
+          <td>Seam 5</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Repo map — where this fix sits</h2>
+  <div class="lead">The rung-0 pipeline. Cyan = this PR adds, amber = modified, blue = config, grey dashed = external (VM registry / Ryan's committed baseline).</div>
+  <div class="diagram-wrap" id="dw-repo">
+    <div class="controls"><button data-reset>Reset</button><button data-full>Fullscreen</button></div>
+    <div class="hint">scroll to zoom &bull; drag to pan &bull; Esc exits fullscreen</div>
+    <pre class="mermaid">
+flowchart LR
+  registry["valid_tasks.json registry<br/>PFS is_binary=False<br/>mapping 1=Yes, 0=No, -1=Insufficient"]:::ext
+  config["all_tasks.rung0.yaml<br/>use_constrained_decoding_for_binary=true"]:::cfg
+  taskmap["task_mapping.py<br/>is_binary_yes_no_task (new)"]:::add
+  preflight["run_rung0_gpu.sh preflight<br/>assert mapping is Yes/No<br/>RED before weights"]:::add
+  gate["run_bq.py decode gate<br/>constrain off mapping"]:::mod
+  decode["medgemma decode<br/>StructuredOutputs Yes/No"]:::mod
+  csv["result CSVs<br/>model_response = Yes or No"]:::add
+  reducer["constrained_all_model_response.py<br/>direct Yes/No map, drop gt=-1"]:::mod
+  report0c["0c accuracy report"]:::mod
+  ryan["Ryan committed baseline<br/>all_model_response.csv"]:::ext
+
+  registry --> preflight
+  registry --> gate
+  config --> gate
+  taskmap --> gate
+  taskmap --> preflight
+  preflight -->|RED halts before GPU| gate
+  gate --> decode
+  decode --> csv
+  csv --> reducer
+  registry --> reducer
+  reducer --> report0c
+  ryan --> report0c
+
+  subgraph legend["Color legend"]
+    l1["THIS PR adds (cyan)"]:::add
+    l2["modified (amber)"]:::mod
+    l3["config (blue)"]:::cfg
+    l4["external VM or committed (grey)"]:::ext
+  end
+
+  classDef add fill:#c9f7f5,stroke:#0a9396,stroke-width:3px,color:#033;
+  classDef mod fill:#ffe8c2,stroke:#e08a00,stroke-width:2px,color:#422;
+  classDef cfg fill:#cfe3ff,stroke:#2563b0,stroke-width:2px,color:#023;
+  classDef ext fill:#e6e6e6,stroke:#999,stroke-width:1px,stroke-dasharray:4 3,color:#555;
+    </pre>
+  </div>
+
+  <h2>Blast radius — seams, files, guards</h2>
+  <div class="diagram-wrap" id="dw-blast">
+    <div class="controls"><button data-reset>Reset</button><button data-full>Fullscreen</button></div>
+    <div class="hint">scroll to zoom &bull; drag to pan</div>
+    <pre class="mermaid">
+flowchart LR
+  subgraph seams["Seams, this plan"]
+    s1["Seam 1<br/>decode gate off mapping"]:::add
+    s2["Seam 2<br/>DECODE log and summary"]:::add
+    s3["Seam 3<br/>fail-closed preflight"]:::add
+    s4["Seam 4<br/>constrained reducer fixes"]:::add
+    s5["Seam 5<br/>extract predicate"]:::add
+    s6["Seam 6<br/>fresh 0b re-run"]:::add
+  end
+  subgraph files["Files touched"]
+    f_runbq["run_bq.py 905-910"]:::mod
+    f_sh["run_rung0_gpu.sh preflight"]:::mod
+    f_red["constrained_all_model_response.py"]:::mod
+    f_red2["all_model_response.py"]:::mod
+    f_tm["task_mapping.py new"]:::add
+    f_fm["final_metrics.py 70 re-export"]:::mod
+    f_cfg["all_tasks.rung0.yaml 39"]:::cfg
+  end
+  subgraph outs["Outputs and guards"]
+    o_log["run log DECODE plus gcs"]:::add
+    o_red["RED abort before weights"]:::add
+    o_csv["result CSVs Yes or No"]:::add
+    o_out["rung0 output csv, not baseline"]:::add
+  end
+  s1 --> f_runbq
+  s2 --> f_runbq
+  s3 --> f_sh
+  s4 --> f_red
+  s4 --> f_red2
+  s5 --> f_tm
+  s5 --> f_fm
+  s1 --> f_cfg
+  f_tm --> f_runbq
+  f_tm --> f_sh
+  f_tm --> f_fm
+  f_runbq --> o_log
+  f_sh --> o_red
+  f_runbq --> o_csv
+  f_red --> o_out
+
+  subgraph legend2["Color legend"]
+    m1["adds (cyan)"]:::add
+    m2["modified (amber)"]:::mod
+    m3["config (blue)"]:::cfg
+  end
+
+  classDef add fill:#c9f7f5,stroke:#0a9396,stroke-width:3px,color:#033;
+  classDef mod fill:#ffe8c2,stroke:#e08a00,stroke-width:2px,color:#422;
+  classDef cfg fill:#cfe3ff,stroke:#2563b0,stroke-width:2px,color:#023;
+    </pre>
+  </div>
+
+  <h2>Order of operations</h2>
+  <div class="lead">All phases PENDING. Phase 2 is the negative guard that must go RED; Phase 3 is the only expensive (GPU) step.</div>
+  <div class="diagram-wrap" id="dw-flow">
+    <div class="controls"><button data-reset>Reset</button><button data-full>Fullscreen</button></div>
+    <div class="hint">scroll to zoom &bull; drag to pan</div>
+    <pre class="mermaid">
+flowchart TD
+  p1["Phase 1 &mdash; Mac author<br/>4 seams, no code exec &#9203;"]:::pend
+  p2["Phase 2 &mdash; GPU<br/>negative guard, RED test &#9203;"]:::pend
+  p3["Phase 3 &mdash; GPU<br/>fresh 0b re-run, expensive &#9203;"]:::pend
+  p4["Phase 4 &mdash; GPU CPU<br/>0c report vs Ryan &#9203;"]:::pend
+  gok["fail-close proven &#9989;"]:::ok
+  gstop["STOP hand back &#128721;"]:::stop
+  done["readback, phi-vet, commit-review &#9989;"]:::ok
+  invalid["0b still invalid &#128721;"]:::stop
+
+  p1 -->|commit then vm-handoff| p2
+  p2 -->|guard RED on bad mapping| gok
+  p2 -->|guard GREEN on PFS| p3
+  p3 -->|DECODE constrained, gcs, no batch errors| p4
+  p3 -->|mode=free or source=local| gstop
+  p4 -->|predicted -1 == 0| done
+  p4 -->|predicted -1 nonzero| invalid
+
+  classDef pend fill:#eef1f5,stroke:#9aa4b2,stroke-width:2px,color:#333;
+  classDef ok fill:#d4f2dd,stroke:#2a7d3f,stroke-width:2px,color:#0c3;
+  classDef stop fill:#f7d4d6,stroke:#a3232a,stroke-width:2px,color:#611;
+    </pre>
+  </div>
+
+  <h2>Knobs &amp; contracts</h2>
+  <div class="card">
+    <div class="kv">
+      <div class="k">Constraint on-switch</div><div><code>runtime.use_constrained_decoding_for_binary: true</code> — kept, but no longer sufficient alone. Now ANDed with the mapping predicate, not the registry <code>is_binary</code> flag.</div>
+      <div class="k">Constraint predicate</div><div><code>is_binary_yes_no_task(mapping)</code> → True iff <code>mapping["1"]=="Yes"</code> and <code>mapping["0"]=="No"</code>. Reads only the "1"/"0" keys, so PFS's 3-class mapping passes. <span class="tag new">extract → task_mapping.py</span></div>
+      <div class="k">Registry contract</div><div>0b gate reads <code>cfg['paths']['valid_tasks']</code> (<code>run_bq.py:67</code>); reducers must resolve the <b>same</b> <code>paths.valid_tasks</code> (was hard-coded <code>tasks/valid_tasks.json</code>) so 0b and 0c agree by contract.</div>
+      <div class="k">0c output path</div><div><code>--output</code> MUST be a rung-0-specific file. The reducer's <b>default</b> <code>figures/results_stats/*all_model_response.csv</code> IS Ryan's committed baseline comparator — never write there.</div>
+      <div class="k">Fail-closed guard</div><div>Preflight in <code>run_rung0_gpu.sh</code>: for each selected task, assert the mapping is Yes/No when the flag is on. Exits RED before weights load.</div>
+    </div>
+<pre># run_bq.py:909-910  (proposed)
+use_constrained = self.cfg['runtime'].get('use_constrained_decoding_for_binary', True)
+mapping = task_info.get("mapping", {})
+is_yes_no = is_binary_yes_no_task(mapping)          # canonical predicate (task_mapping.py)
+constrained_choices = ["Yes", "No"] if (is_yes_no and use_constrained) else None</pre>
+  </div>
+
+  <h2>Seams (steps)</h2>
+
+  <details data-section="step-1">
+    <summary>Seam 1 — Decoding fix: constrain off the mapping, not <code>is_binary</code> <span class="tag mod">run_bq.py</span></summary>
+    <div class="det-body">
+      <p>Gate the constraint on the task's mapping being binary Yes/No via <code>is_binary_yes_no_task(mapping)</code> (<code>final_metrics.py:70</code>). PFS's 3-class mapping passes (predicate reads only the "1"/"0" keys — Codex-confirmed). Faithful to Ryan's baseline commit <code>5e97abd</code>, which forced Yes/No for every Yes/No-mappable task before the <code>is_binary</code> knob existed.</p>
+      <div class="files">Files: <code>src/vista_run/run_bq.py</code> (~:905-910). <code>task_info</code> is a raw registry entry (loaded :67-71), so <code>task_info.get("mapping")</code> is available at the gate — provided the entry carries <code>mapping</code> (VM-side fact, made fail-closed by seam 3).</div>
+      <textarea class="section-feedback" data-fb="step-1" placeholder="Feedback on Seam 1..."></textarea>
+    </div>
+  </details>
+
+  <details data-section="step-2">
+    <summary>Seam 2 — Instrumentation: per-task <code>[DECODE]</code> log + summary <span class="tag mod">run_bq.py</span></summary>
+    <div class="det-body">
+      <p>Immediately after the gate, emit the decode mode per task plus a per-run summary count of constrained tasks (makes constraint breadth observable, per OQ-F2). <code>mode=free</code> prints the reason. Inference-neutral.</p>
+<pre>[DECODE] task=progression_recurrence_free_survival_1_yr  mode=constrained  choices=['Yes','No']  (mapping is Yes/No; use_constrained=True)
+[DECODE] summary: 1/1 selected tasks constrained</pre>
+      <textarea class="section-feedback" data-fb="step-2" placeholder="Feedback on Seam 2..."></textarea>
+    </div>
+  </details>
+
+  <details data-section="step-3">
+    <summary>Seam 3 — Fail-closed preflight: assert the mapping BEFORE weights load <span class="tag mod">run_rung0_gpu.sh</span></summary>
+    <div class="det-body">
+      <p>The real fix for the silent no-op. Extend the existing preflight to resolve the registry via the same <code>cfg['paths']['valid_tasks']</code> <code>run_bq</code> uses, and for each task in the config's <code>tasks:</code> list assert <code>is_binary_yes_no_task(mapping)</code>. Any selected task whose mapping is not Yes/No while the flag is on → FAIL before GPU spend (the guard that must go RED). Runs on the GPU box (base_dir is a VM mount), costs no weights.</p>
+      <div class="files">Files: <code>eval/run_rung0_gpu.sh</code> (preflight block).</div>
+      <textarea class="section-feedback" data-fb="step-3" placeholder="Feedback on Seam 3..."></textarea>
+    </div>
+  </details>
+
+  <details data-section="step-4">
+    <summary>Seam 4 — Eval fix: constrained reducer, registry-by-contract, rung-0 output <span class="tag mod">constrained_all_model_response.py</span></summary>
+    <div class="det-body">
+      <p>Use <code>constrained_all_model_response.py</code> (direct Yes/No map, no extraction, <code>:188</code>) which drops <code>ground_truth_label == -1</code> rows (<code>:259-261</code>) — the ~27% insufficient class. Three fixes make it safe:</p>
+      <ul>
+        <li><b>Registry contract (Critical):</b> reducer hard-codes <code>base_path/"tasks"/"valid_tasks.json"</code> (:127) while <code>run_bq</code> reads <code>cfg['paths']['valid_tasks']</code> (:67). Make the reducer resolve <code>cfg['paths'].get('valid_tasks', ...)</code> so 0b and 0c use the same registry by contract. Mirror on <code>all_model_response.py</code>.</li>
+        <li><b><code>--config</code>/<code>--output</code> CLI:</b> <code>__main__</code> defaults to <code>configs/all_tasks.yaml</code> (:270-271). Add argparse (backward-compatible). 0c MUST pass a rung-0-specific <code>--output</code> — the default path is Ryan's committed baseline.</li>
+        <li><b>Drop-count print bug:</b> <code>:261</code> prints <code>len(minus_one_count_gt)</code> = number of model groups, not rows. Fix to print actual dropped row count (the 27% QC depends on it).</li>
+      </ul>
+      <textarea class="section-feedback" data-fb="step-4" placeholder="Feedback on Seam 4..."></textarea>
+    </div>
+  </details>
+
+  <details data-section="step-5">
+    <summary>Seam 5 — Extract <code>is_binary_yes_no_task</code> to a shared dep-free module <span class="tag new">task_mapping.py (new)</span></summary>
+    <div class="det-body">
+      <p>OQ-F1 resolved (Phil): move the predicate to <code>src/results/task_mapping.py</code> — imports nothing (no numpy/pandas/results_analyzer/context.normalize), so <code>run_bq</code> and the preflight import it cleanly. <code>final_metrics.py</code> re-exports it so existing callers keep working. Single source of truth for the task semantics whose duplication caused this bug.</p>
+      <div class="files">Impl note: the bash preflight runs from repo-root, so its Python heredoc must <code>sys.path.insert(0, repo/src)</code> before importing — keep the import, do not re-inline (that regresses to duplication).</div>
+      <textarea class="section-feedback" data-fb="step-5" placeholder="Feedback on Seam 5..."></textarea>
+    </div>
+  </details>
+
+  <details data-section="step-6">
+    <summary>Seam 6 — Fresh 0b re-run (not resumable) <span class="tag mod">move CSVs aside</span></summary>
+    <div class="det-body">
+      <p><code>_setup_output_and_resume</code> (<code>run_bq.py:702,:713</code>) resumes by <code>index</code>, so it would append constrained rows to the stale free-text CSVs. Before re-running: move aside <code>{results_dir}/.../medgemma-1.5-4b-it/*_results_{no_image,axial_all_image}.csv</code> and any stale <code>figures/results_stats/*all_model_response.csv</code>. Then re-run via <code>eval/run_rung0_gpu.sh</code>.</p>
+      <textarea class="section-feedback" data-fb="step-6" placeholder="Feedback on Seam 6..."></textarea>
+    </div>
+  </details>
+
+  <h2>Gotchas</h2>
+
+  <details data-section="gotcha-andgate">
+    <summary>The flag was AND-gated behind <code>is_binary</code> — necessary but not sufficient</summary>
+    <div class="det-body"><p><code>run_bq.py:910</code>: <code>["Yes","No"] if (task_info.get("is_binary", False) and use_constrained) else None</code>. PFS is <code>is_binary: False</code> (genuine 3-class), so the flag was a silent no-op. This is the OQ-R6 miss this plan corrects.</p>
+    <textarea class="section-feedback" data-fb="gotcha-andgate" placeholder="Feedback..."></textarea></div>
+  </details>
+
+  <details data-section="gotcha-baseline">
+    <summary>The reducer's default output path IS Ryan's committed baseline comparator</summary>
+    <div class="det-body"><p>Running 0c with the default <code>--output</code> would overwrite <code>figures/results_stats/all_model_response.csv</code> (the very file we compare against) and dirty git. Always pass a rung-0-specific <code>--output</code>.</p>
+    <textarea class="section-feedback" data-fb="gotcha-baseline" placeholder="Feedback..."></textarea></div>
+  </details>
+
+  <details data-section="gotcha-dropcount">
+    <summary>The reducer's "Dropped N rows" print reports group-count, not rows</summary>
+    <div class="det-body"><p><code>:261</code> prints <code>len(minus_one_count_gt)</code> = number of model groups. The 27%-drop QC would read a garbage number unless the print is fixed.</p>
+    <textarea class="section-feedback" data-fb="gotcha-dropcount" placeholder="Feedback..."></textarea></div>
+  </details>
+
+  <details data-section="gotcha-macnopy">
+    <summary>No <code>python</code> on the planner Mac — Phase 1 is structural review only</summary>
+    <div class="det-body"><p>Codex caught that a Phase-1 <code>python -c ast.parse</code> check violates the no-execution posture. Phase 1 is <code>rg</code>-based structural review; any AST/import check runs on the VM.</p>
+    <textarea class="section-feedback" data-fb="gotcha-macnopy" placeholder="Feedback..."></textarea></div>
+  </details>
+
+  <h2>Open questions</h2>
+  <div id="oq-panel"></div>
+
+  <h2>Verification &amp; VM handoff</h2>
+  <div class="card gate">
+    <p class="lead">Complex-tier handoff: multiple phases, a class-2 decode gate, banked prior context, a destructive move-aside.</p>
+    <p><b>Phase 1 — Mac (no code exec).</b> Structural <code>rg</code> review of the seams. <span class="stopc">Stop:</span> any edit missing. Next: commit → <code>/vm-handoff</code> renders Phases 2-4.</p>
+    <p><b>Phase 2 — GPU: negative guard (cheap).</b> Run the preflight against a deliberately non-Yes/No mapping (or flag off): must exit non-zero <i>before</i> weights load; then real config passes. <span class="okc">Expected:</span> RED on bad mapping, GREEN on PFS. <span class="stopc">Stop:</span> guard passes a non-Yes/No mapping — fail-close broken.</p>
+    <p><b>Phase 3 — GPU: fresh 0b re-run (expensive).</b> Move stale CSVs aside, then <code>bash eval/run_rung0_gpu.sh</code>. <span class="okc">Gates:</span> <code>[DECODE] mode=constrained</code> both arms; <code>[CT] source=gcs</code> throughout, <code>source=local == 0</code>; <code>Error in batch == 0</code> and <code>Producer error == 0</code>; per-arm row counts ~equal; spot-check exact Yes/No. <span class="stopc">Stop:</span> <code>mode=free</code>; any <code>source=local</code>; <code>row_count==0</code>; batch/producer errors. Destructive: the move-aside.</p>
+    <p><b>Phase 4 — GPU CPU: 0c report.</b> <code>python -m results.constrained_all_model_response --config ../configs/all_tasks.rung0.yaml --output &lt;rung0-output&gt;.csv</code>. <span class="okc">QC:</span> <code>predicted_label == -1</code> is <b>exactly 0</b> (any nonzero is a STOP unless a named vLLM edge is documented); actual <code>gt == -1</code> ~27% dropped (via the fixed print); resolved registry path equals <code>paths.valid_tasks</code>. Report accuracy vs Ryan's baseline (mapped labels, image arm stratified to <code>used_image==1</code>) as one weak, confounded signal — not a match claim. Next: readback → <code>/phi-vet</code> → <code>/commit-review</code>.</p>
+    <textarea class="section-feedback" data-fb="verification" placeholder="Feedback on verification & handoff..."></textarea>
+  </div>
+
+  <div class="card">
+    <h3>Overall feedback</h3>
+    <textarea id="global-fb" placeholder="Anything cross-cutting..."></textarea>
+  </div>
+
+</div>
+
+<div class="footbar">
+  <span class="grow files">Feedback autosaves locally. Use the button to copy it as a Claude prompt.</span>
+  <button class="btn" id="copy-fb">Copy feedback as Claude prompt<span class="badge" id="fb-badge" style="display:none">0</span></button>
+</div>
+
+<script>
+const PLAN_STEM = "vlm-rung0-0b-decoding-fix";
+const PLAN_SHA = "58c1d5da9ca4f8eaec5becbc8673b1f0ddf2129019e302cff569ba12b1a73412";
+const LS_PREFIX = "explainplan::" + PLAN_STEM + "::";
+const SHA_KEY = LS_PREFIX + "__sha";
+
+// --- Open questions data ---
+const OQS = [
+  {id:"OQ-F1", status:"Resolved", resolved:true, text:"Home for the Yes/No predicate. RESOLVED (Phil): extract is_binary_yes_no_task to a dep-free src/results/task_mapping.py, imported by the inference gate, the preflight, and final_metrics (re-export). Single source of truth for the task semantics whose duplication caused this bug."},
+  {id:"OQ-F2", status:"Resolved", resolved:true, text:"RESOLVED (Phil): off-mapping — constrain ANY Yes/No-mappable task, not a PFS-only allowlist. Seam 1 as written; forced guesses on gt=-1 rows are dropped so the metric is unaffected (matches Ryan), and breadth stays observable via the [DECODE] summary count."},
+  {id:"OQ-F3", status:"Resolved", resolved:true, text:"RESOLVED (Phil): drop ground_truth_label == -1 only. Post-fix predicted_label == -1 must be exactly 0 (proof the constraint engaged) — a STOP, never silently dropped (that would hide model failures behind inflated accuracy)."}
+];
+
+(function renderOQ(){
+  const panel = document.getElementById("oq-panel");
+  OQS.forEach(oq=>{
+    const div = document.createElement("div");
+    div.className = "oq" + (oq.resolved ? " resolved":"");
+    div.setAttribute("data-section", oq.id);
+    div.innerHTML =
+      '<h3>'+oq.id+' <select data-oq="'+oq.id+'">'+
+        ['Pending','Resolved','Deferred'].map(s=>'<option'+(s===oq.status?' selected':'')+'>'+s+'</option>').join('')+
+      '</select></h3>'+
+      '<div class="files">'+oq.text+'</div>'+
+      '<textarea class="section-feedback" data-fb="'+oq.id+'" placeholder="Notes on '+oq.id+'..."></textarea>';
+    panel.appendChild(div);
+  });
+})();
+
+// --- localStorage persistence (wipe if SHA changed = HTML regenerated) ---
+(function initLS(){
+  const savedSha = localStorage.getItem(SHA_KEY);
+  if(savedSha && savedSha !== PLAN_SHA){
+    Object.keys(localStorage).filter(k=>k.startsWith(LS_PREFIX)).forEach(k=>localStorage.removeItem(k));
+  }
+  localStorage.setItem(SHA_KEY, PLAN_SHA);
+  // restore
+  document.querySelectorAll("textarea[data-fb], #global-fb").forEach(t=>{
+    const key = LS_PREFIX + (t.id==="global-fb" ? "__global" : t.getAttribute("data-fb"));
+    const v = localStorage.getItem(key);
+    if(v) t.value = v;
+  });
+  document.querySelectorAll("select[data-oq]").forEach(s=>{
+    const key = LS_PREFIX + "oqstatus::" + s.getAttribute("data-oq");
+    const v = localStorage.getItem(key);
+    if(v) s.value = v;
+  });
+  updateBadge();
+})();
+
+function saveField(el){
+  const key = LS_PREFIX + (el.id==="global-fb" ? "__global" : el.getAttribute("data-fb"));
+  if(el.value.trim()) localStorage.setItem(key, el.value); else localStorage.removeItem(key);
+  updateBadge();
+}
+document.addEventListener("input", e=>{
+  if(e.target.matches("textarea[data-fb], #global-fb")) saveField(e.target);
+});
+document.addEventListener("change", e=>{
+  if(e.target.matches("select[data-oq]")){
+    localStorage.setItem(LS_PREFIX+"oqstatus::"+e.target.getAttribute("data-oq"), e.target.value);
+  }
+});
+
+function pendingCount(){
+  let n = 0;
+  document.querySelectorAll("textarea[data-fb], #global-fb").forEach(t=>{ if(t.value.trim()) n++; });
+  return n;
+}
+function updateBadge(){
+  const n = pendingCount();
+  const b = document.getElementById("fb-badge");
+  if(n>0){ b.style.display="inline-block"; b.textContent=n; }
+  else b.style.display="none";
+}
+
+document.getElementById("copy-fb").addEventListener("click", async ()=>{
+  let out = "# Feedback on "+PLAN_STEM+"\n\n";
+  document.querySelectorAll("details[data-section], div.oq[data-section], .card [data-fb='verification']").forEach(()=>{});
+  // Section textareas
+  document.querySelectorAll("textarea[data-fb]").forEach(t=>{
+    if(t.value.trim()){ out += "## "+t.getAttribute("data-fb")+"\n"+t.value.trim()+"\n\n"; }
+  });
+  // OQ statuses (always include if changed from default)
+  document.querySelectorAll("select[data-oq]").forEach(s=>{
+    out += "## "+s.getAttribute("data-oq")+" status\nStatus: "+s.value+"\n\n";
+  });
+  const g = document.getElementById("global-fb");
+  if(g.value.trim()) out += "## Overall\n"+g.value.trim()+"\n";
+  try{
+    await navigator.clipboard.writeText(out);
+    const btn = document.getElementById("copy-fb");
+    const old = btn.firstChild.textContent;
+    btn.firstChild.textContent = "Copied ✓  ";
+    setTimeout(()=>{ btn.firstChild.textContent = old; }, 1600);
+  }catch(e){
+    alert("Copy failed — select-all in this box:\n\n"+out);
+  }
+});
+
+// --- Mermaid + pan/zoom ---
+const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+mermaid.initialize({ startOnLoad:false, theme: dark ? "dark":"default", flowchart:{ useMaxWidth:false } });
+
+mermaid.run({ querySelector:"pre.mermaid" }).then(()=>{
+  document.querySelectorAll(".diagram-wrap").forEach(wrap=>{
+    const svg = wrap.querySelector("svg");
+    if(!svg) return;
+    svg.removeAttribute("style");
+    svg.style.width = "100%"; svg.style.height = "100%";
+    const inst = svgPanZoom(svg, { zoomEnabled:true, controlIconsEnabled:false, fit:true, center:true, minZoom:0.3, maxZoom:8 });
+    wrap._pz = inst;
+    wrap.querySelector("[data-reset]").addEventListener("click", ()=>{ inst.resize(); inst.fit(); inst.center(); });
+    wrap.querySelector("[data-full]").addEventListener("click", ()=>{
+      wrap.classList.toggle("full");
+      setTimeout(()=>{ inst.resize(); inst.fit(); inst.center(); }, 60);
+    });
+  });
+});
+window.addEventListener("keydown", e=>{
+  if(e.key==="Escape") document.querySelectorAll(".diagram-wrap.full").forEach(w=>{
+    w.classList.remove("full");
+    if(w._pz) setTimeout(()=>{ w._pz.resize(); w._pz.fit(); w._pz.center(); },60);
+  });
+});
+window.addEventListener("resize", ()=>{
+  document.querySelectorAll(".diagram-wrap").forEach(w=>{ if(w._pz){ w._pz.resize(); w._pz.fit(); w._pz.center(); } });
+});
+</script>
+</body>
+</html>
