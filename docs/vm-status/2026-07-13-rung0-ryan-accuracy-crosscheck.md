@@ -121,3 +121,28 @@ Ran entirely on `phil-sllm-01` (shared `/mnt/su-vista-*` mounts; Claude-driven, 
 - **Decision gates:** none. **In-lane corrections:** Step-0 size proxy (~145 MB, not KB/MB) → resolved by content + Step-1 QC (above). **Deviations (class 3):** none.
 
 PHI: accuracies / counts / column names / pass-fail only — no patient rows, UIDs, timelines, or dates.
+
+### Correction (Mac, 2026-07-13) — matched-arm comparison: `report_and_timeline` is the right partner
+
+The Step-2 read above mapped our **report-inclusive** `no_image` to Ryan's **report-stripped** `timeline_only` — a
+report-content mismatch, which is what produced the "+14 pp, above-band, confound-explained" framing. Ryan's
+report-**inclusive**, no-image arm is **`report_and_timeline`** (0.434, n=136) — which the readback computed but left
+"unmapped." Comparing like-for-like:
+
+| matched arm (report-inclusive, no image) | rung-0 | Ryan | Δ |
+|---|---|---|---|
+| our `no_image` ↔ Ryan **`report_and_timeline`** | **0.515** (899) | **0.434** (136) | **+0.081 — WITHIN the ~10% band** |
+
+So we **did** replicate: on the properly-matched arm the gap is +8 pp, in-band — not the +14 pp the wrong-arm mapping
+implied. Corroborating evidence, all from Ryan's own baseline:
+- **Report-lift, Ryan's pipeline:** `report_and_timeline` (0.434) − `timeline_only` (0.375) = **+5.9 pp** — report text
+  helps in his pipeline too, confirming the confound *direction* (most of our earlier elevation was the arm mismatch).
+- **±image unchanged:** both flat (ours −0.002; Ryan `image_and_timeline` vs `timeline_only` 0.000); Ryan `image_only`
+  (0.294) is the *worst* arm → image-alone < timeline < timeline+report. Same "CT underpowered for PFS" story.
+- **Residual +8 pp is within noise:** Ryan n=136 → SE ≈ 4 pp, so +8 pp ≈ 2 SE; the leftover is our un-subsampled n
+  (~899) + minor rendering diffs, not a pipeline discrepancy.
+
+**Caveat (image arm stays confounded):** Ryan has *no* report-inclusive + image arm (his image arms are report-stripped,
+10-slice), so our `axial_all_image` (report-inclusive, 30-slice) has no clean partner — the image-arm Δ remains
+qualitative. The **no-image arm is the clean replication test**, and it lands in-band. **Net: genuine same-neighborhood
+replication on the matched arm.**
