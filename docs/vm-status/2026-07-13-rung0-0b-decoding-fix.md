@@ -170,5 +170,16 @@ from Step 2; the `[DECODE]` lines + engagement summary; the four Step-3 gate out
 delta). Read large outputs from the CSVs — **no PHI** (counts / metrics / pass-fail only; never paste rows, timelines,
 UIDs, or dates).
 
-## VM run results
-_(left empty by the planner; the executor fills this in readback mode)_
+## VM run results — readback relayed from GPU box `phil-a100x1-80gb-01` via the Mac, 2026-07-13 · REPO `vista_eval_vlm` · BRANCH `worktree-vlm-modular-preprocessing-roadmap` @ `28c938d`
+
+Compute on `phil-a100x1-80gb-01` (weighted 0b + 0c); Step-1 guard proof on `phil-sllm-01`; readback recorded on the Mac (GPU box has no Claude Code).
+
+- **Step 0 (both boxes):** ✅ checked out the fix SHA; all four seam greps hit.
+- **Step 1 — decode-guard proof (`phil-sllm-01`, weight-free):** ✅ **GREEN.** Predicate RED on `{Stage I/II/III}` and `{}`; GREEN on PFS (staged registry resolves `progression_recurrence_free_survival_1_yr` → `{1:Yes,0:No,-1:Insufficient…}` → `is_yes_no=True`). No STOP — confirms the gate constrains PFS and would RED a non-Yes/No task.
+- **Step 2 — move-aside (DESTRUCTIVE):** ✅ archived the two stale 2026-07-09 free-gen CSVs (~147 MB each — essay bloat) to `~/rung0_stale_freegen_20260709/` on the GPU box; results dir left with no PFS medgemma result CSVs. ⚠️ *First re-run skipped this* → 0b resumed-by-index over the stale CSVs (zero fresh inference) → false 0c `predicted_label == -1 total: 2476` (all rows). The QC gate caught it; corrected here (and the handoff Step-2 was patched to archive **outside** the results tree — `collect_result_files` `rglob` is recursive).
+- **Step 3 — fresh 0b (weighted, GPU):** ✅ log `rung0_20260713_183052/run_bq.log`. `[DECODE] task=…PFS mode=constrained choices=['Yes','No']` on **both** arms + `[DECODE] summary: 1/1 selected tasks constrained`; `source=local == 0` (force-GCS holding); `Error in batch == 0` **and** `Producer error == 0`; fresh result CSVs (07-13, small — KB/MB, not 147 MB). Real inference ran (batch lines with input tokens). The lone `EngineCore_DP0 died` line is benign teardown — the wrapper printed the completion banner, which it gates behind `run_bq` exit 0.
+- **Step 4 — 0c report (constrained reducer, rung-0 `--output`):** ✅ **`[QC] predicted_label == -1 total: 0`** (exactly 0 — constraint engaged end-to-end; ~54% in the invalid run → 0). `ground_truth_label == -1` = **678** dropped (= 27.4% of 2476 — the insufficient-follow-up class; proves the dtype-robust `.isin([-1,"-1"])` drop works); wrote **1798** rows to `figures/results_stats/rung0_constrained_all_model_response.csv`. Ryan's committed baseline comparators untouched.
+- **Decision gates:** none fired. **In-lane corrections:** Step-2 move-aside missed on the first re-run (stale-CSV resume-skip), corrected; handoff Step-2 patched (archive outside the tree). **Deviations (class 3):** none.
+- **Net:** **rung-0 GREEN** — the 0b decoding fix is proven end-to-end (constrained Yes/No inference + correct insufficient-class drop). Unblocks rungs 1–2. The 0c **accuracy** comparison vs Ryan (stratified to `used_image==1`, mapped `axial_all_image→image_and_timeline` / `no_image→timeline_only`, ~10% informal band) is **report-only** — read from the CSV by the author, not a gate.
+
+PHI: counts / metrics / log names / pass-fail only — no patient rows, UIDs, timelines, or dates.
