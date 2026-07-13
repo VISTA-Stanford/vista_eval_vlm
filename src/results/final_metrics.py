@@ -17,6 +17,9 @@ import yaml
 # Ensure these imports exist in your environment
 from results.results_analyzer import _extract_answer, is_answer_correct, map_label_to_answer
 from context.normalize import experiment_names
+# Single source of truth for the Yes/No-task predicate (dep-free module); re-exported here
+# so existing `from results.final_metrics import is_binary_yes_no_task` callers keep working.
+from results.task_mapping import is_binary_yes_no_task
 
 
 def extract_experiment_from_filename(filename):
@@ -65,18 +68,6 @@ def calculate_accuracy_like_plot(df, mapping):
         axis=1,
     )
     return df["is_correct"].mean() * 100
-
-
-def is_binary_yes_no_task(mapping):
-    """
-    Return True if the task uses binary Yes/No answers with mapping "1" -> "Yes", "0" -> "No".
-    Confusion matrix is only meaningful for such tasks (Yes=1 positive, No=0 negative).
-    """
-    if not mapping or not isinstance(mapping, dict):
-        return False
-    yes_str = (mapping.get("1") or "").strip().lower()
-    no_str = (mapping.get("0") or "").strip().lower()
-    return yes_str == "yes" and no_str == "no"
 
 
 def binary_labels_and_scores(df, mapping):

@@ -6,11 +6,13 @@ Output: figures/results_stats/all_model_response.csv with columns model_name, ta
 index, person_id (if present in source), model_response_cleaned, predicted_label, ground_truth.
 """
 
+import argparse
 import json
 import re
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from results.results_analyzer import _extract_answer, map_label_to_answer
 from results.final_metrics import (
@@ -66,7 +68,12 @@ def main(config_path=None, output_path=None):
     results_base = Path(results_dir)
     base_path = Path(base_dir)
 
-    tasks_json = base_path / "tasks" / "valid_tasks.json"
+    # Resolve the task registry from the SAME config key run_bq gates on
+    # (`cfg['paths']['valid_tasks']`) so scoring and inference share one registry by contract.
+    with open(config_path, "r") as f:
+        _cfg = yaml.safe_load(f)
+    valid_tasks_rel = _cfg.get("paths", {}).get("valid_tasks", "tasks/valid_tasks.json")
+    tasks_json = base_path / valid_tasks_rel
     task_registry = {}
     if tasks_json.exists():
         with open(tasks_json, "r") as f:
@@ -170,4 +177,17 @@ def main(config_path=None, output_path=None):
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Reduce free-text result CSVs to a per-question metrics table (with extraction)."
+    )
+    parser.add_argument(
+        "--config", default=None,
+        help="Config YAML (default: configs/all_tasks.yaml). Selects results_dir + task registry.",
+    )
+    parser.add_argument(
+        "--output", default=None,
+        help="Output CSV path. For rung-0 pass a rung-0-specific path — the default "
+             "figures/results_stats/all_model_response.csv is Ryan's committed baseline comparator.",
+    )
+    args = parser.parse_args()
+    main(config_path=args.config, output_path=args.output)

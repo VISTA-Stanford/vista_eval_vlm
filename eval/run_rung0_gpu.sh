@@ -102,7 +102,7 @@ assert cfg.get("timeline_truncation"), \
 print("  [ok] config invariants: ct_dir unset, feb26 prefix, subsample=false, constrained=true, timeline_truncation set")
 PY
 
-# 3. resolve all config paths once, then check base_dir mount + task registry.
+# 3. resolve all config paths once, then check base_dir mount.
 read -r BASE_DIR RESULTS_DIR CACHE_DIR CT_PREFIX < <(python - "$CONFIG" <<'PY'
 import sys, yaml
 c = yaml.safe_load(open(sys.argv[1])); p = c["paths"]; r = c.get("runtime", {})
@@ -110,8 +110,41 @@ print(p["base_dir"], p["results_dir"], r.get("cache_dir", ""), p.get("ct_snapsho
 PY
 )
 [ -d "$BASE_DIR" ] || fail "base_dir not mounted/readable: $BASE_DIR"
-[ -f "$BASE_DIR/tasks/valid_tasks.json" ] || fail "missing $BASE_DIR/tasks/valid_tasks.json"
 echo "  [ok] base_dir mounted: $BASE_DIR"
+
+# 3b. FAIL-CLOSED decode guard (the guard that must go RED *before* weights load).
+#     Resolve the registry via paths.valid_tasks — the SAME key run_bq gates on — and assert every
+#     selected task's MAPPING is Yes/No while constrained decoding is on. Closes the exact gap that
+#     let the first 0b run free-generate silently to completion (registry `is_binary: False` on a
+#     3-class Yes/No task turned the constraint into a no-op). Imports the canonical predicate from
+#     src (dep-free: no torch/pandas), so it runs cheap, before any GPU/weight spend.
+REPO_ROOT="$REPO_ROOT" python - "$CONFIG" <<'PY' || fail "decode guard: a selected task is not Yes/No-mappable while constrained decoding is on (see above)."
+import os, sys, json, yaml
+sys.path.insert(0, os.path.join(os.environ["REPO_ROOT"], "src"))
+from results.task_mapping import is_binary_yes_no_task
+
+cfg = yaml.safe_load(open(sys.argv[1]))
+p = cfg.get("paths", {})
+use_constrained = cfg.get("runtime", {}).get("use_constrained_decoding_for_binary", True)
+reg_rel = p.get("valid_tasks", "tasks/valid_tasks.json")
+reg_path = os.path.join(p["base_dir"], reg_rel)
+if not os.path.isfile(reg_path):
+    print(f"  registry not found via paths.valid_tasks: {reg_path}", file=sys.stderr)
+    sys.exit(1)
+registry = {t["task_name"]: t for t in json.load(open(reg_path))}
+tasks = cfg.get("tasks", [])
+bad = [(t, registry.get(t, {}).get("mapping", {})) for t in tasks
+       if not is_binary_yes_no_task(registry.get(t, {}).get("mapping", {}))]
+if use_constrained and bad:
+    print("  use_constrained_decoding_for_binary=true, but these selected tasks have a NON-Yes/No "
+          "mapping — the decode constraint would silently NOT engage for them:", file=sys.stderr)
+    for t, m in bad:
+        print(f"    - {t}: mapping={m}", file=sys.stderr)
+    sys.exit(1)
+print(f"  [ok] decode guard: registry={reg_path}; "
+      f"{len(tasks) - len(bad)}/{len(tasks)} selected tasks Yes/No-mappable "
+      f"(use_constrained={use_constrained})")
+PY
 
 # 4. HF auth — medgemma weights are gated.
 python -c "from huggingface_hub import whoami; whoami()" >/dev/null 2>&1 \
@@ -168,5 +201,11 @@ echo ""
 echo "=== weighted run complete — sanity-check before declaring 0b green ==="
 echo "  1. grep -c 'source=local' \"$LOG\"    # MUST be 0 (any local = force-GCS breach)"
 echo "  2. grep -c 'source=gcs'   \"$LOG\"    # expect all CT rows"
-echo "  3. result CSVs non-empty at {results_dir}/.../{task}_results_{no_image,axial_all_image}.csv"
-echo "Then 0c (report, CPU-fine): cd src && python -m results.all_model_response"
+echo "  3. grep '\\[DECODE\\]' \"$LOG\"           # MUST show mode=constrained for PFS on BOTH arms"
+echo "  4. result CSVs non-empty at {results_dir}/.../{task}_results_{no_image,axial_all_image}.csv"
+echo "Then 0c (report, CPU-fine) — constrained reducer, rung-0 --output (NOT the default, which is"
+echo "Ryan's committed baseline comparator):"
+echo "  cd src && python -m results.constrained_all_model_response \\"
+echo "      --config ../configs/all_tasks.rung0.yaml \\"
+echo "      --output ../figures/results_stats/rung0_constrained_all_model_response.csv"
+echo "  # QC: '[QC] predicted_label == -1 total' MUST be 0; 'Dropped N rows' N ~= 27% of rows."

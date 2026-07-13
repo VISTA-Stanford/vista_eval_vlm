@@ -9,12 +9,14 @@ experiment, index, person_id (if present in source), model_response, predicted_l
 logprob_yes (logprob of "Yes" token), logprob_no (logprob of "No" token), and related fields.
 """
 
+import argparse
 import json
 import math
 import warnings
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -124,7 +126,13 @@ def main(config_path=None, output_path=None):
     results_base = Path(results_dir)
     base_path = Path(base_dir)
 
-    tasks_json = base_path / "tasks" / "valid_tasks.json"
+    # Resolve the task registry from the SAME config key run_bq gates on
+    # (`cfg['paths']['valid_tasks']`), so 0b's decode gate and 0c's scoring load the identical
+    # registry by CONTRACT, not by the coincidence that both default to tasks/valid_tasks.json.
+    with open(config_path, "r") as f:
+        _cfg = yaml.safe_load(f)
+    valid_tasks_rel = _cfg.get("paths", {}).get("valid_tasks", "tasks/valid_tasks.json")
+    tasks_json = base_path / valid_tasks_rel
     task_registry = {}
     if tasks_json.exists():
         with open(tasks_json, "r") as f:
@@ -251,14 +259,28 @@ def main(config_path=None, output_path=None):
         return
 
     out_df = pd.concat(out_chunks, ignore_index=True)
-    # count the number of rows where predicted_label is -1 by model
-    minus_one_count = out_df[out_df["predicted_label"] == -1].groupby("model_name").size()
-    print(f"Number of rows where predicted_label is -1 by model: {minus_one_count}")
-    minus_one_count_gt = out_df[out_df["ground_truth_label"] == -1].groupby("model_name").size()
-    print(f"Number of rows where ground_truth_label is -1 by model: {minus_one_count_gt}")
-    # Drop rows where ground_truth_label is -1
-    out_df = out_df[out_df["ground_truth_label"] != -1]
-    print(f"Dropped {len(minus_one_count_gt)} rows where ground_truth_label is -1")
+
+    # predicted/ground-truth labels are mapping KEYS, which arrive as strings ("1"/"0"/"-1")
+    # from the JSON registry (with an int -1 fallback when a value doesn't map). Match BOTH forms
+    # so neither the QC nor the drop is silently defeated by "-1" (str) != -1 (int).
+    pred_minus1 = out_df["predicted_label"].isin([-1, "-1"])
+    gt_minus1 = out_df["ground_truth_label"].isin([-1, "-1"])
+
+    # QC gate (rung-0 0b): with the Yes/No constraint engaged, every response is Yes/No, so
+    # predicted_label == -1 must be EXACTLY 0. Nonzero => the constraint did not engage -> STOP.
+    n_pred_minus1 = int(pred_minus1.sum())
+    print(f"[QC] predicted_label == -1 total: {n_pred_minus1}  "
+          f"(MUST be 0 — nonzero => constraint did not engage, STOP)")
+    print("Number of rows where predicted_label is -1 by model: "
+          f"{out_df[pred_minus1].groupby('model_name').size()}")
+    print("Number of rows where ground_truth_label is -1 by model: "
+          f"{out_df[gt_minus1].groupby('model_name').size()}")
+
+    # Drop the insufficient-follow-up rows (ground_truth_label == -1) to match Ryan's 2-class cohort.
+    # Count from the SAME mask that performs the drop, so the printed number is always faithful.
+    n_dropped = int(gt_minus1.sum())
+    out_df = out_df[~gt_minus1]
+    print(f"Dropped {n_dropped} rows where ground_truth_label is -1")
     if output_path is None:
         output_path = Path(__file__).resolve().parents[2] / "figures" / "results_stats" / "constrained_all_model_response.csv"
     output_path = Path(output_path)
@@ -268,4 +290,18 @@ def main(config_path=None, output_path=None):
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Reduce constrained-decoding result CSVs to a per-question metrics table."
+    )
+    parser.add_argument(
+        "--config", default=None,
+        help="Config YAML (default: configs/all_tasks.yaml). Selects results_dir + task registry.",
+    )
+    parser.add_argument(
+        "--output", default=None,
+        help="Output CSV path. For rung-0 pass a rung-0-specific path — the default "
+             "figures/results_stats/constrained_all_model_response.csv is Ryan's committed baseline "
+             "comparator; writing there overwrites the comparison and dirties git.",
+    )
+    args = parser.parse_args()
+    main(config_path=args.config, output_path=args.output)

@@ -40,6 +40,9 @@ from retrieval.prompt_building import (
     RETRIEVAL_SINGLE_TIMELINE,
     RETRIEVAL_PER_ITERATION,
 )
+# Dep-free predicate (imports nothing heavy) — gate the Yes/No decode constraint off the
+# task's mapping, not the registry `is_binary` bool (which a 3-class Yes/No task sets False).
+from results.task_mapping import is_binary_yes_no_task
 
 # All retrieval experiments (used for overwrite-output and data-loading dispatch)
 RETRIEVAL_EXPERIMENTS = RETRIEVAL_SINGLE_TIMELINE | RETRIEVAL_PER_ITERATION
@@ -169,6 +172,8 @@ class TaskOrchestrator:
     def run_inference(self, task_names=None):
         # Load model weights before any inference (kept out of __init__ for the viewer).
         self._ensure_model_loaded()
+        # Fresh per-run decode-mode ledger (populated in _process_single_task_with_data).
+        self._decode_modes = {}
         # Determine which tasks to run
         tasks_to_run = self.valid_tasks
         if task_names:
@@ -228,6 +233,11 @@ class TaskOrchestrator:
                     continue
                 df, timeline_col, source_csv = loaded
                 self._process_single_task_with_data(task_info, experiment, df, timeline_col)
+
+        # Decode-mode breadth summary (OQ-F2): how many selected tasks ran constrained.
+        modes = getattr(self, "_decode_modes", {})
+        n_constrained = sum(1 for v in modes.values() if v)
+        print(f"[DECODE] summary: {n_constrained}/{len(modes)} selected tasks constrained")
 
     def _load_task_data(self, task_info, use_no_report_csv=False, require_timeline=True):
         """
@@ -905,9 +915,27 @@ class TaskOrchestrator:
     def _process_single_task_with_data(self, task_info, experiment, df, timeline_col):
         """Run inference for one (task, experiment) using already-loaded task data."""
         task_name = task_info['task_name']
-        # Respect runtime flag: only use constrained decoding for binary tasks when enabled.
+        # Constrain decoding to Yes/No when the task's MAPPING is Yes/No — not the registry
+        # `is_binary` bool, which a 3-class-with-Yes/No task (e.g. PFS) sets to False and which
+        # silently disabled the constraint in the first 0b run. `is_binary_yes_no_task` reads only
+        # the "1"/"0" mapping keys, so a "-1" (insufficient) class does not disqualify it.
         use_constrained = self.cfg['runtime'].get('use_constrained_decoding_for_binary', True)
-        constrained_choices = ["Yes", "No"] if (task_info.get("is_binary", False) and use_constrained) else None
+        mapping = task_info.get("mapping", {})
+        is_yes_no = is_binary_yes_no_task(mapping)
+        constrained_choices = ["Yes", "No"] if (is_yes_no and use_constrained) else None
+
+        # Instrument the decode mode so a silent no-op is impossible to miss in the run log.
+        if constrained_choices is not None:
+            print(f"[DECODE] task={task_name}  mode=constrained  choices={constrained_choices}  "
+                  f"(mapping is Yes/No; use_constrained={use_constrained})")
+        else:
+            reason = "mapping not Yes/No" if not is_yes_no else "use_constrained=False"
+            print(f"[DECODE] task={task_name}  mode=free  ({reason}; "
+                  f"is_yes_no={is_yes_no}; use_constrained={use_constrained})")
+        # Record per-task decode mode (dedup by task across experiments) for the run summary.
+        if not hasattr(self, "_decode_modes"):
+            self._decode_modes = {}
+        self._decode_modes[task_name] = (constrained_choices is not None)
 
         out_file, existing_indices = self._setup_output_and_resume(task_info, experiment)
         df_exp = self._build_prompts_for_experiment(df, task_info, experiment, timeline_col)

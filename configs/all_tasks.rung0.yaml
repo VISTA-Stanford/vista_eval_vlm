@@ -36,7 +36,11 @@ runtime:
   cache_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/model_cache"
   batch_size: 64                              # lower if the GPU box OOMs
   max_new_tokens: 1024
-  use_constrained_decoding_for_binary: true   # match Ryan's constrained baseline (OQ-R6)
+  # Match Ryan's constrained baseline (OQ-R6). NOTE: the decode gate keys off the task's Yes/No
+  # MAPPING (is_binary_yes_no_task), not the registry `is_binary` flag — PFS is is_binary:False
+  # (3-class) yet Yes/No-mappable, so it IS constrained. The run_rung0_gpu.sh preflight fails
+  # closed if a selected task is non-Yes/No while this is true.
+  use_constrained_decoding_for_binary: true
 
 # Exactly one model (<= MAX_MODELS=4).
 models:
