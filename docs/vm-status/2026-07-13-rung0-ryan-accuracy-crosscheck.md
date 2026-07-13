@@ -101,5 +101,23 @@ Append to `## VM run results` (PHI-free — accuracies / counts only, no rows): 
 accuracy; and a one-line read — is rung-0 in Ryan's ~10% neighborhood, and which way does ±image point. Frame it as the
 confounded sanity signal it is, not a reproduction claim.
 
-## VM run results
-_(left empty by the planner; the executor fills this in readback mode)_
+## VM run results — readback on `phil-sllm-01` (Claude-Code CPU), 2026-07-13 · REPO `vista_eval_vlm` · BRANCH `worktree-vlm-modular-preprocessing-roadmap` @ `eb4d030`
+
+Ran entirely on `phil-sllm-01` (shared `/mnt/su-vista-*` mounts; Claude-driven, no GPU). Report-only sanity read per OQ-R2/R3 — **not** a reproduction claim.
+
+- **Step 0 — artifacts:** ✅ (with an in-lane note). The two constrained result CSVs are present and **07-13-dated** (`no_image` mtime 19:12, `axial_all_image` 19:56 — both written after the 18:30 0b run), Ryan's `all_model_response.csv` present. **In-lane correction:** the CSVs are **~145 MB**, not the "small (KB/MB)" the Step-0 Expected predicted — but the Step-0 STOP's real target is the **07-09 stale free-gen essays**, which are content-distinct. Verified by content: `model_response` is exactly Yes/No (max_len=3, mean 2.5; no_image {Yes:678, No:560}, axial {No:624, Yes:614}) across 1238 rows/arm — the constrained run, not essays. The ~145 MB is the bulky `dynamic_prompt` / `log_probs` / token-count columns, not response bloat. The 0b readback's "small — KB/MB" claim was inaccurate; size is a false-alarm proxy here, resolved by content + the Step-1 QC below. Archive-on-this-box check is moot: `~/rung0_stale_freegen_20260709/` lives on the **GPU box**, not `phil-sllm-01`.
+- **Step 1 — 0c regenerated locally (independent QC on a second box):** ✅ **GREEN, reproduces the GPU-box 0c exactly.** `[QC] predicted_label == -1 total: 0`; `Dropped 678` rows where `ground_truth_label == -1` (= 27.4% of 2476 — the insufficient-follow-up class); `Wrote 1798 rows`. Confirms the constrained result is reproducible and not box-specific.
+- **Step 2 — crosscheck read (report-only):** ran clean, no KeyError (rung-0 has `predicted_label`/`ground_truth_label`; Ryan's baseline uses `model_response_cleaned` but the same label cols, so `acc()` worked as-is).
+
+  | arm (mapped) | rung-0 acc (n) | Ryan acc (n) | Δ (rung-0 − Ryan) |
+  |---|---|---|---|
+  | `no_image` ↔ `timeline_only` | 0.515 (899) | 0.375 (136) | **+0.140** |
+  | `axial_all_image` ↔ `image_and_timeline` | 0.513 (899) | 0.375 (136) | **+0.138** |
+  | `axial_all_image`, `used_image>0` ↔ `image_and_timeline` | 0.480 (252) | 0.375 (136) | **+0.105** |
+
+  (Ryan PFS also carries `image_only` 0.294/136 and `report_and_timeline` 0.434/136, unmapped. Stratifying the axial arm to `used_image>0` dropped 647 CT-missing rows → n=252.)
+
+- **Read (confounded sanity signal, not a match):** rung-0 sits **above** Ryan by ~10.5–14 pp — **at/just beyond the ~10% informal band** on the unstratified arms, at the edge on the `used_image>0`-stratified axial. The higher absolute accuracy is directionally consistent with the declared **report-presence confound** (our timelines are report-inclusive, Ryan's report-stripped — report text helps), compounded by 30-vs-10 slices and un-subsampled n (899 vs Ryan's subsampled 136). The **±image direction agrees with Ryan**: both are essentially **flat** — rung-0 axial 0.513 vs no_image 0.515 (−0.002), Ryan image_and_timeline 0.375 vs timeline_only 0.375 (0.000); image adds ~nothing over timeline in either. Net: **sane, same neighborhood, ±image direction not opposite** — a green-ish soft read, with the above-band gap fully explained by the known report-presence confound. No reproduction claim; no STOP (Step 2 is report-only).
+- **Decision gates:** none. **In-lane corrections:** Step-0 size proxy (~145 MB, not KB/MB) → resolved by content + Step-1 QC (above). **Deviations (class 3):** none.
+
+PHI: accuracies / counts / column names / pass-fail only — no patient rows, UIDs, timelines, or dates.
