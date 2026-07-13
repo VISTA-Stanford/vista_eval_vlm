@@ -218,6 +218,14 @@ Two data facts underpin rung 0 and cannot be checked from this repo's code:
     constrained (baseline-matching) — set it **explicitly** to avoid ambiguity.
   - *If instead you want rung 0 to smoke-test the go-forward **unconstrained** default,* that's a deliberate scope
     change (say so); rung 0 as written reproduces Ryan → constrained.
+  - **⚠ AND-gate gotcha (superseded by [`vlm-rung0-0b-decoding-fix.md`](vlm-rung0-0b-decoding-fix.md)):** setting the
+    flag was **necessary but not sufficient.** `run_bq.py:910` AND-gated the constraint behind the registry
+    `is_binary` bool, and the staged `valid_tasks.json` marks PFS `is_binary: False` (genuine 3-class mapping) →
+    `constrained_choices` resolved to `None` and the first 0b run (2026-07-09) free-generated silently. **Fix:** gate
+    the constraint on the task's Yes/No **mapping** (`is_binary_yes_no_task`), not the `is_binary` flag, plus a
+    fail-closed pre-weights preflight + `[DECODE]` logging so a silent no-op can no longer run to completion. See the
+    fix plan for the four seams; this OQ-R6 decision (`use_constrained: true`) still holds — it just needed the
+    mapping-based gate underneath it.
 
 ## PHI-in-history (workstream-wide — pointer)
 
