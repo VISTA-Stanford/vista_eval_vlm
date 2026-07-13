@@ -99,16 +99,26 @@ Archive them first (record the archive path in the readback):
 ```bash
 cd <vista_eval_vlm repo>
 RES=/mnt/su-vista-uscentral1/vistabench/vlm/results/progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr_v1_1/progression_recurrence_free_survival_1_yr/medgemma-1.5-4b-it
-ARCHIVE="$RES/_stale_freegen_20260709"
+# Archive OUTSIDE the results tree. `collect_result_files` uses `results_base.rglob("*_results_*.csv")`
+# (RECURSIVE) and keys off rel[1]/rel[2] (task/model), so an archive dir INSIDE results_dir would be
+# re-discovered by 0c and re-contaminate it. A home-dir archive is off the mount tree — safe.
+ARCHIVE=~/rung0_stale_freegen_20260709
 mkdir -p "$ARCHIVE"
-mv "$RES"/*_results_{no_image,axial_all_image}.csv "$ARCHIVE"/ 2>/dev/null || true
-# also move aside any stale reducer output so 0c can't read a leftover:
-mv figures/results_stats/*all_model_response.csv figures/results_stats/_stale_20260709/ 2>/dev/null || true
-ls "$ARCHIVE"
+mv "$RES"/*_results_no_image.csv "$RES"/*_results_axial_all_image.csv "$ARCHIVE"/
+ls "$RES"/*_results_*.csv 2>&1   # expect "No such file" — no PFS medgemma result CSVs left in the tree
+ls -la "$ARCHIVE"
 ```
+Do **not** move `figures/results_stats/*all_model_response.csv` — those are the git-tracked Ryan baseline
+comparators, and 0c writes only to its explicit rung-0 `--output`, so it never overwrites them (an earlier draft's
+blanket `mv figures/results_stats/*` was wrong — it would delete the committed baseline).
 **Expected:** the two `*_results_{no_image,axial_all_image}.csv` from the 2026-07-09 free-gen run are now under
-`_stale_freegen_20260709/`; the live results dir has no PFS medgemma result CSVs left.
+`~/rung0_stale_freegen_20260709/` (07-09 mtime); the live results dir has **no** PFS medgemma result CSVs left, so the
+re-run's `_setup_output_and_resume` has nothing to resume → it actually runs fresh constrained inference.
 **STOP:** none — but **record the archive path** so the free-gen run stays recoverable.
+
+> ⚠️ **This is exactly the step whose omission produced a false 0c (2026-07-13):** the first re-run kept the 07-09 CSVs
+> in place, so 0b resumed-by-index over them (zero fresh inference), and 0c scored the stale essays → `predicted_label
+> == -1 total: 2476` (all rows). Confirm `ls "$RES"/*_results_*.csv` returns nothing before Step 3.
 
 ### Step 3 — fresh 0b weighted re-run (GPU, expensive)
 
