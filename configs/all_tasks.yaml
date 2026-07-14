@@ -1,9 +1,14 @@
 paths:
   base_dir: "/data/fries/users/rdcunha/vista_bench_cached/vista_bench"
   results_dir: "/data/fries/users/rdcunha/vb_results/path_test"
-  ct_dir: "/data/fries/datasets/vista_bench_ryan/downloaded_ct_scans/chaudhari_lab/ct_data/ct_scans/vista/nov25"
+  # CT resolution (v1_5): CTs link by (image_study_uid, image_series_uid) ->
+  # {ct_snapshot_prefix}/{study}__{series}.nii.gz in bucket su-vista-uscentral1. `nov25` is
+  # deleted; feb26 is the only snapshot. Leaving ct_dir UNSET forces the GCS path (no local
+  # fallback); a future re-materialization is a config change to ct_snapshot_prefix, not code.
+  # ct_dir:  # intentionally unset -> force GCS (the old nov25 local dir is gone; do not re-add nov25)
+  ct_snapshot_prefix: "chaudhari_lab/ct_data/ct_scans/vista/feb26"
   path_tile_base: "/data/fries/datasets/vista_bench_ryan/download_path"
-  valid_tasks: "tasks/valid_tasks_v1_3.json"
+  valid_tasks: "tasks/valid_tasks.json"
   prompts: "tasks/prompts_by_task.json"
   image_prompts: "tasks/image_valid_tasks.json"
 
@@ -110,8 +115,9 @@ timeline_truncation:
   k: 100             # Used when mode is "last_k_events"
 
 # CSV subsampling configuration
-# If true, use _subsampled.csv files instead of regular .csv files
-subsample: true
+# If true, use _subsampled.csv files instead of regular .csv files.
+# v1_5: false — the staged base carries the full {task}.csv (no _subsampled variant).
+subsample: false
 
 # Weill eval: which GPU nodes to use (0-7). Used by eval/weill.sh.
 # Override with WEILL_GPUS env or command-line args if needed.
