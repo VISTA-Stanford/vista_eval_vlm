@@ -223,5 +223,65 @@ rows, timelines, `.xml` contents, or resolver output containing raw DICOM Study/
 they stay on the `su-vista-*` PHI mount (Step 1b detail goes to the bucket, aggregate-only here). Golden output is
 git-ignored on the mount; `/phi-vet` gates every commit.
 
-## VM run results
-_(left empty by the planner; the executor fills this in readback mode)_
+## VM run results — readback on `phil-sllm-01`, 2026-07-14 · REPO `vista_eval_vlm` · BRANCH `worktree-vlm-modular-preprocessing-roadmap` @ `39b5b87` (pushed to `origin/<branch>`)
+
+**Net: BLOCKED at Step 0 precondition — the v1_5 base is not staged on the VM.** The Axis A/B
+*code* seams verify clean and the resolver contract passes weight-free, but every data-touching
+step (1b, 2, 3) needs a v1_5-staged base that does not exist on the mount. This contradicts the
+plan's assumption that "the v1_5 base is already staged by the VM" → **class-3 deviation, handing
+back to the Mac planner.**
+
+- **Step 0 — seams grep:** ✅ all four hit at `39b5b87`:
+  `resolve_ct_blob` (`vqa_dataset.py:21`), UID reads `image_study_uid`/`image_series_uid`
+  (`vqa_dataset.py:170-171`), `VISTA_BENCH_DATASET = "vista_bench_v1_5"`
+  (`query_utils.py:257`), config keys `ct_snapshot_prefix: …/feb26` + `valid_tasks:
+  tasks/valid_tasks.json` + `subsample: false` (`all_tasks.yaml`).
+- **Step 0 — v1_5 config / base_dir staging:** ❌ **STOP (precondition fired).** The v1_5 base
+  is **not** staged. Under `/mnt/su-vista-uscentral1/vistabench/vlm/base/` only the **v1_1**
+  cohort dir exists (`progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr_v1_1/…1_yr.csv`,
+  ~1 GB) plus `tasks/`. No `…_1yr_2yr_3yr_4yr_5yr` (unsuffixed / v1_5) cohort dir anywhere on
+  `su-vista-uscentral1` or `su-vista-hot`. The staged `tasks/valid_tasks.json` also maps PFS →
+  `task_source_csv: …_v1_1` (the v1_1 table), not a v1_5 source. Config **not** written (would
+  point at a non-existent base). ⇒ per the Step 0 STOP, do not proceed.
+- **Step 1(a) — resolver + fail-closed schema guard (weight-free, no data):** ✅ PASS. UID pair
+  → `chaudhari_lab/ct_data/ct_scans/vista/feb26/{study}__{series}.nii.gz`; `None`/NaN/empty →
+  `None` (fail-closed, never reaches `nifti_path`). `DEFAULT_CT_SNAPSHOT_PREFIX` = feb26. Axis A
+  contract holds.
+- **Step 1(b) — live axial capture:** ⛔ NOT RUN — blocked by the missing v1_5 base (loader needs
+  `base_path/<v1_5 source_csv>/<task>.csv` timelines to merge on `person_id`).
+- **Step 1b — coverage report (soft gate):** ⛔ NOT RUN — same block; no coverage number to gate on.
+- **Step 2 — re-bank `no_image` on v1_5:** ⛔ NOT RUN — same block.
+- **Step 3 — bank axial "before" on feb26:** ⛔ NOT RUN — gated behind Step 1b + same base block.
+
+**Root cause (data-flow confirmed by reading the loader):** `golden_harness` → `run_bq.TaskOrchestrator._load_task_data`
+loads labels/UIDs from BQ table `{project}.vista_bench_v1_5.<source_csv>` (**exists** — the v1_5
+cohort table `…_1yr_2yr_3yr_4yr_5yr` is present, 32 cols incl. `person_id`, `embed_time`,
+`image_study_uid`, `image_series_uid`, deprecated `nifti_path`; **no timeline column**), then
+**requires** a local timeline CSV `base_path/<source_csv>/<task>.csv` carrying `patient_string`
+(the per-patient EHR timeline), merged on `person_id` — **missing local CSV ⇒ task returns
+`None`.** The BQ side is v1_5-ready; the **local v1_5 timeline base is the gap.**
+
+- **⚠️ DEVIATION (class 3):** **expected** — plan §"Axis B" states "the executor keeps a localized
+  `configs/all_tasks.vm.yaml` pointing at the `su-vista-*` mounts (already staged by the VM)" and
+  the doc's Step 0 lists `<V15_BASE>` as a precondition. **found** — no v1_5 timeline base is
+  staged (only v1_1). **why it blocks** — re-using the v1_1 timeline CSV would inner-join-drop
+  every v1_5-only person (v1_5 is a larger/different cohort: 374k rows / 249.6k with CT), silently
+  shrinking + corrupting the "re-bank on v1_5" baseline the plan explicitly wants. Staging the
+  v1_5 base is **not** a mechanical copy: it requires materializing a ~1 GB v1_5 EHR-timeline CSV
+  via the OMOP/MEDS pipeline (`full_test_ehr_vb_download.py` — needs a `meds_reader` DB + ontology
+  lookup + the `bigquery_data_2_3` cache, none verified present on this VM) **plus** a v1_5
+  `valid_tasks.json` whose `task_source_csv` points at the unsuffixed v1_5 cohort. These carry
+  design decisions (subsample policy, split assignment, dep availability) that are the planner's,
+  not in-lane. **→ escalating to the Mac planner.**
+
+**Mac decisions needed before a Doc-2 / superseding handoff:**
+1. How is the v1_5 timeline base materialized — is `full_test_ehr_vb_download.py` (or the
+   subsample path) the intended producer, and are its MEDS DB + ontology + `bigquery_data_2_3`
+   inputs available to this VM (or must they be staged first)?
+2. Subsample policy for the v1_5 base (the doc's config sets `subsample: false`, but the staged
+   v1_1 base carries only the full `{task}.csv` — confirm the v1_5 producer emits the same shape).
+3. The v1_5 `valid_tasks.json` `task_source_csv` value (unsuffixed `…_1yr_2yr_3yr_4yr_5yr` to match
+   the existing v1_5 BQ table) and where it gets staged.
+
+**PHI:** counts / field-names / dir-names only above; no raw Study/Series UIDs, no timeline rows,
+no patient content. No golden output was produced (all data steps blocked).
