@@ -228,6 +228,15 @@ contract Phase 1 ships (seam) and Phase 1.5 wires:
 ### Phase 0 — v1_5 GCP stand-up *(subsumed prerequisite)*
 **First v1_5 sweep runs here on legacy behavior** — not blocked on the framework.
 
+> **⚠ Superseded (CT + substrate slice) by [`vlm-ct-feb26-v1_5-golden-rebaseline.md`](vlm-ct-feb26-v1_5-golden-rebaseline.md)
+> — rungs 1–2, implemented 2026-07-13.** The "nov25 → feb26 *primary*, nov25 *fallback*" resolver and the
+> `nifti_path`-string CT link in the substrate contract below are **retired**: `nov25` is fully deleted (no
+> fallback), and v1_5 links CTs **only** by `(image_study_uid, image_series_uid) →
+> {ct_snapshot_prefix}/{study}__{series}.nii.gz` (config-driven feb26 prefix). The dataset-constant flip
+> (`vista_bench_v1_1 → vista_bench_v1_5`, `query_utils.py:236`) and the config cut (`valid_tasks.json`,
+> `subsample: false`, `ct_snapshot_prefix`) are implemented there (Axis A/B). Read that doc for the
+> go-forward CT/substrate contract.
+
 > **v1_5 substrate contract (inlined per OQ-L — standup doc on branch `docs/vlm-eval-gcp-v1_5-standup-plan`
 > is a build reference, then retired):**
 > - **Infra:** A100-80GB/H100 in BAA project `som-nero-plevriti-deidbdf`, region us-central1 (matches
@@ -364,6 +373,13 @@ Three result-discovery scripts read `experiments` straight from the YAML and bre
 token; `display` = plot label. Every reader consumes normalized names/labels, never raw dicts.
 
 ## Back-compat (YAGNI-respecting)
+
+> **⚠ Superseded (CT byte-identity "before" baseline) by [`vlm-ct-feb26-v1_5-golden-rebaseline.md`](vlm-ct-feb26-v1_5-golden-rebaseline.md).**
+> The staged golden test (gates 1/2/3) still stands, but the CT-dissolution byte-identity "before" is
+> **rebuilt on feb26** — not the legacy nov25 baseline this section assumed (nov25 is deleted and no nov25
+> pixel-hash was ever banked, so it is unusable as a "before"). Both golden sides now run on feb26 so the
+> diff isolates the 3b refactor from the substrate/selection move. See that doc's *Axis C — golden rebuild
+> on feb26*.
 
 `presets.py` maps each legacy name to its exact block composition. Preserved: output path
 `{task}_results_{name}.csv` (`run_bq.py:718`); resume-by-index (`:722-731`); the **opposite** retrieval
