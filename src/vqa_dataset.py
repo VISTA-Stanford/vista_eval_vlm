@@ -11,42 +11,45 @@ from vista_run.utils.utils_inference import pad_to_512, pad_to_size
 # adapter shares them). multi_window_rgb == legacy `window`, grayscale == normalize_slice.
 from context.windowing import multi_window_rgb, grayscale
 
-# Bucket prefix for NIfTI files (same as download_subsampled_ct / weill)
-DEFAULT_NIFTI_BUCKET_PREFIX = "chaudhari_lab/ct_data/ct_scans/vista/nov25"
 # Go-forward CT snapshot. `nov25` is deleted from the bucket (zero objects); `feb26` is the
 # only snapshot. The prefix is a config value (`paths.ct_snapshot_prefix`, threaded via
 # PromptDataset(ct_snapshot_prefix=...)) so a future re-materialization is a config/data change,
-# not a code edit — the modular-preprocessing thesis. Rung 0 reroutes Ryan's same (study, series)
-# scans to feb26 through this seam; rung 2 replaces the resolver body with a UID-keyed resolver.
+# not a code edit — the modular-preprocessing thesis.
 DEFAULT_CT_SNAPSHOT_PREFIX = "chaudhari_lab/ct_data/ct_scans/vista/feb26"
 
 
-def _nifti_path_to_blob_and_filename(nifti_path: str, bucket_name: str = "su-vista-uscentral1", prefix: str = DEFAULT_NIFTI_BUCKET_PREFIX):
+def resolve_ct_blob(study_uid, series_uid, prefix=DEFAULT_CT_SNAPSHOT_PREFIX):
     """
-    Normalize nifti_path (same logic as download_subsampled_ct) to blob-relative path and filename.
-    Returns (blob_path, filename) for GCP blob and for local ct_dir lookup.
+    Resolve a v1_5 CT (image_study_uid, image_series_uid) pair to its materialized blob.
+
+    v1_5 drops the string `nifti_path` (now a deprecated INTEGER placeholder) and links CTs
+    only by (study, series) UID: the blob layout is `{prefix}/{study}__{series}.nii.gz` in
+    bucket `su-vista-uscentral1`. `prefix` is a config value (`paths.ct_snapshot_prefix`,
+    default feb26) so a future re-materialization is a config/data change, not a code edit —
+    the modular-preprocessing thesis. Single shared helper (do NOT inline the `{study}__{series}`
+    assembly): `__getitem__`'s load path, the reprocessing-coverage report, and any future
+    snapshot bump all call this, so the layout can't drift.
+
+    Args:
+        study_uid: image_study_uid value (string; null/NaN -> no CT).
+        series_uid: image_series_uid value (string; null/NaN -> no CT).
+        prefix: CT snapshot prefix (bucket-relative; default feb26).
+
+    Returns:
+        (blob_path, filename), or None if either UID is null/empty — the caller then treats
+        the row as no-image (the same fail-closed result as a missing CT), and never reaches
+        for the deprecated `nifti_path`.
     """
-    path_str = str(nifti_path).strip()
-    if path_str.startswith("/mnt/"):
-        path_str = path_str[5:]
-    if path_str.startswith(f"{bucket_name}/"):
-        path_str = path_str[len(bucket_name) + 1:]
-    if path_str.startswith(prefix):
-        blob_path = path_str
-        filename = path_str.split("/")[-1]
-        return blob_path, filename
-    parts = path_str.split("/")
-    filename = parts[-1]
-    if not filename.endswith(".nii.gz"):
-        if len(parts) >= 2:
-            filename_no_ext = parts[-1].replace(".zip", "")
-            bucket_filename = f"{parts[-2]}__{filename_no_ext}.nii.gz"
-        else:
-            bucket_filename = filename if filename.endswith(".nii.gz") else f"{filename}.nii.gz"
-    else:
-        bucket_filename = filename
-    blob_path = f"{prefix}/{bucket_filename}"
-    return blob_path, bucket_filename
+    if study_uid is None or series_uid is None:
+        return None
+    if pd.isna(study_uid) or pd.isna(series_uid):
+        return None
+    study = str(study_uid).strip()
+    series = str(series_uid).strip()
+    if not study or not series:
+        return None
+    filename = f"{study}__{series}.nii.gz"
+    return f"{prefix}/{filename}", filename
 
 class PromptDataset(Dataset):
     def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None, ct_snapshot_prefix=None):
@@ -58,7 +61,7 @@ class PromptDataset(Dataset):
             experiment: Experiment type - 'no_image', 'axial_all_image', 'no_timeline', 'no_report', 'timeline_only', 'report', 'path', 'path_image_and_report', 'path_full', 'retrieved_timeline', ...
             storage_client: GCP Storage client for loading NIfTI files from bucket (used when file not under ct_dir).
             model_type: Model type string (e.g., 'gemma3') to determine preprocessing.
-            ct_dir: Optional path from config paths.ct_dir. If set and nifti_path (split to filename) exists under ct_dir, load from disk; else use GCP.
+            ct_dir: Optional path from config paths.ct_dir. If set and the resolved CT filename ({study}__{series}.nii.gz) exists under ct_dir, load from disk; else use GCP.
             ct_snapshot_prefix: CT storage prefix (config paths.ct_snapshot_prefix). None -> DEFAULT_CT_SNAPSHOT_PREFIX (feb26). Threaded into the blob resolver so re-materialization is a config/data change.
         """
         self.df = df.reset_index(drop=True)
@@ -159,20 +162,23 @@ class PromptDataset(Dataset):
                 except Exception as e:
                     print(f"Error loading image at {image_path}: {e}")
             
-            # If no image from image_path, check for nifti_path (local ct_dir or GCP bucket)
+            # If no image from image_path, resolve CT via the v1_5 (study, series) UID link.
+            # `nifti_path` is a deprecated INTEGER in v1_5 — never read it; the go-forward
+            # substrate links CTs by (image_study_uid, image_series_uid) -> feb26 blob.
+            # Missing / null UIDs fail closed to no-image (resolve_ct_blob -> None).
             if img is None:
-                nifti_path = row.get('nifti_path', None)
-                if pd.notna(nifti_path) and isinstance(nifti_path, str):
+                study_uid = row.get('image_study_uid', None)
+                series_uid = row.get('image_series_uid', None)
+                resolved = resolve_ct_blob(study_uid, series_uid, prefix=self.ct_snapshot_prefix)
+                if resolved is not None:
+                    blob_path, filename = resolved
                     try:
                         import nibabel as nib
-                        blob_path, filename = _nifti_path_to_blob_and_filename(
-                            nifti_path, bucket_name=self.bucket_name, prefix=self.ct_snapshot_prefix
-                        )
                         local_path = self.ct_dir / filename if self.ct_dir else None
                         use_local = local_path is not None and local_path.exists()
-                        # Source-of-image log for the rung-0 0a preflight: which route each CT row
-                        # takes (local ct_dir vs GCS) + the resolved blob/filename, so force-GCS can
-                        # be verified and nifti_path shapes classified. VM-side logs only (not committed).
+                        # Source-of-image log (rung-0 0a preflight seam): which route each CT row
+                        # takes (local ct_dir vs GCS) + the resolved blob/filename, so force-GCS
+                        # can be verified and the (study, series) link traced. VM-side logs only.
                         _ct_source = "local" if use_local else ("gcs" if self.storage_client is not None else "none")
                         print(f"[CT] source={_ct_source} prefix={self.ct_snapshot_prefix} blob={blob_path} file={filename} local_exists={use_local} (index: {row.get('index', idx)})")
 
@@ -267,7 +273,7 @@ class PromptDataset(Dataset):
                                 else:
                                     img = None
                     except Exception as e:
-                        print(f"Error loading NIfTI from nifti_path {nifti_path}: {e}")
+                        print(f"Error loading NIfTI for (study={study_uid}, series={series_uid}) blob={blob_path}: {e}")
                         # Continue with text-only if image loading fails
 
         # 3. Build Item

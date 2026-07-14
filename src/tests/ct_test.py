@@ -12,7 +12,7 @@ from src.data_tools.utils.config_utils import (
 )
 from data_tools.utils.ct_utils import check_nifti_exists_in_bucket
 from data_tools.utils.task_utils import load_task_mappings
-from data_tools.utils.query_utils import DEFAULT_BQ_PROJECT_ID
+from data_tools.utils.query_utils import DEFAULT_BQ_PROJECT_ID, VISTA_BENCH_DATASET
 
 # GCS bucket settings (same as subsample_csv / download_subsampled_ct)
 DEFAULT_GCS_BUCKET_NAME = "su-vista-uscentral1"
@@ -91,7 +91,7 @@ def count_task_nifti_paths_in_bucket_from_bigquery(
     task_name: str,
     config_path: str,
     valid_tasks_json_path: str | None = None,
-    dataset_id: str = "vista_bench_v1_1",
+    dataset_id: str = VISTA_BENCH_DATASET,
     project_id: str = DEFAULT_BQ_PROJECT_ID,
     bucket_name: str = DEFAULT_GCS_BUCKET_NAME,
     prefix: str = DEFAULT_GCS_PREFIX,

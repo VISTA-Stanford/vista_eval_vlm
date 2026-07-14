@@ -12,6 +12,7 @@ from data_tools.utils.ct_utils import filter_person_ids_by_bucket_existence
 from data_tools.utils.query_utils import (
     fetch_person_id_nifti_paths,
     check_ct_available_batch,
+    VISTA_BENCH_DATASET,
 )
 from data_tools.utils.task_utils import group_related_tasks, load_task_mappings
 
@@ -191,7 +192,7 @@ def subsample_csvs_parallel(
     config_path=None,
     valid_tasks_json_path=None,
     overwrite=False,
-    bq_dataset_id="vista_bench_v1_1",
+    bq_dataset_id=VISTA_BENCH_DATASET,
     local_bq_data_dir=None,
     gcs_bucket_name=DEFAULT_GCS_BUCKET_NAME,
     gcs_prefix=DEFAULT_GCS_PREFIX,

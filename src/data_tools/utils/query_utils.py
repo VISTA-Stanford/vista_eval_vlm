@@ -153,36 +153,40 @@ def get_notes_from_bq_batch(
     return pd.concat(out_dfs, ignore_index=True)
 
 
-def get_person_id_nifti_paths_query(full_table_id: str) -> str:
-    """Return SQL for fetching (person_id, nifti_path) for person_ids in @person_ids (INT64 array)."""
+def get_person_id_ct_uids_query(full_table_id: str) -> str:
+    """Return SQL for fetching (person_id, image_study_uid, image_series_uid) for person_ids in
+    @person_ids (INT64 array). v1_5 links CTs by (study, series) UID — the string `nifti_path` is a
+    deprecated INTEGER — so the "CT available" predicate is a non-null image_series_uid."""
     return f"""
-        SELECT person_id, nifti_path
+        SELECT person_id, image_study_uid, image_series_uid
         FROM `{full_table_id}`
         WHERE person_id IN UNNEST(@person_ids)
-        AND nifti_path IS NOT NULL
-        AND TRIM(CAST(nifti_path AS STRING)) != ''
+        AND image_series_uid IS NOT NULL
+        AND TRIM(CAST(image_series_uid AS STRING)) != ''
     """
 
 
 def get_ct_available_person_ids_query(full_table_id: str) -> str:
-    """Return SQL for distinct person_id with non-null nifti_path; uses @person_ids (INT64 array)."""
+    """Return SQL for distinct person_id with a CT available (non-null image_series_uid); uses
+    @person_ids (INT64 array). v1_5 links CTs by (study, series) UID, not the deprecated nifti_path."""
     return f"""
         SELECT DISTINCT person_id
         FROM `{full_table_id}`
         WHERE person_id IN UNNEST(@person_ids)
-        AND nifti_path IS NOT NULL
-        AND TRIM(CAST(nifti_path AS STRING)) != ''
+        AND image_series_uid IS NOT NULL
+        AND TRIM(CAST(image_series_uid AS STRING)) != ''
     """
 
 
 def get_ct_available_person_ids_query_fallback(full_table_id: str, person_ids_in_clause: str) -> str:
-    """Return SQL for distinct person_id with inline IN clause (fallback when parameterized query fails)."""
+    """Return SQL for distinct person_id with inline IN clause (fallback when parameterized query fails).
+    CT-available predicate = non-null image_series_uid (v1_5 (study, series) UID link)."""
     return f"""
         SELECT DISTINCT person_id
         FROM `{full_table_id}`
         WHERE person_id IN ({person_ids_in_clause})
-        AND nifti_path IS NOT NULL
-        AND TRIM(CAST(nifti_path AS STRING)) != ''
+        AND image_series_uid IS NOT NULL
+        AND TRIM(CAST(image_series_uid AS STRING)) != ''
     """
 
 
@@ -194,8 +198,18 @@ def fetch_person_id_nifti_paths(
     batch_size: int = BATCH_SIZE,
 ):
     """
-    Query BigQuery for (person_id, nifti_path) for the given person_ids.
-    Returns list of (person_id, nifti_path) with non-null, non-empty nifti_path.
+    Query BigQuery for the CT (study, series) UID link of the given person_ids.
+
+    Returns a list of (person_id, image_study_uid, image_series_uid) tuples with a non-null,
+    non-empty image_series_uid. v1_5 links CTs by (study, series) UID — the string `nifti_path`
+    is a deprecated INTEGER — so this returns UID tuples, NOT nifti paths.
+
+    NOTE (deferred consumers): the name is retained for import stability, but the return shape
+    changed from (person_id, nifti_path) to the 3-tuple above. The only callers are the
+    off-golden-path subsample tools (subsample_csv.py / subsample_csv_from_bq.py), which still
+    feed the old 2-tuple into ct_utils.filter_person_ids_by_bucket_existence — they are DEFERRED
+    (out of scope here) and must migrate together onto vqa_dataset.resolve_ct_blob before running
+    against v1_5. They are not on the golden / run_bq eval path.
     """
     if not person_ids or not table_name:
         return []
@@ -212,8 +226,8 @@ def fetch_person_id_nifti_paths(
     try:
         client = get_bq_client()
         full_table_id = f"{project_id}.{dataset_id}.{table_name}"
-        query = get_person_id_nifti_paths_query(full_table_id)
-        pairs = []
+        query = get_person_id_ct_uids_query(full_table_id)
+        triples = []
         for i in range(0, len(person_ids_int), batch_size):
             batch = person_ids_int[i : i + batch_size]
             job_config = bigquery.QueryJobConfig(
@@ -222,18 +236,25 @@ def fetch_person_id_nifti_paths(
             result = client.query(query, job_config=job_config).to_dataframe()
             for _, row in result.iterrows():
                 pid = row.get("person_id")
-                path = row.get("nifti_path")
-                if pd.notna(pid) and pd.notna(path) and str(path).strip():
-                    pairs.append((pid, str(path).strip()))
-        return pairs
+                study = row.get("image_study_uid")
+                series = row.get("image_series_uid")
+                if pd.notna(pid) and pd.notna(series) and str(series).strip():
+                    triples.append(
+                        (pid, str(study).strip() if pd.notna(study) else None, str(series).strip())
+                    )
+        return triples
     except Exception as e:
-        print(f"  Warning: Error fetching (person_id, nifti_path) from BQ: {e}")
+        print(f"  Warning: Error fetching (person_id, study_uid, series_uid) from BQ: {e}")
         return []
 
 
 # --- Vista benchmark task data ---
 
-VISTA_BENCH_DATASET = "vista_bench_v1_1"
+# Single source of truth for the BQ dataset. v1_5 links CTs by (study, series) UID and drops the
+# string nifti_path (now a deprecated INTEGER). Flip here to re-point the whole eval: the runtime
+# consumers (task_data_utils.py, run_bq.py) and the CT-availability helpers below all ride this
+# constant. Kept local (not imported from vista_bench, which exports no usable version constant).
+VISTA_BENCH_DATASET = "vista_bench_v1_5"
 
 
 def get_vista_task_data_query(full_table_id: str) -> str:
@@ -266,14 +287,15 @@ def fetch_task_data_from_bq(
 
 def check_ct_available_batch(
     person_ids,
-    dataset_id: str = "vista_bench_v1_1",
+    dataset_id: str = VISTA_BENCH_DATASET,
     table_name: str = None,
     project_id: str = DEFAULT_BQ_PROJECT_ID,
     batch_size: int = BATCH_SIZE,
 ):
     """
-    Batch check if CT scans are available for multiple person_ids (non-null nifti_path in BQ).
-    Returns a set of person_ids that have nifti_path available.
+    Batch check if CT scans are available for multiple person_ids (non-null image_series_uid in BQ —
+    v1_5 links CTs by (study, series) UID, not the deprecated nifti_path).
+    Returns a set of person_ids that have a CT available.
     """
     if not person_ids or table_name is None:
         return set()
