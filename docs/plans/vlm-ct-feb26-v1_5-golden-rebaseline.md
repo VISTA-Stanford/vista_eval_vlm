@@ -19,10 +19,13 @@ prove we can drive the VM and reproduce Ryan's *actual weighted pipeline* (resul
 golden harness) on a near-untouched v1_1 substrate *before* the v1.5 cut. **This doc now covers rungs 1–2 only**
 (the v1.5 substrate cut + the 3b refactor); rung 0 is a **prerequisite** — see the gate below.
 
-> **⚠ Prerequisite gate:** the rung-0 operability smoke
-> ([`vlm-rung0-reproduce-ryan-feb26.md`](vlm-rung0-reproduce-ryan-feb26.md)) must be **green** before the axes
-> and Steps below run. Rung 0 introduces the `ct_snapshot_prefix` config seam that Axis A builds on, and proves
-> the feb26 CT reroute works end-to-end.
+> **✅ Prerequisite gate — MET.** The rung-0 operability smoke
+> ([`vlm-rung0-reproduce-ryan-feb26.md`](vlm-rung0-reproduce-ryan-feb26.md), + its decoding-fix amendment
+> [`vlm-rung0-0b-decoding-fix.md`](vlm-rung0-0b-decoding-fix.md)) **landed green on 2026-07-13**
+> (`docs/vm-status/2026-07-13-rung0-0b-decoding-fix.md`: constrained decoding both arms, `predicted_label==-1
+> total: 0`; Ryan accuracy crosscheck in-band). Rung 0 introduced the `ct_snapshot_prefix` config seam that
+> Axis A builds on and proved the feb26 CT reroute works end-to-end. Rung-0 implementation/review is **out of
+> scope here** (see *Out of scope* below) — this doc consumes its seam, not its code.
 
 ## What this supersedes
 
@@ -103,6 +106,16 @@ meaningful again.
   (default `chaudhari_lab/ct_data/ct_scans/vista/feb26`), not a hard-coded constant — this is the
   modular-preprocessing thesis (re-materialization = config/data change). Keep the local-`ct_dir`-first →
   GCS-fallback order unchanged.
+  - **Extract it as one shared helper — do not inline the string assembly at each call site.**
+    `resolve_ct_blob(study_uid, series_uid, prefix) -> (blob_path, filename)` (module-level in
+    `vqa_dataset.py`, or a small `data_tools/utils/ct_utils.py` fn if that reads cleaner). **Contract:**
+    inputs = the two UID strings + the prefix (defaulted from `ct_snapshot_prefix`); output =
+    `(f"{prefix}/{study}__{series}.nii.gz", f"{study}__{series}.nii.gz")`; **null behavior** = if either UID is
+    null/empty, return `None` (→ the caller treats the row as no-image, same as a missing CT today — see the
+    fail-closed schema guard in Step 1); **logging** = the per-row `[CT] source=local|gcs prefix= blob= file=`
+    trace (from the rung-0 seam) stays. Realistic reuse (not a speculative seam): `__getitem__` (load path), the
+    **Step 1b coverage report** (resolve → bucket-existence check), and any future snapshot bump all call the
+    *same* helper — no duplicated `{study}__{series}` assembly to drift.
 - **`__getitem__`** — read `row.get('image_study_uid')` / `row.get('image_series_uid')` instead of
   `row.get('nifti_path')`. `nifti_path` is a deprecated INTEGER in v1_5 → do not use it.
 - **`src/data_tools/utils/query_utils.py`** — the four CT queries currently key on `nifti_path`
@@ -145,7 +158,14 @@ meaningful again.
    cohort is the only reproducibility handle. Captures `selected_indices`, `image_hashes`, `image_count` on
    **feb26** images.
 3. **C2 — implement 3b** — dissolve the `__getitem__` CT branch into the `src/context/adapters/ct.py`
-   adapter; it resolves feb26 identically and exposes the same `selected_indices`.
+   adapter. **Respect the existing adapter boundary — do not turn `CTAdapter` into a storage resolver.**
+   `CTAdapter`'s contract (its own docstring, `ct.py:9-11`) is: "NIfTI *loading* (GCP/local resolution) stays
+   in the caller (`vqa_dataset`); this adapter operates on a **loaded volume**." So 3b moves only the
+   **slice-selection + windowing** branch into `CTAdapter.contextualize` (which already does exactly that via
+   `resolve_ct_selector` + `multi_window_rgb`/`grayscale`); the `(study,series)→blob` resolution (the Axis A
+   `resolve_ct_blob` helper) and the NIfTI load stay **outside** the adapter, called identically on both golden
+   sides. Byte-identity is therefore gated on selection/windowing, with the resolver/loader held constant — the
+   adapter exposes the same `selected_indices`/`image_hashes` because it receives the same loaded volume.
 4. **C3 — bank the "after"** — `--tag adapter_feb26`.
 5. **C4 — diff** — `diff_golden.py`: Gate 1 (`selected_indices`/`image_count`/`assembly_mode` byte-identical)
    + Gate 2 (`image_hashes` identical per model). Both sides feb26 → the diff isolates the refactor.
@@ -162,8 +182,11 @@ Rungs 1–2 (the rung-0 `ct_snapshot_prefix` config seam + force-GCS toggle are 
 - `src/data_tools/utils/query_utils.py` — retarget the 4 CT queries off `nifti_path` onto
   `image_study_uid`/`image_series_uid`.
 - `src/data_tools/utils/query_utils.py:236` — flip `VISTA_BENCH_DATASET` `vista_bench_v1_1` →
-  `vista_bench_v1_5`, and collapse the 3 stray `"vista_bench_v1_1"` default-arg literals onto the constant
-  (`query_utils.py:269`, `subsample_csv.py:194`, `subsample_csv_from_bq.py:256`; + `ct_test.py:94` test).
+  `vista_bench_v1_5`. The two runtime consumers ride the constant: `src/data_tools/utils/task_data_utils.py:129`
+  and `src/vista_run/run_bq.py:271` (**not `:261`** — line drift; verify at edit time). Then collapse the 3 stray
+  `"vista_bench_v1_1"` default-arg literals onto the constant, **full paths:** `src/data_tools/utils/query_utils.py:269`
+  (`check_ct_available_batch`), `src/data_tools/csv_helper/subsample_csv.py:194`,
+  `src/data_tools/csv_helper/subsample_csv_from_bq.py:256`; + the `src/tests/ct_test.py:94` test default.
 - `configs/all_tasks.yaml` — v1_5 GCS layout: dataset, cohort table, `valid_tasks: tasks/valid_tasks.json`,
   `ct_snapshot_prefix: …/vista/feb26`, `subsample: false`.
 - `docs/02-ct-scans.md` — replace the `nifti_path`/`nov25` resolution description with the feb26 dataset-link
@@ -174,12 +197,15 @@ Rungs 1–2 (the rung-0 `ct_snapshot_prefix` config seam + force-GCS toggle are 
 **No change** to `src/context/adapters/ehr.py` beyond what's banked (the `unit_source_value` remap is already
 committed on this branch). `numeric_value` stays the declared delta (D3).
 
+**Not touched here:** `src/vista_run/run.py:168` (an unthreaded `PromptDataset` caller) and ~10 other
+off-golden-path `nifti_path`/`nov25` tooling files are deferred — enumerated + STOP-gated in *Out of scope*.
+
 ## Open questions — resolved 2026-07-07 (Phil feedback + repo/vista_bench exploration)
 
 - **OQ-M — RESOLVED. Definition site confirmed; keep a *local* constant, do not import from vista_bench.**
   The roadmap citation was **correct, not stale**: `VISTA_BENCH_DATASET = "vista_bench_v1_1"` lives at
-  `src/data_tools/utils/query_utils.py:236`, and the two runtime consumers (`task_data_utils.py:129`,
-  `run_bq.py:261`) reference it. **But 3 stray `"vista_bench_v1_1"` default-arg literals bypass the constant**
+  `src/data_tools/utils/query_utils.py:236`, and the two runtime consumers
+  (`src/data_tools/utils/task_data_utils.py:129`, `src/vista_run/run_bq.py:271`) reference it. **But 3 stray `"vista_bench_v1_1"` default-arg literals bypass the constant**
   and must be collapsed onto it: `query_utils.py:269` (`check_ct_available_batch`, on the CT path),
   `subsample_csv.py:194`, `subsample_csv_from_bq.py:256` (+ `ct_test.py:94` test). *Import from vista_bench
   with an optional override?* — **No.** vista_bench installs as `vistabench` but exports nothing usable:
@@ -220,6 +246,49 @@ gate; R2 experiment-name mapping — `axial_all_image ↔ image_and_timeline`, `
 report-inclusion confound; R3 tolerance = report-only ~10% soft; R4 prefixed-`nifti_path` via the config seam +
 0a preflight).
 
+### Resolved 2026-07-13 (Codex-review grounding + repo sweep; Phil delegated the calls)
+
+The 2026-07-13 Codex review surfaced these five; a repo sweep (all 13 off-golden-path files characterized) +
+the rung-0 vm-status facts + the `/vm-handoff` skill made them decidable. Phil delegated the calls.
+
+- **OQ-Q1 — legacy off-golden-path CT/CSV tooling → DEFER (the whole batch).** Sweep verdict: **0 of the 13
+  files are on the golden path** (none imported by `run_bq.py`/`golden_harness.py`/`vqa_dataset.py`/`query_utils.py`,
+  none import-reachable); all are standalone `__main__` scripts (CT-download / cohort-subsample / retrieval-prep /
+  post-hoc PDF) + the shared `ct_utils.py` helper. Break modes on v1_5 are almost all **silent-empty / silent-wrong**
+  (empty cohort, 0-coverage), not crashes. The subsample/download/coverage trio share `ct_utils`'s `nov25`-blob
+  helper *and* the in-scope `query_utils` CT queries, so they must migrate **together, reusing the new
+  `resolve_ct_blob`**, in a follow-up once Axis A lands — migrating now would duplicate the retarget. Keep the STOP
+  guard. Follow-up should add a **loud "nov25 gone" guard** so a manual v1_5 run errors instead of silently emptying.
+- **OQ-Q2 — `src/vista_run/run.py` → `run_bq.py`-only; `run.py` legacy/out-of-scope.** `run.py` is the CSV-driven
+  **predecessor** to `run_bq.py` (defines its *own* duplicate `TaskOrchestrator` nothing imports; golden/BQ/rung-0
+  all use `run_bq.py`). It has no `nifti_path`/`nov25` of its own — un-threaded `PromptDataset` (`:168`) silently
+  drops CT on v1_5. **Do NOT thread it in lockstep** (effort on a dead path). It *is* still wired to
+  `eval/gcp.sh:97,99`, so it's not fully orphaned → **follow-up: retire `run.py` + `eval/gcp.sh` together** (out of
+  scope here; don't expand this plan to a deletion).
+- **OQ-Q3 — Step 1b threshold → executor REPORTS the coverage and runs it by Phil, who decides in flight on the VM
+  (Phil, 2026-07-13); ~87% is his reference prior, not an auto-gate.** rung-0 measured 86.9% (2,053/2,362) via the
+  *crude v1_1 nov25-key reconstruction*; Axis A queries the **native v1_5 UID link**, which should recover **≥** that.
+  The golden gate only compares CT rows present on *both* feb26 sides, so coverage <100% doesn't break Gate 1/2 — the
+  smoke needs ≥1 CT-bearing row, not statistical power. **Rule:** the executor surfaces the number and **Phil makes the
+  accept/STOP call in flight** (he's present on the VM). Reference prior: **at/above ~87% = healthy** (native link at
+  least as good as the reconstruction); **materially below (~<80%) = suspect the v1_5 link/query**, not series-selection
+  drift. Link-health check, not an eval bar.
+- **OQ-Q4 — Step 1b readback → aggregate metrics only in the committed doc; detailed results to the GCP-mounted
+  bucket (Phil, 2026-07-13).** The committed handoff carries **aggregate/counts metrics only** — no raw Study/Series
+  UIDs. The **detailed per-row coverage output** (including any UID-level breakdown) is **written to the GCP-mounted
+  `su-vista-*` bucket** (the PHI mount, git-ignored), where results belong — not the git tree. Grounding: raw UIDs add
+  PHI risk with **~zero decision value** — the historical CT test-set UIDs were never banked (golden captures
+  pixel-hash, not UIDs), so there's nothing to compare a raw UID against; the cohort-level `person_id` join is the only
+  handle. Matches the rung-0 precedent + the golden-output-on-PHI-mount design.
+- **OQ-Q5 — handoff rendering → TWO docs (the "superseding chain" framing was the wrong mechanism).** `/vm-handoff`
+  renders **one doc per handoff *session*** and treats **every machine switch as a phase boundary**; the Mac 3b
+  interlude *is* a session boundary. "Supersede" = *replace a stale/blocked* doc, not continue after planned work —
+  continuations use the **`Prior handoffs:`** field. So: **Doc 1** = Phases 1+2 (Steps 1/1b/2/3), pre-3b; **Doc 2** =
+  Phase 3 (Steps 4/5), authored *after* the 3b commit (post-3b SHA), `Prior handoffs: [Doc 1]`, C1 banked-by-SHA.
+
+**Follow-ups spun out (out of scope — track separately):** (1) migrate the 13-file off-golden-path tooling batch onto
+`resolve_ct_blob` + the v1_5 UID queries, with a loud `nov25`-gone guard; (2) retire `run.py` + `eval/gcp.sh` together.
+
 ## Reprocessing & historical CT test-set visibility (2026-07-07)
 
 Prompted by Phil: `nov25` was deleted *because the CT data was reprocessed into `feb26`*, keyed by the same
@@ -257,40 +326,136 @@ Executed on the GCP VM (Mac is planner-only). Canonical smoke = `progression_rec
 
 - **Step 1 — v1_5 CT resolution smoke.** With Axis A + B applied, resolve one v1_5 `(study_uid, series_uid)`
   → feb26 blob and load it.
-  **Expected:** the feb26 blob downloads; `image_count > 0`; `selected_indices` = 30 evenly-spaced ints; a
-  logged resolver trace shows the blob came from the `(study_uid, series_uid)` path and `nifti_path` (deprecated
-  INTEGER) was never read (behavioral, not a code-property assertion). **Stop:** any feb26 404 (prefix/UID
-  wrong); a fallback to the dropped `nov25` heuristic; `image_count == 0` across all rows (link/query broken).
-- **Step 1b — reprocessing-coverage report (REPORT, do NOT stop — decision gate to Phil).** For the pinned
-  C1 person-cohort, resolve each person's v1_5 `(study_uid, series_uid)` and check how many map to an existing
-  feb26 blob. **Report (counts only):** cohort size; count resolving to a feb26 blob; count with null/missing
-  UIDs; and — if derivable — count whose resolved series differs from what v1.1 would have selected. **Do NOT
-  fail or halt on divergence** — CT series-selection has changed since v1.1 (Phil), so a shifted/reduced set is
-  *expected*, not a bug. Surface the numbers + ≤5 examples (UIDs-as-structure only, no PHI) and **get Phil's input**
-  on whether the go-forward coverage is acceptable before banking C1 (Step 3). This is the "are these the same
-  scans we tested?" check, deliberately soft.
+  **Expected:** the feb26 blob downloads; `image_count > 0`; `selected_indices` = 30 evenly-spaced ints; the
+  per-row `[CT] source=… prefix=… blob=… file=…` resolver trace (grep this exact tag — it is the rung-0 seam's
+  log) shows `source=gcs`, the blob built from the `(study_uid, series_uid)` path, and that `nifti_path`
+  (deprecated INTEGER) was never read (behavioral, not a code-property assertion). **Stop:** any feb26 404
+  (prefix/UID wrong); any `[CT]` line showing a fall-through to the dropped `nov25` heuristic; `image_count == 0`
+  across all rows (link/query broken).
+  - **Accept/reject schema guard (add to the resolver — verify here).** A row **with** `image_series_uid` must
+    resolve to a feb26 blob; a row **missing** `image_study_uid`/`image_series_uid` must **fail closed to a
+    known no-image result** (`resolve_ct_blob → None`, `image_count == 0`), **not** silently reach for
+    `nifti_path`. Exercise one of each and confirm the reject case is the deliberate no-image path.
+- **Step 1b — reprocessing-coverage report (soft — never fails on divergence; a human decision gate before
+  Step 3).** For the pinned C1 person-cohort, resolve each person's v1_5 `(study_uid, series_uid)` via
+  `resolve_ct_blob` and check how many map to an existing feb26 blob. **Report — aggregate metrics only in the
+  committed doc** (OQ-Q4; detailed per-row output → the GCP-mounted `su-vista-*` bucket, git-ignored): cohort size;
+  count resolving to a feb26 blob; count with null/missing UIDs; and — if derivable — count whose resolved series
+  differs from what v1.1 would have selected. **Control flow:** Steps 1, 1b, 2 complete in the
+  same VM doc; **coverage divergence is never a failure** (CT series-selection has changed since v1.1 — Phil —
+  so a shifted/reduced set is *expected*); but **Step 3 must not bank C1 until Phil records an accept/revise
+  decision.** Pre-encoded routing: **accept → proceed to Step 3** (bank on the go-forward set); **not acceptable
+  → STOP + re-plan** (the smoke cohort isn't representative); **null/missing UIDs beyond the shape Phil agrees
+  to → class-2 deviation** (record, route back). *Floor (OQ-Q3, resolved): the executor **reports the coverage and
+  Phil decides in flight on the VM**; ~87% (≈ rung-0's 86.9%) = healthy reference prior, materially below (~<80%) =
+  suspect the v1_5 link/query (not series drift). Link-health check, not an eval bar (the golden gate only compares
+  CT rows present on both feb26 sides).*
+  This is the deliberately-soft "are these the same scans we tested?" gate.
 - **Step 2 — re-bank the EHR `no_image` baseline on v1_5.** Re-run the banked `no_image` harness on the v1_5
   cohort.
   **Expected:** non-null `adapter_prompt_string`/`dynamic_prompt`; `image_count == 0`;
-  `assembly_mode == "ordered"`; `row_count == jsonl lines`, sorted by `(person_id, index)`; golden stays on
-  the PHI mount (`git status` clean). **Stop:** the v1_5 cohort timeline/`embed_time` surface is missing or
-  differs in shape (OQ-P — queryability confirmed via release notes; *shape* still VM-checked here) → report
-  the cohort shape (counts only) and hold.
-- **Step 3 — bank the axial "before" on feb26 (C1).** `--experiments axial_all_image --tag legacy_feb26`,
-  gemma + intern.
+  `assembly_mode == "ordered"`; `.meta.json` `row_count == jsonl line count`, sorted by `(person_id, index)`;
+  golden stays on the PHI mount (`git status` clean). **Report the cohort shape as explicit units:** total rows,
+  unique `person_id`, CT-bearing UID rows, timeline-non-null rows, task-filtered PFS count. **Stop:**
+  `row_count == 0`; `.meta.json` `row_count` ≠ jsonl lines; a missing / zero-byte output file; a dirty repo
+  containing golden output (leaked off the PHI mount); or the v1_5 timeline/`embed_time` surface missing /
+  shape-shifted (OQ-P — queryability confirmed via release notes; *shape* still VM-checked) → report shape
+  (counts only) and hold.
+- **Step 3 — bank the axial "before" on feb26 (C1).** Two explicit harness invocations, both
+  `--experiments axial_all_image --tag legacy_feb26`: `--model-type gemma3 --model google/medgemma-1.5-4b-it`
+  and `--model-type intern --model OpenGVLab/InternVL3_5-8B-hf` (the Gate-2 grayscale path).
   **Expected:** per (experiment, model) `_legacy_feb26_golden.jsonl` + `.meta.json`, non-empty, sorted;
-  `image_count > 0` for CT-bearing rows; matching-length `image_hashes`; weight-free (no GPU/weights in
-  logs). **Stop:** any traceback; `row_count == 0` for a CT-bearing cohort; weights loading.
-- **Step 4 — 3b refactor diff (C3 + C4).** After 3b, bank `--tag adapter_feb26` and
-  `diff_golden.py legacy_feb26 adapter_feb26`.
-  **Expected:** **Gate 1** (`selected_indices`/`image_count`/`assembly_mode`) byte-identical; **Gate 2**
-  (`image_hashes`) identical per model. **Stop:** any Gate-1/Gate-2 drift — the CT dissolution is not a no-op.
+  `image_count > 0` for CT-bearing rows; matching-length `image_hashes`; weight-free (no GPU/weights in logs).
+  **Stop:** any traceback; `row_count == 0` for a CT-bearing cohort; a missing / zero-byte `.jsonl`/`.meta.json`;
+  index set not unique-and-sorted; an unexpected retrieval-skip / "no data" message (the harness skips retrieval
+  experiments *by design* — for `axial_all_image` a skip or zero-row output is a **STOP**, not a benign note);
+  weights loading.
+- **Step 4 — 3b refactor diff (C3 + C4).** After 3b, bank `--tag adapter_feb26` (same two invocations) and run
+  `diff_golden.py <legacy_feb26>.jsonl <adapter_feb26>.jsonl --mode strict` per model (`strict` is the
+  `diff_golden.py` default — state it anyway so the executor doesn't rely on the default).
+  **Expected:** shared-index set identical (same indices both sides); **Gate 1** structure byte-identical over
+  the tool's full hard set — `image_hashes`, `selected_indices`, `image_count`, `assembly_mode`,
+  `path_tile_count` (`None` for CT rows) — and **Gate 2** `image_hashes` identical per model; `RESULT: ALL GATES
+  PASS`. **Stop:** any Gate-1/Gate-2 drift (the CT dissolution is not a no-op); an **index-set mismatch** or a
+  **`[WARN] no shared indices`** (an empty intersection cannot *prove* a no-op — treat as failure, not pass).
 - **Step 5 — gate-3 EHR diff (D3).** Diff the LUMIA-live `no_image` render vs the v1_5-rebanked baseline
-  under `--mode allowlist`.
+  under `diff_golden.py … --mode allowlist`.
   **Expected:** event/line order identical; deltas confined to the declared `numeric_value` VALUE-line
   allowlist. **Stop:** gate-3 outside allowlist *beyond* the `numeric_value` delta (an undeclared render
-  divergence) → record the concrete diff for the accept-vs-parse (D3) decision.
+  divergence) → hand back for the accept-vs-parse (D3) decision. **PHI-clean readback contract:** record
+  **counts by field, affected indices, and ≤5 field-name/index examples + a scrubbed characterization only** —
+  **do NOT paste `diff_golden.py`'s BEFORE/AFTER output** into the handoff: its `_preview` prints raw
+  `dynamic_prompt`/`adapter_prompt_string` values (`src/vista_run/diff_golden.py:169-170,185-186`), which carry
+  timeline PHI.
 
-**PHI:** counts / field-names / UIDs-as-structure only — never paste golden rows, timelines, or `.xml`
-contents. Golden output is written only to the `su-vista-*` PHI mount (git-ignored); `/phi-vet` gates every
-commit.
+**PHI:** counts / field-names / affected-indices only — never paste golden rows, timelines, `.xml` contents, or
+`diff_golden` BEFORE/AFTER previews. **Raw DICOM Study/Series UIDs are identifiers → they stay on the
+`su-vista-*` PHI mount and do not enter the handoff doc** (reconciles with the canonical PHI-clean rule,
+`verification-and-handoff-design.md:85-89`); Step 1b's examples are **hashed/ordinal structural** stand-ins, not
+raw UIDs, unless `/phi-vet` explicitly clears specific UID values for Phil's adjudication. Golden output is
+written only to the `su-vista-*` PHI mount (git-ignored); `/phi-vet` gates every commit.
+
+### Handoff phasing
+
+Complex handoff (class-2 human decision gate at 1b + bank-before/diff-after goldens + a **Mac implementation
+interlude** between banking the "before" and the "after"). Per claude_ops.md, decompose into phases.
+**Executor class throughout = Claude-Code CPU** on the GCP VM (`som-nero-plevriti-deidbdf`): every step is the
+**weights-free** golden harness, so there is **no GPU / high-throughput runner, no standalone runner script, and
+no run-vs-readback split** (rung 0 was the only weighted/GPU gate). `/vm-handoff` renders each phase.
+
+- **Phase 1 — v1_5/feb26 pre-bank characterization.** Steps 1, 1b, 2. Purpose: prove Axis A/B read v1_5/feb26
+  and re-bank the EHR baseline. Banked-from-prior: rung-0 green (prerequisite only; not re-run). Gate: Step 1b
+  reports coverage → **Phil accepts/revises before C1**. Destructive: no (golden on PHI mount only). Stop:
+  Steps 1/2 hard-stop; Step 1b divergence *pauses* before Step 3, not a fail. Next-doc trigger: Phil accepts.
+- **Phase 2 — C1 before-golden bank.** Step 3. Banked-from-prior: Phase-1 Step-2 `no_image` baseline *iff*
+  SHA/config unchanged (else un-bank + rerun). Gate: Step 3 Expected/Stop. Destructive: no. Stop: no C1 on
+  zero rows / weights load / missing output+meta / dirty repo / unexpected skip. Next-doc trigger: green →
+  hand back to **Mac** for C2 (3b) implementation.
+- **Phase 3 — C3/C4/C5 after the Mac implements 3b.** Steps 4, 5. Banked-from-prior: Phase-2 C1 before-golden
+  + Phase-1 EHR baseline (if unchanged by SHA/config). Gate: D3 accept-vs-parse after the first real gate-3
+  diff. Destructive: no. Stop: any Gate-1/2 strict drift = hard class-3 halt; gate-3 residual outside the
+  declared envelope = D3 decision (PHI-clean evidence).
+
+**Mac-interlude / banked-by-SHA rule (the reason to phase):** Step 3 banks "before", then 3b is implemented
+**on the Mac** (the SHA moves), then Step 4 banks "after" — so C1 and C3/C4 are at *different SHAs by
+construction*. Render as **two vm-status docs** (Phases 1+2 in one; Phase 3 in a superseding doc authored after
+the 3b commit), or one superseding chain that records Steps 1/1b/2/3 as **banked-by-SHA**. Either way: if any
+code/config/data input moves after a banked phase, **un-bank and rerun** the affected golden — a banked "before"
+is only valid while its inputs are frozen. (Phase-2-own-doc vs superseding-chain is a `/vm-handoff` rendering
+choice — see Open questions.)
+
+## Out of scope
+
+A fresh implementer should treat everything below as explicitly excluded from rungs 1–2:
+- **Rung-0 implementation & review** — landed green 2026-07-13; this doc consumes its `ct_snapshot_prefix` seam,
+  not its code.
+- **Weighted / results-CSV evals** — rung 0 owned that gate; Steps 1–5 here are weights-free golden harness.
+- **Upstream LUMIA-generator `numeric_value` fix** (OQ-N) — a separate cross-repo ask, only if a material
+  gate-3 VALUE-line delta surfaces (D3).
+- **PHI-in-history remediation** — real DICOM UIDs sit in git *history* (see *Reprocessing & historical CT
+  test-set visibility*). **No history rewrite without Phil's sign-off.**
+- **Off-golden-path legacy CT/CSV/report tooling still keyed on `nifti_path`/`nov25`** — **deferred, not
+  silently broken.** Axis A retargets the golden + `run_bq` path; these files are *not* on it and would break
+  only if run against v1_5: `src/vista_run/run.py:168` (unthreaded `PromptDataset`),
+  `src/data_tools/csv_helper/{format_retrieval_csv.py, subsample_v1_2.py, all_ct_csv.py}`,
+  `src/data_tools/utils/ct_utils.py`, `src/data_tools/full_dataset_utils/ct_coverage.py`,
+  `src/data_tools/ct_info/{ct_pdf_ex.py, download_subsampled_ct.py}`,
+  `src/results/plot_code/{check_image_usage.py, generate_pdf.py}`, `src/retrieval/subsample_retrieval_csv.py`.
+  **STOP guard:** the rungs-1–2 golden/`run_bq` path must not call any of these — if 3b or the config cut pulls
+  one in, that's a scope breach → re-plan. Migrate-vs-defer is a Phil scope call (Open questions); **default =
+  defer** + a follow-up doc.
+
+## Landing & cleanup
+
+- **Branch:** `worktree-vlm-modular-preprocessing-roadmap` (continues — rung 0 already landed on it; rungs 1–2
+  build on the same branch).
+- **Landing gate:** rung-0 green ✅ (2026-07-13); rungs 1–2 VM handoff green (Steps 1–5 Expected met, Gate-1/2
+  strict `ALL GATES PASS`, gate-3 within the declared allowlist or D3 resolved); `/review-implementation` clean;
+  `/phi-vet` sign-off (medical repo — golden touches CT + EHR); `/review-plan` sign-off (this pass).
+- **Merge sequence:** single branch → `main` via `/land` (ff-only or PR) after the gate. No sibling branch must
+  land first (rung 0 is already in this branch's history). Lands independently of the parent roadmap branch — it
+  only marks roadmap sections *superseded* (a doc edit), no code overlap.
+- **Cleanup on land:** `/land` Phase 4 — prune the branch (local + remote) + the
+  `.claude/worktrees/vlm-modular-preprocessing-roadmap` worktree; set this plan `Status: Completed`; update the
+  `docs/plans/README.md` row; prune the `docs/next.md` rungs-1–2 pointer. Retire the rung-0-specific
+  `configs/all_tasks.rung0*.yaml` overlays if nothing else references them.
