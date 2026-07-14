@@ -6,7 +6,9 @@ Reference: research-skills/claude_ops.md
 [`vlm-modular-preprocessing-and-context-viewer-roadmap.md`](vlm-modular-preprocessing-and-context-viewer-roadmap.md).
 **Branch:** `worktree-vlm-modular-preprocessing-roadmap` (continues; not yet committed).
 **Machine posture:** authored on the planner Mac (no runtime/data/creds). VM-executed steps below run on the
-GCP executor VM (`som-nero-plevriti-deidbdf`) that holds the `gs://vista_bench/` bucket + `su-vista-*` mounts.
+Claude-Code CPU executor `phil-sllm-01` (holds the `su-vista-*` mounts + BQ creds for project
+`som-nero-plevriti-deidbdf`; runs Claude Code → readback here directly). *(`som-nero-plevriti-deidbdf` is the BQ
+project, not a VM — the earlier draft used it as a hostname.)*
 **Handback source:** [`docs/vm-status/2026-07-06-golden-harness.md`](../vm-status/2026-07-06-golden-harness.md)
 — the *DEVIATION → Mac planner (2026-07-07)* block. The `no_image`/EHR golden baseline is banked + green;
 `axial_all_image` bounced back as a class-3 deviation (the `nov25` CT snapshot is deleted).
@@ -26,6 +28,34 @@ golden harness) on a near-untouched v1_1 substrate *before* the v1.5 cut. **This
 > total: 0`; Ryan accuracy crosscheck in-band). Rung 0 introduced the `ct_snapshot_prefix` config seam that
 > Axis A builds on and proved the feb26 CT reroute works end-to-end. Rung-0 implementation/review is **out of
 > scope here** (see *Out of scope* below) — this doc consumes its seam, not its code.
+
+## Deviation & re-plan (2026-07-14) — v1_5 timeline base staging
+
+**Step-0 STOP fired** on the first VM run of Doc 1
+([`docs/vm-status/2026-07-13-rungs1-2-v1_5-feb26-prebank.md`](../vm-status/2026-07-13-rungs1-2-v1_5-feb26-prebank.md),
+readback `5b63eeb` on `phil-sllm-01`): the Axis A/B **code** verified clean (all four seam greps hit; the
+`resolve_ct_blob` fail-closed contract passes weight-free), but every data-touching step (1b/2/3) blocked because
+**no v1_5 local EHR-timeline base exists on the mount** — only the v1_1 base. `run_bq._load_task_data` reads
+labels/UIDs from BQ `vista_bench_v1_5.<source_csv>` (present) but then **inner-joins on `person_id` a local timeline
+CSV `base_dir/<source_csv>/<task>.csv` carrying `patient_string`** (`run_bq.py:288-317`); flipping the substrate to
+v1_5 repointed that lookup at a v1_5-named dir that isn't staged → returns `None`.
+
+**Finding (Mac investigation):** the `<task>.csv` `patient_string` is a **MEDS-rendered** timeline over
+`[embed_time − 6mo, embed_time]` (`remove_imaging_report.py:process_dataframe`; described at
+`subsampled_retrieval_csv.py:8,12`) — **not** in BQ and **not** the LUMIA `.xml`. No committed script produces the bare
+`<task>.csv`: the real producers emit *suffixed* `_subsampled.csv` / `_full.parquet` and need a `meds_reader` DB +
+ontology we can't confirm on the VM. The v1_1 base was `gsutil rsync`'d from `gs://vista_bench/` and is exactly what
+the rung-0 `timeline_only` arm read (0.515). The LUMIA `.xml` corpus
+(`gs://vista_bench/thoracic_cohort_lumia/{person_id}.xml`, static / version-invariant) is a **second render of the same
+MEDS timeline** (`ehr.py:12,141` — "LUMIA is generated from the MEDS timeline… reproduces today's `patient_string` by
+construction"), consumed only by the still-deferred modular EHR adapter.
+
+**Decision (Phil, 2026-07-14):** the `patient_string` CSVs are a **MEDS artifact, stable v1_1→v1_5**, so **copy the
+v1_1 timeline CSV into the unsuffixed v1_5 cohort dir and continue** (Phase 0 / new Step 0 in *Verification & VM
+handoff*). **Do not** produce a fresh v1_5 base or dig for Ryan's source CSVs — we own this now. The **LUMIA-direct
+loader** (read the static `.xml` via `ehr.py` + a per-`(person, look-back window, snapshot)` render cache, retiring the
+pre-baked-CSV dependency) is the better endgame but is **deferred to a separate follow-up plan** — see *Follow-ups
+spun out*.
 
 ## What this supersedes
 
@@ -140,8 +170,12 @@ meaningful again.
   bucket has no `_v1_5`/`_v1_3` variant). `image_valid_tasks.json` is **absent** in the bucket but is
   optional/guarded in `TaskOrchestrator.__init__` (VM-confirmed) — leave the guard, do not require the file.
 - **Config** — the executor keeps a localized `configs/all_tasks.vm.yaml` pointing at the `su-vista-*`
-  mounts (already staged by the VM). The committed `configs/all_tasks.yaml` carries the **GCS `gs://vista_bench/`
-  layout** for v1_5 — do **not** commit the `.vm` copy as default.
+  mounts. The committed `configs/all_tasks.yaml` carries the **GCS `gs://vista_bench/`
+  layout** for v1_5 — do **not** commit the `.vm` copy as default. ⚠ **The v1_5 local timeline base is *not*
+  auto-staged** (2026-07-14 deviation — the roadmap's "already staged by the VM" assumption was false): the loader's
+  `base_dir/<source_csv>/<task>.csv` must be staged first — **Step 0 (Phase 0)** copies the v1_1 CSV into the
+  **unsuffixed** v1_5 cohort dir (MEDS-stable) and flips the staged `valid_tasks.json` `task_source_csv` to the
+  unsuffixed v1_5 table.
 - **Re-bank the EHR `no_image` baseline on the v1_5 cohort** (the current green baseline is v1_1 — a
   different cohort). This is the new gate-3 "before".
 
@@ -287,7 +321,12 @@ the rung-0 vm-status facts + the `/vm-handoff` skill made them decidable. Phil d
   Phase 3 (Steps 4/5), authored *after* the 3b commit (post-3b SHA), `Prior handoffs: [Doc 1]`, C1 banked-by-SHA.
 
 **Follow-ups spun out (out of scope — track separately):** (1) migrate the 13-file off-golden-path tooling batch onto
-`resolve_ct_blob` + the v1_5 UID queries, with a loud `nov25`-gone guard; (2) retire `run.py` + `eval/gcp.sh` together.
+`resolve_ct_blob` + the v1_5 UID queries, with a loud `nov25`-gone guard; (2) retire `run.py` + `eval/gcp.sh` together;
+(3) **LUMIA-direct loader (2026-07-14 deviation endgame)** — point the timeline source at the static LUMIA `.xml` via
+the `ehr.py` adapter, wire the deferred window/code `select` chain (`presets.py:31-44`), and add a per-`(person,
+look-back window, snapshot)` render cache — retiring the pre-baked-`patient_string`-CSV dependency (and dissolving the
+gate-3 legacy-vs-LUMIA diff: LUMIA *becomes* the baseline). Validate against the banked legacy reference (`timeline_only`
+≈ 0.515; `ehr.py:12` claims byte-repro of `patient_string`, now checkable against the copied v1_1 CSV).
 
 ## Reprocessing & historical CT test-set visibility (2026-07-07)
 
@@ -324,6 +363,31 @@ Executed on the GCP VM (Mac is planner-only). Canonical smoke = `progression_rec
 > [rung-0 plan](vlm-rung0-reproduce-ryan-feb26.md) and **must be green before Steps 1–5 below run**. The Steps
 > below are all the **weights-free golden harness** (rungs 1–2); rung 0 is the only weighted / results-CSV gate.
 
+- **Step 0 — stage the v1_5 timeline base (the 2026-07-14 deviation fix; run before Step 1).** The v1_5 golden steps
+  need a local `base_dir/<v1_5 source_csv>/<task>.csv` with `person_id` + `patient_string`; only the v1_1 base is on the
+  mount. Because `patient_string` is a MEDS render and MEDS is stable v1_1→v1_5 (Phil), **copy, don't reproduce**:
+  1. **Copy the timeline CSV** from the v1_1 dir to the **unsuffixed** v1_5 cohort dir (create it first):
+     `mkdir -p <base_dir>/progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr && cp -n
+     <base_dir>/progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr_v1_1/progression_recurrence_free_survival_1_yr.csv
+     <base_dir>/progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr/` (copy the whole `…_v1_1/` dir if staging all
+     tasks, not just PFS). **Copy the timeline dir only — NOT any `bigquery_data_2_3/<source_csv>` cache** — so the
+     v1_5 labels/UIDs are queried **live** from the v1_5 BQ table (`phil-sllm-01` has creds), never served stale from a
+     v1_1 cache.
+  2. **Flip the staged `valid_tasks.json`** so the PFS entry's `task_source_csv` is the **unsuffixed**
+     `progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr` — it drives *both* the BQ table (`vista_bench_v1_5.<that>`,
+     which exists) *and* the local dir the copy just created. This clears the second latent mismatch the readback
+     flagged (`…_v1_1` source × `vista_bench_v1_5` dataset → a table that does not exist).
+
+  **Expected:** `<base_dir>/<unsuffixed>/progression_recurrence_free_survival_1_yr.csv` exists, non-empty, has a
+  `patient_string` column; `valid_tasks.json` PFS `task_source_csv` = the unsuffixed name.
+  **Timeline-coverage guard (instrument, don't trust — distinct from Step 1b's CT-blob coverage):** on the Step-2
+  (and Step-1b) load, the loader prints `Matched N out of M rows with patient timelines` (`run_bq.py:318`). **Record N
+  and M.** N≈M (~100%) confirms Phil's MEDS-stability assumption — the v1_1 person set covers the v1_5 PFS slice.
+  **Materially N<M** ⇒ the v1_5 PFS cohort grew a person set the copied v1_1 CSV doesn't cover, and those persons
+  **silently inner-join-drop** → **report the gap** (class-2 decision gate, same as Step 1b; *not* an auto-stop — the
+  golden smoke only needs ≥1 CT-bearing row — but Phil records accept/revise before Step 3 banks C1).
+  **Stop:** the unsuffixed BQ table doesn't resolve (creds / wrong name); the copied CSV lacks a `patient_string`
+  column; `Matched 0 out of M` (person-id keyspace mismatch — the v1_1 CSV and v1_5 BQ don't share `person_id` space).
 - **Step 1 — v1_5 CT resolution smoke.** With Axis A + B applied, resolve one v1_5 `(study_uid, series_uid)`
   → feb26 blob and load it.
   **Expected:** the feb26 blob downloads; `image_count > 0`; `selected_indices` = 30 evenly-spaced ints; the
