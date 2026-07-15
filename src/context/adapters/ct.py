@@ -7,8 +7,10 @@ per-branch slice sampling byte-for-byte:
   * then ``pad_to_size(target)``.
 Slice indices come from a configured CT selector (default ``evenly_spaced_k(50)``,
 matching the legacy no-timeline default). NIfTI *loading* (GCP/local resolution)
-stays in the caller (``vqa_dataset``); this adapter operates on a loaded volume so
-it is pure and re-drivable by the offline viewer.
+stays in the caller (``vqa_dataset``); this adapter operates on a loaded volume —
+either a numpy array (offline viewer) or a lazy nibabel ArrayProxy
+(``ct_img.dataobj``), so per-slice reads never materialize the full volume (the CT
+OOM fix is preserved) — and is pure and re-drivable by the offline viewer.
 """
 
 from __future__ import annotations
@@ -68,7 +70,14 @@ class CTAdapter(ModalityAdapter):
             depth = volume.shape[2]
             indices = self.select_indices(depth)
             for idx in indices:
-                images.append(self.preprocess_slice(volume[:, :, idx], caps))
+                # `volume` is array-like: a numpy volume (offline viewer) OR a lazy
+                # nibabel ArrayProxy (`ct_img.dataobj`) from the caller's load path, so
+                # slicing here reads one plane and never materializes the whole CT (the
+                # OOM fix stays intact). Cast to float64 to match the legacy
+                # `np.asarray(dataobj[:, :, idx], dtype=np.float64)` slice exactly, so the
+                # windowed bytes are byte-identical (golden gate 1/2).
+                ct_slice = np.asarray(volume[:, :, idx], dtype=np.float64)
+                images.append(self.preprocess_slice(ct_slice, caps))
         return ContextBlock(
             id=self.block_id,
             modality=self.modality,

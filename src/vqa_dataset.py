@@ -1,15 +1,17 @@
 import os
 import pandas as pd
-import numpy as np
 from PIL import Image, ImageOps
 from torch.utils.data import Dataset
 from pathlib import Path
 import io
 import tempfile
 from vista_run.utils.utils_inference import pad_to_512, pad_to_size
-# CT windowing/normalization now live in context.windowing (single home; the CT
-# adapter shares them). multi_window_rgb == legacy `window`, grayscale == normalize_slice.
-from context.windowing import multi_window_rgb, grayscale
+# CT slice selection + windowing is dissolved into the CT modality adapter
+# (context.adapters.ct.CTAdapter): __getitem__ loads the NIfTI and hands the lazy
+# volume proxy to the adapter, which reproduces the legacy per-branch sampler +
+# windowing byte-for-byte (golden gate 1/2). The blob resolution + NIfTI load stay
+# here in the caller (outside the adapter), unchanged across the 3b refactor.
+from context.adapters.ct import CTAdapter
 
 # Go-forward CT snapshot. `nov25` is deleted from the bucket (zero objects); `feb26` is the
 # only snapshot. The prefix is a config value (`paths.ct_snapshot_prefix`, threaded via
@@ -51,6 +53,21 @@ def resolve_ct_blob(study_uid, series_uid, prefix=DEFAULT_CT_SNAPSHOT_PREFIX):
     filename = f"{study}__{series}.nii.gz"
     return f"{prefix}/{filename}", filename
 
+
+# Experiment -> number of evenly-spaced axial slices, i.e. the legacy per-branch CT
+# samplers (`__getitem__`): axial_all_image + the two retrieved-with-image variants
+# used 30, no_timeline / all_vb_image_only used 50, no_report used 10. Experiments not
+# listed here never produced a CT image (img stayed None), so the CT block is skipped.
+_CT_SLICE_COUNTS = {
+    "axial_all_image": 30,
+    "retrieved_timeline_with_image": 30,
+    "retrieved_timeline_per_iteration_summarization_with_image": 30,
+    "no_timeline": 50,
+    "all_vb_image_only": 50,
+    "no_report": 10,
+}
+
+
 class PromptDataset(Dataset):
     def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None, ct_snapshot_prefix=None):
         """
@@ -77,31 +94,13 @@ class PromptDataset(Dataset):
 
         # Determine image size based on model type
         self.target_size = 448 if self.is_gemma else 512
-    
-    def _process_ct_slice(self, ct_slice):
-        """
-        Process a CT slice: apply windowing for gemma models, normalize, convert to PIL Image, and resize.
-        
-        Args:
-            ct_slice: numpy array of CT slice data
-            
-        Returns:
-            PIL Image object
-        """
-        if self.is_gemma:
-            # Apply windowing function for gemma models
-            windowed_slice = multi_window_rgb(ct_slice)
-            # Round slice voxels to nearest integer number
-            windowed_slice = np.round(windowed_slice, 0).astype(np.uint8)
-            # Convert to PIL Image (RGB mode since windowing creates 3 channels)
-            pil_img = Image.fromarray(windowed_slice, mode='RGB')
-        else:
-            # Standard normalization for non-gemma models
-            normalized_slice = grayscale(ct_slice)
-            pil_img = Image.fromarray(normalized_slice, mode='L')
-        
-        # Resize to target size (448 for gemma, 512 for others)
-        return pad_to_size(pil_img, self.target_size)
+
+        # CT slice count for this experiment's legacy sampler (None -> no CT image).
+        # The CTAdapter is built lazily in __getitem__ (in the DataLoader worker) so the
+        # dataset stays picklable for spawn-mode workers — resolve_ct_selector returns a
+        # closure that can't be pickled, and it must not exist at fork/spawn time.
+        self._ct_slice_count = _CT_SLICE_COUNTS.get(experiment)
+        self._ct_adapter = None
 
     def __len__(self):
         return len(self.df)
@@ -126,7 +125,7 @@ class PromptDataset(Dataset):
         image_path = row.get('image_path', None)
         
         # Skip image loading for 'no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', and 'retrieved_timeline_per_iteration' experiments
-        # (retrieved_timeline_with_image and retrieved_timeline_per_iteration_summarization_with_image load 50 axial slices like axial_all_image)
+        # (retrieved_timeline_with_image and retrieved_timeline_per_iteration_summarization_with_image load 30 axial slices like axial_all_image)
         if self.experiment in ('no_image', 'report', 'timeline_only', 'all_vb_timeline_only', 'retrieved_timeline', 'retrieved_timeline_per_iteration', 'retrieved_timeline_per_iteration_summarization'):
             img = None
         else:
@@ -213,76 +212,30 @@ class PromptDataset(Dataset):
                         else:
                             ct_img = None
 
-                        if ct_img is not None:
-                            # Handle different experiment types
-                            if self.experiment in ('axial_all_image', 'retrieved_timeline_with_image', 'retrieved_timeline_per_iteration_summarization_with_image'):
-                                # 30 axial slices, evenly spaced across the volume depth.
-                                # (Previously used a buggy i*0.1 scheme that overshot 1.0 for i>10 and
-                                # silently clamped every later slice to the last; now matches the even
-                                # spacing used by the 50- and 10-slice branches below.)
-                                if len(ct_img.shape) > 2:
-                                    depth = ct_img.shape[2]
-                                    img_list = []
-                                    slice_indices = []
-                                    num_slices = 30
-                                    for i in range(num_slices):
-                                        if num_slices > 1:
-                                            position = i / (num_slices - 1)
-                                        else:
-                                            position = 0.0
-                                        index = int(position * (depth - 1))
-                                        if index >= depth:
-                                            index = depth - 1
-                                        slice_indices.append(index)
-                                        axial_slice = np.asarray(ct_img.dataobj[:, :, index], dtype=np.float64)
-                                        img_list.append(self._process_ct_slice(axial_slice))
-                                    img = img_list
-                                    selected_indices = slice_indices
-                                else:
-                                    img = None
-                            elif self.experiment in ('no_timeline', 'all_vb_image_only'):
-                                # Both use 50 axial slices (image-only, no patient timeline)
-                                if len(ct_img.shape) > 2:
-                                    depth = ct_img.shape[2]
-                                    img_list = []
-                                    slice_indices = []
-                                    num_slices = 50
-                                    for i in range(num_slices):
-                                        if num_slices > 1:
-                                            position = i / (num_slices - 1)
-                                        else:
-                                            position = 0.0
-                                        index = int(position * (depth - 1))
-                                        if index >= depth:
-                                            index = depth - 1
-                                        slice_indices.append(index)
-                                        axial_slice = np.asarray(ct_img.dataobj[:, :, index], dtype=np.float64)
-                                        img_list.append(self._process_ct_slice(axial_slice))
-                                    img = img_list
-                                    selected_indices = slice_indices
-                                else:
-                                    img = None
-                            elif self.experiment == 'no_report':
-                                if len(ct_img.shape) > 2:
-                                    depth = ct_img.shape[2]
-                                    img_list = []
-                                    slice_indices = []
-                                    num_slices = 10
-                                    for i in range(num_slices):
-                                        if num_slices > 1:
-                                            position = i / (num_slices - 1)
-                                        else:
-                                            position = 0.0
-                                        index = int(position * (depth - 1))
-                                        if index >= depth:
-                                            index = depth - 1
-                                        slice_indices.append(index)
-                                        axial_slice = np.asarray(ct_img.dataobj[:, :, index], dtype=np.float64)
-                                        img_list.append(self._process_ct_slice(axial_slice))
-                                    img = img_list
-                                    selected_indices = slice_indices
-                                else:
-                                    img = None
+                        if ct_img is not None and self._ct_slice_count is not None:
+                            # 3b: the legacy per-experiment CT branch (30/50/10 evenly-spaced
+                            # axial slices + windowing) is dissolved into the CT modality
+                            # adapter. The adapter reproduces the legacy sampler
+                            # (`evenly_spaced_k` over the volume depth) and windowing
+                            # byte-for-byte (golden gate 1/2). Built lazily here in the worker
+                            # so the dataset stays picklable; handed the LAZY nibabel proxy
+                            # (`ct_img.dataobj`) so it reads one plane at a time and never
+                            # materializes the full volume (CT OOM fix preserved). Blob
+                            # resolution + NIfTI load stay in this caller, unchanged.
+                            if self._ct_adapter is None:
+                                self._ct_adapter = CTAdapter(
+                                    config={"select": {"fn": "evenly_spaced_k", "k": self._ct_slice_count}}
+                                )
+                            block = self._ct_adapter.contextualize(
+                                ct_img.dataobj, {"model_type": self.model_type}
+                            )
+                            img = block.payload
+                            # Legacy recorded slice indices only when it built images
+                            # (depth > 2); a 2-D volume -> adapter payload None -> keep
+                            # selected_indices None, matching the legacy no-image path.
+                            selected_indices = (
+                                block.metadata["selected_indices"] if img is not None else None
+                            )
                     except Exception as e:
                         print(f"Error loading NIfTI for (study={study_uid}, series={series_uid}) blob={blob_path}: {e}")
                         # Continue with text-only if image loading fails
