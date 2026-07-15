@@ -109,5 +109,15 @@ Under `## VM run results`, append per-step pass/fail against each **Expected** b
 
 **PHI (per the plan's Verification PHI rule):** counts / field-names / affected-indices / byte-sizes only — **never** paste golden rows, timelines, or `diff_golden.py`'s BEFORE/AFTER `_preview` output (`diff_golden.py:169-170,185-186` prints raw `dynamic_prompt`/`adapter_prompt_string`, which carry timeline PHI). Raw DICOM Study/Series UIDs stay on the `su-vista-*` PHI mount. Golden + diff output are git-ignored on the mount; `/phi-vet` gates the readback commit.
 
-## VM run results
-_(left empty by the planner; the executor fills this in readback mode on `phil-sllm-01`)_
+## VM run results — readback on `phil-sllm-01`, 2026-07-15 · REPO `vista_eval_vlm` · BRANCH `worktree-vlm-modular-preprocessing-roadmap` @ `dec9f9c` (pushed to `origin/…`)
+
+All steps ran on the Claude-Code CPU box (`phil-sllm-01`), weights-free golden harness + `diff_golden.py`. No hcpu/GPU leg.
+
+- **Step 0 — sync + confirm banked-from-prior:** ✅ `git rev-parse --short HEAD` == `dec9f9c` (post-revision SHA); provisioning resolved (`indexed_gzip==1.10.3`, `torch==2.8.0`, `transformers==4.57.1`, `nibabel==5.3.3`); both 3b greps `[ok]` (`CTAdapter` wired into `vqa_dataset`, adapter `float64` slice cast present). Banked-from-prior confirmed: **two** non-empty `*_legacy_feb26_golden.jsonl` C1 goldens — intern `289,990,550 B`, gemma `289,997,040 B`; **one** gemma `*_adapter_feb26_golden.jsonl` C3 golden `289,997,040 B` (byte-size identical to gemma C1). No STOP.
+- **Step 1 — gemma C4 (full byte-identity diff, `--mode strict`):** ✅ `RESULT: ALL GATES PASS`, exit 0. Shared indices **1,238** (== full cohort). Gate 1 structure byte-identical (`image_hashes` / `selected_indices` / counts / `assembly_mode`); Gate 2 `image_hashes` identical. No index-set mismatch, no `[WARN] no shared indices`.
+- **Step 2 — intern C3 (limited bank, `--limit 100`):** ✅ wrote `…InternVL…_axial_all_image_adapter_feb26_golden.jsonl` + `.meta.json`, non-empty. `row_count == 100` (meta == jsonl == 100); rows unique on `index` and sorted by `(person_id, index)`. `[SAMPLE]` split: **77 CT-bearing / 23 no-image** (≥ 30 CT-bearing → `grayscale` windowing branch genuinely exercised). Weight-free (no GPU/weights in logs — only `[CT] source=mount` reads). `git status` clean (golden lives on the gitignored PHI mount).
+- **Step 3 — intern C4 (limited byte-identity diff, `head -n N` of full C1 vs limited after, `--mode strict`):** ✅ N=100; `head -n 100` slice paired cleanly; `RESULT: ALL GATES PASS`, exit 0. Shared indices **100** (== N). Gate 1 structure byte-identical + Gate 2 `image_hashes` identical. No index-set mismatch.
+- **Decision gates (class 2):** none fired.
+- **In-lane corrections (class 1):** the doc's `python -m …` invocations are `python: command not found` on this box (no bare `python` on PATH); ran via the repo venv (`.venv/bin/python`, cpython-3.11) instead — same interpreter/deps, no behavior change. `uv run python` also works but reprovisions the env each call, so venv-python was used directly for Steps 2–3.
+- **Deviations (class 3):** none.
+- **Net:** **both** legs `ALL GATES PASS` — gemma C4 full-cohort (1,238) + intern C3/C4 spot-check (100, 77 CT-bearing). The 3b CT-adapter dissolution (legacy per-experiment CT slice-select + windowing → `CTAdapter`) is a **proven no-op** on the imaging surface. → back to the **Mac** to `/land` (gate: `/review-implementation` clean + `/phi-vet` + `/review-plan` sign-off, per the plan's *Landing & cleanup*).
