@@ -57,6 +57,36 @@ loader** (read the static `.xml` via `ehr.py` + a per-`(person, look-back window
 pre-baked-CSV dependency) is the better endgame but is **deferred to a separate follow-up plan** — see *Follow-ups
 spun out*.
 
+## Deviation & re-plan (2026-07-15) — C3 intern leg limited to a spot-check (I/O routing resolved)
+
+**Partial VM run of Doc 2**
+([`docs/vm-status/2026-07-15-3b-ct-adapter-golden-diff.md`](../vm-status/2026-07-15-3b-ct-adapter-golden-diff.md),
+readback `f1fd8a8` on `phil-sllm-01`): Step 0 green, and **gemma C3 (`adapter_feb26`) banked full and GREEN** —
+1,238 rows, CT-bearing split 943/295 == C1, and **byte-size identical to C1's gemma `legacy_feb26` golden**
+(289,997,040 B — a strong preliminary no-op signal). The VM then **handed back on a routing finding, not a
+defect**: the weight-free bank is pure mount-latency (~85 min at 0 % CPU, ~13 CTs/min over 943 CT-bearing rows),
+so the *full* intern leg would either tie up the interactive Claude-Code box for another ~85 min or force a
+relocation to a high-throughput CPU box — which would break this plan's "Claude-Code CPU throughout, no
+standalone runner script, no run/readback split" posture (see *Handoff phasing*).
+
+**Decision (Phil, 2026-07-15): limit the intern leg to a spot-check.** The intern C3 leg re-reads *the same 943
+feb26 CT volumes gemma already read*; the only thing that differs from gemma is the **windowing branch applied
+after load** (`grayscale` vs gemma's `multi_window_rgb`). That branch is (a) Codex-verified as a **verbatim
+relocation** into `CTAdapter` (selector `evenly_spaced_k` verbatim, float64 cast preserved — implementation
+review), and (b) already validated on the full 943-volume cohort *for gemma*. A full second 85-min cohort read to
+prove the grayscale half is disproportionate. Instead:
+- **gemma stays FULL** (already banked) — the full-cohort byte-identity proof on the primary model.
+- **intern becomes a LIMITED spot-check** — `golden_harness … --limit N` on the deterministic
+  `(person_id, index)` head, diffed strict against a matching `head -n N` slice of the full intern `legacy_feb26`
+  before (required because `diff_golden` **fails closed on any index-set inequality** —
+  `diff_golden.py:125-126,156-158`). A CT-bearing-row floor keeps the grayscale branch genuinely exercised.
+
+**Net effect:** the intern leg drops from ~85 min to a few minutes, so **all remaining work stays on
+`phil-sllm-01`** (Claude-Code native readback) — the hcpu relocation / runner-script / run-readback split is **not
+needed** and the plan's single-box posture holds. This is a deliberate **rigor trade** (full intern parity →
+gemma-full + Codex-static verbatim proof + an intern spot-check), owned by Phil, not a silent relaxation. Step 4
+is revised accordingly; its original full-parity criteria are superseded **for intern only** (gemma unchanged).
+
 ## What this supersedes
 
 The roadmap's **Phase 0 v1_5 substrate contract** and **Back-compat golden** sections assumed:
@@ -434,14 +464,42 @@ Executed on the GCP VM (Mac is planner-only). Canonical smoke = `progression_rec
   index set not unique-and-sorted; an unexpected retrieval-skip / "no data" message (the harness skips retrieval
   experiments *by design* — for `axial_all_image` a skip or zero-row output is a **STOP**, not a benign note);
   weights loading.
-- **Step 4 — 3b refactor diff (C3 + C4).** After 3b, bank `--tag adapter_feb26` (same two invocations) and run
-  `diff_golden.py <legacy_feb26>.jsonl <adapter_feb26>.jsonl --mode strict` per model (`strict` is the
-  `diff_golden.py` default — state it anyway so the executor doesn't rely on the default).
-  **Expected:** shared-index set identical (same indices both sides); **Gate 1** structure byte-identical over
-  the tool's full hard set — `image_hashes`, `selected_indices`, `image_count`, `assembly_mode`,
-  `path_tile_count` (`None` for CT rows) — and **Gate 2** `image_hashes` identical per model; `RESULT: ALL GATES
-  PASS`. **Stop:** any Gate-1/Gate-2 drift (the CT dissolution is not a no-op); an **index-set mismatch** or a
-  **`[WARN] no shared indices`** (an empty intersection cannot *prove* a no-op — treat as failure, not pass).
+- **Step 4 — 3b refactor diff (C3 + C4).** After 3b, bank `--tag adapter_feb26` and diff strict per model.
+  **Asymmetric by design (2026-07-15 deviation): gemma full, intern a limited spot-check** — see the deviation
+  note above for the rationale. `strict` is the `diff_golden.py` default — state it anyway so the executor
+  doesn't rely on the default. Both models weight-free on `phil-sllm-01`; no hcpu / runner-script.
+  - **gemma (full — already banked at `f1fd8a8`).** Bank done: `golden_harness … --type gemma3 --name
+    google/medgemma-1.5-4b-it --experiments axial_all_image --tag adapter_feb26` → 1,238 rows, split 943/295 ==
+    C1. Diff `python -m vista_run.diff_golden <gemma legacy_feb26>.jsonl <gemma adapter_feb26>.jsonl --mode
+    strict`.
+    **Expected:** shared-index set identical (all 1,238); **Gate 1** structure byte-identical over the tool's full
+    hard set — `image_hashes`, `selected_indices`, `image_count`, `assembly_mode`, `path_tile_count` (`None` for
+    CT rows) — and **Gate 2** `image_hashes` identical; `RESULT: ALL GATES PASS`.
+  - **intern (limited spot-check).** Bank `golden_harness … --type intern --name OpenGVLab/InternVL3_5-8B-hf
+    --experiments axial_all_image --tag adapter_feb26 --limit 100`. `--limit` takes a deterministic
+    `(person_id, index)` head, so the after's N rows match the head of the full before. Build the paired
+    before-slice (needed because `diff_golden` fails closed on any index-set inequality) and diff:
+    ```bash
+    cd src
+    BASE=/mnt/su-vista-uscentral1/vistabench/vlm/results_rungs12/golden
+    AFTER=$(find "$BASE" -path '*InternVL*' -name '*_axial_all_image_adapter_feb26_golden.jsonl')
+    BEFORE_FULL="${AFTER/_adapter_feb26_/_legacy_feb26_}"              # full 1,238-row C1 intern before
+    N=$(wc -l < "$AFTER")                                             # actual limited-after row count
+    BEFORE_LTD="${BEFORE_FULL/_golden.jsonl/_limit${N}_golden.jsonl}"  # keeps _golden.jsonl → gitignore backstop
+    head -n "$N" "$BEFORE_FULL" > "$BEFORE_LTD"                       # first N by (person_id,index) == after's head
+    python -m vista_run.diff_golden "$BEFORE_LTD" "$AFTER" --mode strict
+    ```
+    **Expected:** the limited intern golden contains **≥ 30 CT-bearing rows** (`image_count > 0`) so the
+    `grayscale` windowing branch is genuinely exercised on real volumes — **report the sample's CT-bearing /
+    no-image split**; shared-index set identical over the N rows (the `head -n N` slice guarantees it); Gate 1 +
+    Gate 2 byte-identical; `RESULT: ALL GATES PASS`.
+    **If the sample has < 30 CT-bearing rows** (the head landed CT-thin), re-bank with a larger `--limit`
+    (e.g. 200) and re-slice — a few extra minutes, still single-box.
+  - **Stop (both models):** any Gate-1/Gate-2 drift (the CT dissolution is not a no-op → hard class-3 halt, back
+    to the Mac); an **index-set mismatch** (for intern this means the `head -n N` slice didn't pair — re-derive N
+    from the after's `wc -l` and re-slice) or a **`[WARN] no shared indices`** (an empty intersection cannot
+    *prove* a no-op — treat as failure, not pass). **Two `ALL GATES PASS` (gemma full + intern spot-check) → 3b is
+    a proven no-op; the CT dissolution is retired → `/land`.**
 - **Step 5 — gate-3 EHR diff (D3).** Diff the LUMIA-live `no_image` render vs the v1_5-rebanked baseline
   under `diff_golden.py … --mode allowlist`.
   **Expected:** event/line order identical; deltas confined to the declared `numeric_value` VALUE-line
@@ -475,10 +533,15 @@ no run-vs-readback split** (rung 0 was the only weighted/GPU gate). `/vm-handoff
   SHA/config unchanged (else un-bank + rerun). Gate: Step 3 Expected/Stop. Destructive: no. Stop: no C1 on
   zero rows / weights load / missing output+meta / dirty repo / unexpected skip. Next-doc trigger: green →
   hand back to **Mac** for C2 (3b) implementation.
-- **Phase 3 — C3/C4/C5 after the Mac implements 3b.** Steps 4, 5. Banked-from-prior: Phase-2 C1 before-golden
-  + Phase-1 EHR baseline (if unchanged by SHA/config). Gate: D3 accept-vs-parse after the first real gate-3
-  diff. Destructive: no. Stop: any Gate-1/2 strict drift = hard class-3 halt; gate-3 residual outside the
-  declared envelope = D3 decision (PHI-clean evidence).
+- **Phase 3 — C3/C4 after the Mac implements 3b.** Step 4 (Step 5 gate-3 deferred to the LUMIA-live follow-up —
+  the runtime still renders the passthrough `patient_string`, so `--mode strict` is the applicable gate here).
+  **Split (2026-07-15 deviation): gemma C3 full — banked `f1fd8a8`, GREEN; intern C3 a limited spot-check** (the
+  full-cohort read proved I/O-bound at ~85 min → limited rather than relocated to hcpu, preserving the
+  Claude-Code-CPU-throughout / no-runner-script posture above — see the 2026-07-15 deviation note). Executor
+  class unchanged = Claude-Code CPU (`phil-sllm-01`), no run/readback split. Banked-from-prior: Phase-2 C1
+  before-golden + gemma C3 (both frozen; the intern before is `head`-sliced from C1, not re-banked). Gate: Step 4
+  Expected/Stop. Destructive: no. Stop: any Gate-1/2 strict drift = hard class-3 halt; **two `ALL GATES PASS`
+  (gemma full + intern spot-check) → retire the CT dissolution → `/land`.**
 
 **Mac-interlude / banked-by-SHA rule (the reason to phase):** Step 3 banks "before", then 3b is implemented
 **on the Mac** (the SHA moves), then Step 4 banks "after" — so C1 and C3/C4 are at *different SHAs by
