@@ -2,7 +2,7 @@ Reference: research-skills/claude_ops.md
 
 # VM smoke — rungs 1–2 v1_5/feb26 stage + pre-bank (SUPERSEDES the 2026-07-13 prebank doc)
 
-**Status: Handoff to VM** (2026-07-14)
+**Status: VM run complete — Steps 0–2 + 1b GREEN; Step 3 GREEN after an in-session CT-load fix (class-3 deviation resolved, Phil-directed); back to Mac for `/review-implementation`** (2026-07-15). See `## VM run results`.
 **Branch:** `worktree-vlm-modular-preprocessing-roadmap` — **uncommitted on the Mac; commit + push first, SHA set at commit time.** The only *new* code vs the superseded doc's SHA (`39b5b87`) is docs (this doc + the plan's Step-0/deviation edits).
 **Locator:** REPO `vista_eval_vlm` · BRANCH `worktree-vlm-modular-preprocessing-roadmap` — **unmerged; `git fetch` first** · this doc `docs/vm-status/2026-07-14-rungs1-2-v1_5-stage-and-prebank.md`. Reach it: `git fetch origin && git checkout worktree-vlm-modular-preprocessing-roadmap && git pull` (shared / dirty checkout → `git worktree add ../vista_eval_vlm-rungs12 worktree-vlm-modular-preprocessing-roadmap`).
 **Machine posture:** authored on the planner Mac (`DNa82ccae.SUNet`, no runtime/data/creds). Every step is the **weights-free golden harness** (`golden_harness.py`, never loads weights) → runs entirely on the **Claude-Code CPU** box `phil-sllm-01` (holds the `/mnt/su-vista-*` mounts + BQ creds; runs Claude Code → readback here directly). No GPU / high-throughput leg, no run-vs-readback split.
@@ -232,3 +232,57 @@ Under `## VM run results`, append per-step pass/fail against each **Expected** b
 rows, timelines, `.xml` contents, or resolver output containing raw DICOM Study/Series UIDs. Raw UIDs stay on the
 `su-vista-*` PHI mount (Step 1b detail → the bucket, aggregate-only here). Golden output is git-ignored on the mount;
 `/phi-vet` gates every commit.
+
+## VM run results — readback on `phil-sllm-01`, 2026-07-15 · REPO `vista_eval_vlm` · BRANCH `worktree-vlm-modular-preprocessing-roadmap` @ 1b24507 (code fix) + docs this commit
+
+All steps ran on the Claude-Code CPU box `phil-sllm-01` (weight-free golden harness). Started from doc SHA
+`08bab06`; a CT-load fix (below) is committed on top — the banked C1 provenance SHA is `1b24507` (the CT-load fix commit); the readback lands in
+this readback.
+
+- **Step 0 (NEW) — stage v1_5 base:** ✅ v1_1 `PFS.csv` present (~1.0 GB); copied to unsuffixed `<V15>/` dir (byte-size
+  match); copied CSV has `person_id` + `patient_string` columns; `valid_tasks.json` PFS `task_source_csv` flipped
+  `…_v1_1` → unsuffixed (1 entry); git-ignored `configs/all_tasks.rungs12.vm.yaml` parses, `base_dir` resolves; **no**
+  `bigquery_data_2_3/<V15>` cache created.
+- **Step 1 — CT-resolution smoke:** ✅ (a) all resolver asserts pass (UID pair → feb26 blob; null/NaN/empty → None,
+  fail-closed). (b) `--limit 3`: BQ v1_5 table → 9,350 rows; `source=gcs`=2, `source=local`=**0** (force-GCS held at
+  smoke time); 2 CT-bearing rows `image_count`=30 with `selected_indices` length **30**; 1 null-UID row `image_count`=0;
+  no traceback.
+- **Step 1b — coverage + decision gate:** ✅ reported. Cohort 1,238 rows / 1,238 unique persons; **946 with CT UIDs**,
+  292 null/missing. feb26 prefix = 77,713 blobs. **CT-key coverage 944/946 = 99.8%** (only 2 UIDs absent — series drift,
+  not a link bug); coverage vs all cohort rows = 76.3% (depressed only by the 292 no-CT patients). **Timeline-coverage
+  guard `Matched 1238 out of 1238` = 100%** (copied v1_1 CSV fully covers the v1_5 PFS person set; zero inner-join drop).
+  Per-row UID detail → `results_rungs12/coverage/…` on the mount (git-ignored). **DECISION GATE (class-2): Phil ACCEPTED
+  (2026-07-14)** — link/query healthy, proceed to Step 3.
+- **Step 2 — re-bank `no_image` baseline:** ✅ `Matched 1238/1238` guard; 1,238 golden rows; null_prompt_rows=0;
+  `image_count`=0 all rows; `assembly_mode`="ordered"; `meta.row_count`==jsonl lines (1,238); sorted by
+  `(person_id, index)`; `git status` clean (golden on mount). Cohort shape: 1,238 rows / 1,238 unique persons / 946
+  CT-bearing UID rows / 1,238 timeline-non-null / 1,238 PFS. Shape consistent with the rung-0 v1_1 `no_image` reference.
+- **Step 3 — bank axial "before" golden (`legacy_feb26`):** ✅ both models, **1,238 rows each**, meta==jsonl, sorted by
+  `(person_id, index)`, `image_hashes` length == `image_count` all rows, `selected_indices` length **30**, weight-free,
+  `git status` shows no golden (mount, git-ignored):
+  - `medgemma-1.5-4b-it`: 943 CT-bearing / 295 no-image.
+  - `InternVL3_5-8B-hf`: 944 CT-bearing / 294 no-image.
+  - 2 per-run CT-load failures (fail-closed to no-image, both caught): 1× 404 (a coverage-gap UID) + 1× degenerate
+    volume ("height and width must be > 0"). The gemma/intern 943-vs-944 delta is that degenerate CT, which gemma's
+    slice-processing rejected. **Banked C1 provenance SHA = `1b24507`** (the CT-load fix commit).
+
+- **In-lane corrections (class 1):**
+  - **Venv provisioning:** the doc's `uv sync --extra dev` is wrong for this repo (no `dev` extra; plain `uv sync` prunes
+    the venv to the 9 base deps and drops torch/transformers). Restored via the repo's real provisioning —
+    `uv pip install -e . && uv pip install -r requirements-default.txt` (per `scripts/setup.sh`). No design impact.
+
+- **⚠️ DEVIATION (class 3) — RESOLVED IN-SESSION (Phil-directed):** Step 3 initially OOM-killed (SIGKILL/137) at the
+  **same** cohort position (~row 293) across three attempts — *not* parallelism and *not* a bad file. Root cause: the
+  CT cohort contains oversized volumes (6 CTs > 1 GB gzipped; max **512×512×8652**, whose `get_fdata()` float64 =
+  **18.1 GB**), and the load path materialized the full float64 volume → OOM on the 15 GB box. **Fix (Phil-authorized,
+  live):** read the feb26 NIfTI directly off the gcsfuse mount (`/mnt/<bucket>/<blob>`, Anywhere-Cache-accelerated;
+  temp-file download only as fallback) **and** slice lazily via `img.dataobj[:, :, idx]` with `indexed_gzip` instead of
+  `get_fdata()`. **Evidence:** on the 3 GB monster, peak RSS **18.1 GB → 0.16 GB**; on a `--limit 3` re-run the golden
+  `image_count` + `selected_indices` + **`image_hashes` are byte-identical** to the pre-fix `get_fdata()` output, so the
+  banked golden is unchanged. Files: `src/vqa_dataset.py` (load-path refactor + `[CT] source=mount` label),
+  `requirements-default.txt` (`indexed_gzip==1.10.3`). This touches a shared load path (also used by real inference) —
+  flagged for Mac `/review-implementation` before it rides further.
+
+- **Net:** Steps 0–2 + 1b GREEN; Step 3 GREEN after the mount+lazy CT-load fix (C1 banked for both models). Hand back to
+  the **Mac** to (1) `/review-implementation` the `vqa_dataset` load-path change, then (2) implement 3b (the C2
+  interlude) → Doc 2 (Phase 3, Steps 4/5).
