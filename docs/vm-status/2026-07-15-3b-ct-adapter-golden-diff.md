@@ -93,3 +93,5 @@ Under `## VM run results`, append per-step pass/fail against each **Expected** b
 - **Net:** gemma C3 GREEN and banked; **BLOCKED on the routing decision** for intern C3 + diff → back to the Mac. No design deviation in the refactor was observed (the diff that would prove/disprove the no-op has not yet run).
 
 **PHI:** counts / field-names / byte-sizes only — no golden rows, timelines, prompts, or `diff` previews pasted; raw Study/Series UIDs stay on the `su-vista-*` PHI mount.
+
+**Continued → [`2026-07-15-3b-intern-limited-golden-diff.md`](./2026-07-15-3b-intern-limited-golden-diff.md)** (2026-07-15) — routing handback RESOLVED (Phil): the intern leg is limited to a spot-check (`--limit 100`) rather than relocated to hcpu; this doc's gemma C3 golden is **banked-from-prior** (its C4 diff runs there). Not superseded — this doc's gemma result stands.
