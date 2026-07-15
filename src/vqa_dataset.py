@@ -172,45 +172,56 @@ class PromptDataset(Dataset):
                 resolved = resolve_ct_blob(study_uid, series_uid, prefix=self.ct_snapshot_prefix)
                 if resolved is not None:
                     blob_path, filename = resolved
+                    tmp_file_path = None
                     try:
                         import nibabel as nib
                         local_path = self.ct_dir / filename if self.ct_dir else None
                         use_local = local_path is not None and local_path.exists()
+                        # Prefer reading the feb26 NIfTI directly off the gcsfuse mount
+                        # (/mnt/<bucket>/<blob>) — no full download, and GCS Anywhere Cache
+                        # accelerates repeat reads. Fall back to a storage-client download to a
+                        # temp file only when the mount path is absent.
+                        mount_path = Path("/mnt") / self.bucket_name / blob_path
+                        use_mount = (not use_local) and mount_path.exists()
                         # Source-of-image log (rung-0 0a preflight seam): which route each CT row
-                        # takes (local ct_dir vs GCS) + the resolved blob/filename, so force-GCS
-                        # can be verified and the (study, series) link traced. VM-side logs only.
-                        _ct_source = "local" if use_local else ("gcs" if self.storage_client is not None else "none")
+                        # takes (local ct_dir / gcsfuse mount / GCS download) + the resolved blob,
+                        # so the feb26 reroute stays verifiable and the (study, series) link
+                        # traceable. All three routes read the same feb26 bytes. VM-side logs only.
+                        if use_local:
+                            _ct_source = "local"
+                        elif use_mount:
+                            _ct_source = "mount"
+                        elif self.storage_client is not None:
+                            _ct_source = "gcs"
+                        else:
+                            _ct_source = "none"
                         print(f"[CT] source={_ct_source} prefix={self.ct_snapshot_prefix} blob={blob_path} file={filename} local_exists={use_local} (index: {row.get('index', idx)})")
 
+                        # Lazy image handle: slices are pulled via ct_img.dataobj[...] (below)
+                        # instead of get_fdata(), so the full float64 volume is never materialized
+                        # — a 512x512x8652 CT would need ~18 GB via get_fdata and OOM the box.
+                        # (indexed_gzip gives efficient random access into the .nii.gz.)
                         if use_local:
-                            img_obj = nib.load(str(local_path))
-                            img_data = img_obj.get_fdata()
+                            ct_img = nib.load(str(local_path))
+                        elif use_mount:
+                            ct_img = nib.load(str(mount_path))
                         elif self.storage_client is not None:
-                            # Load NIfTI file from GCP bucket
-                            bucket = self.storage_client.bucket(self.bucket_name)
-                            blob = bucket.blob(blob_path)
-                            nifti_bytes = blob.download_as_bytes()
                             with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp_file:
-                                tmp_file.write(nifti_bytes)
                                 tmp_file_path = tmp_file.name
-                            try:
-                                img_obj = nib.load(tmp_file_path)
-                                img_data = img_obj.get_fdata()
-                            finally:
-                                if os.path.exists(tmp_file_path):
-                                    os.unlink(tmp_file_path)
+                            self.storage_client.bucket(self.bucket_name).blob(blob_path).download_to_filename(tmp_file_path)
+                            ct_img = nib.load(tmp_file_path)
                         else:
-                            img_data = None
+                            ct_img = None
 
-                        if img_data is not None:
+                        if ct_img is not None:
                             # Handle different experiment types
                             if self.experiment in ('axial_all_image', 'retrieved_timeline_with_image', 'retrieved_timeline_per_iteration_summarization_with_image'):
                                 # 30 axial slices, evenly spaced across the volume depth.
                                 # (Previously used a buggy i*0.1 scheme that overshot 1.0 for i>10 and
                                 # silently clamped every later slice to the last; now matches the even
                                 # spacing used by the 50- and 10-slice branches below.)
-                                if len(img_data.shape) > 2:
-                                    depth = img_data.shape[2]
+                                if len(ct_img.shape) > 2:
+                                    depth = ct_img.shape[2]
                                     img_list = []
                                     slice_indices = []
                                     num_slices = 30
@@ -223,7 +234,7 @@ class PromptDataset(Dataset):
                                         if index >= depth:
                                             index = depth - 1
                                         slice_indices.append(index)
-                                        axial_slice = img_data[:, :, index]
+                                        axial_slice = np.asarray(ct_img.dataobj[:, :, index], dtype=np.float64)
                                         img_list.append(self._process_ct_slice(axial_slice))
                                     img = img_list
                                     selected_indices = slice_indices
@@ -231,8 +242,8 @@ class PromptDataset(Dataset):
                                     img = None
                             elif self.experiment in ('no_timeline', 'all_vb_image_only'):
                                 # Both use 50 axial slices (image-only, no patient timeline)
-                                if len(img_data.shape) > 2:
-                                    depth = img_data.shape[2]
+                                if len(ct_img.shape) > 2:
+                                    depth = ct_img.shape[2]
                                     img_list = []
                                     slice_indices = []
                                     num_slices = 50
@@ -245,15 +256,15 @@ class PromptDataset(Dataset):
                                         if index >= depth:
                                             index = depth - 1
                                         slice_indices.append(index)
-                                        axial_slice = img_data[:, :, index]
+                                        axial_slice = np.asarray(ct_img.dataobj[:, :, index], dtype=np.float64)
                                         img_list.append(self._process_ct_slice(axial_slice))
                                     img = img_list
                                     selected_indices = slice_indices
                                 else:
                                     img = None
                             elif self.experiment == 'no_report':
-                                if len(img_data.shape) > 2:
-                                    depth = img_data.shape[2]
+                                if len(ct_img.shape) > 2:
+                                    depth = ct_img.shape[2]
                                     img_list = []
                                     slice_indices = []
                                     num_slices = 10
@@ -266,7 +277,7 @@ class PromptDataset(Dataset):
                                         if index >= depth:
                                             index = depth - 1
                                         slice_indices.append(index)
-                                        axial_slice = img_data[:, :, index]
+                                        axial_slice = np.asarray(ct_img.dataobj[:, :, index], dtype=np.float64)
                                         img_list.append(self._process_ct_slice(axial_slice))
                                     img = img_list
                                     selected_indices = slice_indices
@@ -275,6 +286,12 @@ class PromptDataset(Dataset):
                     except Exception as e:
                         print(f"Error loading NIfTI for (study={study_uid}, series={series_uid}) blob={blob_path}: {e}")
                         # Continue with text-only if image loading fails
+                    finally:
+                        # Only the GCS-download route creates a temp file; the mount/local
+                        # routes read in place. Unlink here (after lazy slicing) since dataobj
+                        # reads from the file during slicing, not at nib.load() time.
+                        if tmp_file_path is not None and os.path.exists(tmp_file_path):
+                            os.unlink(tmp_file_path)
 
         # 3. Build Item
         item = {
