@@ -2,7 +2,7 @@ Reference: research-skills/claude_ops.md
 
 # Rung 0 — reproduce Ryan's weighted pipeline on feb26 (operability smoke)
 
-**Status: Draft** (2026-07-08). Split out (2026-07-08, Phil) from
+**Status: Completed — landed on `main` 2026-07-15** (operability smoke green; rung-0 reproduced ~10–14pp above Ryan, report-presence confound explained). (2026-07-08). Split out (2026-07-08, Phil) from
 [`vlm-ct-feb26-v1_5-golden-rebaseline.md`](vlm-ct-feb26-v1_5-golden-rebaseline.md) so the operability
 smoke is a small, self-contained plan that **gates** the larger CT/feb26/v1.5 rebaseline work.
 **Branch:** `worktree-vlm-modular-preprocessing-roadmap` (continues; not yet committed).

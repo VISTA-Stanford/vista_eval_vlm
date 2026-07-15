@@ -2,7 +2,7 @@ Reference: research-skills/claude_ops.md
 
 # VLM CT resolution → v1_5/feb26 dataset link + golden rebaseline on feb26
 
-**Status: Draft** (2026-07-07) — supersedes the CT/substrate slice of
+**Status: Completed — landed on `main` 2026-07-15** (3b CT-dissolution proven a byte-identity no-op, VM-green; Step-5 gate-3 EHR golden deferred to the LUMIA-live follow-up). — supersedes the CT/substrate slice of
 [`vlm-modular-preprocessing-and-context-viewer-roadmap.md`](vlm-modular-preprocessing-and-context-viewer-roadmap.md).
 **Branch:** `worktree-vlm-modular-preprocessing-roadmap` (continues; not yet committed).
 **Machine posture:** authored on the planner Mac (no runtime/data/creds). VM-executed steps below run on the

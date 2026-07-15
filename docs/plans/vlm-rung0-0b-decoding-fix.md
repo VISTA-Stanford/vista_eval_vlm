@@ -2,7 +2,7 @@ Reference: research-skills/claude_ops.md
 
 # Rung-0 0b decoding fix — force the binary constraint for PFS, drop insufficient-follow-up rows, make the decode mode fail-closed and observable
 
-**Status: Draft** (2026-07-09; revised after Codex `/review-plan` — `reviews/vlm-rung0-0b-decoding-fix-feedback.md`).
+**Status: Completed — landed on `main` 2026-07-15** (VM-green 2026-07-13; 0c `predicted_label==-1 total: 0`). (2026-07-09; revised after Codex `/review-plan` — `reviews/vlm-rung0-0b-decoding-fix-feedback.md`).
 Amends **OQ-R6** of [`vlm-rung0-reproduce-ryan-feb26.md`](vlm-rung0-reproduce-ryan-feb26.md) after a class-3 deviation on the
 first 0b run.
 **Branch:** `worktree-vlm-modular-preprocessing-roadmap` (continues; uncommitted).
