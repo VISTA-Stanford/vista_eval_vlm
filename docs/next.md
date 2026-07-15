@@ -18,8 +18,12 @@ Provenance (all on `main`): [roadmap plan](plans/vlm-modular-preprocessing-and-c
 
 ## Live follow-ups (roadmap not-yet-built)
 
-- **Phase 2 — config-context viewer** — the side-by-side context inspector over the ContextBlock
-  assembly is not yet built. Small open decision: viewer side-by-side layout.
+- **Phase 2 — config-context viewer** — weight-free HTML input-QA viewer (assembled prompt + CT-slice /
+  pathology-tile thumbnails + token-budget bar) over the ContextBlock assembly, for manual pre-run QA on a
+  small subset. **Plan drafted + Codex-reviewed + 3 residuals resolved** (Q1 tokenizer-miss=STOP / Q2 CLI
+  `--type/--name` / Q3 coloring omitted), UNCOMMITTED on `feat/phase2-config-context-viewer` →
+  [plans/vlm-phase2-config-context-viewer.md](plans/vlm-phase2-config-context-viewer.md). NEXT =
+  `/commit-review` → implement (VM `phil-sllm-01`); side-by-side layout deferred (single-column first cut).
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2.
 - **Step 5 — gate-3 EHR golden (deferred, LUMIA-live)** — strict passthrough is the current gate; the
