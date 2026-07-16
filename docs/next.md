@@ -22,9 +22,9 @@ Provenance (all on `main`): [roadmap plan](plans/vlm-modular-preprocessing-and-c
   pathology-tile thumbnails + token-budget bar) over the ContextBlock assembly, for manual pre-run QA on a
   small subset. **IMPLEMENTED + Codex-reviewed (Critical summarize-selector-chain fixed)** on
   `feat/phase2-config-context-viewer` → [plans/vlm-phase2-config-context-viewer.md](plans/vlm-phase2-config-context-viewer.md).
-  **VM smoke pending:** [docs/vm-status/2026-07-15-phase2-config-context-viewer.md](vm-status/2026-07-15-phase2-config-context-viewer.md)
-  — golden byte-identity re-bank (`diff_golden --mode strict`) + viewer N≈5 + fail-closed preflight edges on
-  `phil-sllm-01`. NEXT = pull + run the smoke on the VM → `/land`; side-by-side layout deferred (single-column first cut).
+  **VM smoke PASS `5649339`:** [docs/vm-status/2026-07-15-phase2-config-context-viewer.md](vm-status/2026-07-15-phase2-config-context-viewer.md)
+  — golden byte-identity re-bank (`diff_golden --mode strict` → ALL GATES PASS) + viewer N=5 (self-contained, 30-slice, 120000 token bar) + all 5 fail-closed preflight edges on
+  `phil-sllm-01`, all GREEN. NEXT = `/land` to `main`; side-by-side layout deferred (single-column first cut).
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2.
 - **Step 5 — gate-3 EHR golden (deferred, LUMIA-live)** — strict passthrough is the current gate; the
