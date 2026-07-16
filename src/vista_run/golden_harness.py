@@ -56,19 +56,18 @@ for the "verify on one example first" smoke (OQ-K); omit it for a full run.
 import argparse
 import hashlib
 import json
-import math
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
-from vqa_dataset import PromptDataset
 from vista_run.run_bq import TaskOrchestrator, RETRIEVAL_EXPERIMENTS
-
-# Legacy assembly is implicit "images then text" for every registered adapter
-# (see context/assembler.py) -> the golden records the constant so the post-3b
-# assembler's declared mode can be diffed against it.
-LEGACY_ASSEMBLY_MODE = "ordered"
+# The weight-free capture loop + its scalar-coercion helpers now live in
+# context_capture (shared with the Phase-2 config-context viewer). This module
+# keeps only the image *hashing* (golden-specific) and rebuilds the identical
+# golden record from each CapturedExample — the extraction moved the loop, not
+# the record shape or serialization (byte-identity: diff_golden --mode strict).
+from vista_run.context_capture import iter_captured_examples
 
 # Gate classification — MUST stay in lockstep with diff_golden.py.
 #   STRUCTURE_FIELDS: hard byte-identity ALWAYS (Gate 1 imaging/selection/assembly + Gate 2
@@ -85,65 +84,6 @@ STRUCTURE_FIELDS = (
     "assembly_mode",
 )
 TEXT_FIELDS = ("dynamic_prompt", "adapter_prompt_string")
-
-
-def _load_experiment_data(orch, task_info, experiment):
-    """Resolve (df, timeline_col, source_csv) for a single experiment.
-
-    Mirrors the per-experiment loader dispatch inside ``run_bq.run_inference``
-    (the ``needs_*`` / ``loaded_*`` block) for exactly one experiment. Retrieval
-    experiments are rejected — their prompt build needs model weights, so they
-    are out of scope for the weight-free golden.
-    """
-    if experiment in RETRIEVAL_EXPERIMENTS:
-        raise ValueError(
-            f"experiment '{experiment}' is a retrieval experiment; its prompt build "
-            "requires model weights and is out of scope for the weight-free golden harness."
-        )
-    if experiment == "no_timeline":
-        return orch._load_task_data(task_info, use_no_report_csv=True, require_timeline=False)
-    if experiment == "all_vb_image_only":
-        return orch._load_all_vb_image_task_data(task_info)
-    if experiment == "all_vb_timeline_only":
-        return orch._load_all_vb_timeline_task_data(task_info)
-    if experiment in ("path", "path_image_and_report"):
-        return orch._load_path_task_data(task_info)
-    if experiment == "path_full":
-        return orch._load_path_full_task_data(task_info)
-    if experiment in ("no_report", "timeline_only", "report"):
-        return orch._load_task_data(task_info, use_no_report_csv=True, require_timeline=True)
-    # default: normal timeline experiments (no_image, axial_all_image, timeline_only variants, ...)
-    return orch._load_task_data(task_info, use_no_report_csv=False, require_timeline=True)
-
-
-def _to_native(value):
-    """Coerce a pandas/numpy scalar to a JSON-serialisable Python native (or None)."""
-    if value is None:
-        return None
-    if isinstance(value, float) and math.isnan(value):
-        return None
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (np.floating,)):
-        f = float(value)
-        return None if math.isnan(f) else f
-    if isinstance(value, np.ndarray):
-        return [_to_native(v) for v in value.tolist()]
-    if isinstance(value, (np.bool_,)):
-        return bool(value)
-    return value
-
-
-def _clean_text(value):
-    """Return a string for a timeline/prompt cell, or None for NaN/'nan'/empty."""
-    if value is None:
-        return None
-    if isinstance(value, float) and math.isnan(value):
-        return None
-    text = str(value)
-    if text == "nan":
-        return None
-    return text
 
 
 def _hash_image(img):
@@ -164,72 +104,34 @@ def _image_summary(image):
     return 1, [_hash_image(image)]
 
 
-def _path_tile_count(raw_row):
-    """Count materialised pathology tiles on the row (None when not a path experiment).
-
-    List-only by design: PathologyAdapter.materialize hands __getitem__ a real list (and the whole
-    path pipeline iterates it), so a stringified path_tile_paths never reaches here. We return None
-    for anything non-list rather than parse a speculative CSV-reloaded string.
-    """
-    tiles = raw_row.get("path_tile_paths", None)
-    if isinstance(tiles, (list, tuple, np.ndarray)):
-        return int(len(tiles))
-    return None
-
-
-def _sort_key_columns(df):
-    """Prefer sorting by (person_id, index); fall back gracefully if a column is absent."""
-    cols = [c for c in ("person_id", "index") if c in df.columns]
-    return cols or None
-
-
 def capture_experiment(orch, task_info, experiment, model_type, limit=None):
-    """Yield golden-tuple dicts for one experiment, sorted by (person_id, index)."""
-    loaded = _load_experiment_data(orch, task_info, experiment)
-    if loaded is None:
-        print(f"!!! No data loaded for experiment '{experiment}' — skipping.")
-        return
-    df, timeline_col, _source_csv = loaded
-    df_exp = orch._build_prompts_for_experiment(df, task_info, experiment, timeline_col)
+    """Yield golden-tuple dicts for one experiment, sorted by (person_id, index).
 
-    # Impose the golden ordering the diff relies on (run_bq writes as-processed +
-    # appends on resume, so the ordering MUST be imposed here). index is the unique
-    # per-file join key.
-    sort_cols = _sort_key_columns(df_exp)
-    if sort_cols:
-        df_exp = df_exp.sort_values(sort_cols, kind="stable").reset_index(drop=True)
-    if limit is not None:
-        df_exp = df_exp.head(limit).reset_index(drop=True)
-
-    ct_dir = orch.cfg.get("paths", {}).get("ct_dir")
-    ct_snapshot_prefix = orch.cfg.get("paths", {}).get("ct_snapshot_prefix")
-    dataset = PromptDataset(
-        df=df_exp, prompt_col="dynamic_prompt", experiment=experiment,
-        storage_client=orch.storage_client, model_type=model_type, ct_dir=ct_dir,
-        ct_snapshot_prefix=ct_snapshot_prefix,
-    )
-    is_gemma = model_type is not None and "gemma" in model_type.lower()
-
-    for i in range(len(dataset)):
-        item = dataset[i]
-        raw = item["raw_row"]
-        image_count, image_hashes = _image_summary(item.get("image"))
+    Consumes the shared weight-free capture core (``iter_captured_examples``) and
+    rebuilds the identical golden record from each ``CapturedExample``. Byte-identity
+    is preserved because every scalar rides through unchanged from the shared
+    coercions and the image count + hashes are still computed here via
+    ``_image_summary(ex.images)`` (``ex.images is item["image"]``, the same object) —
+    the extraction moved the loop, not the record shape or serialization.
+    """
+    for ex in iter_captured_examples(orch, task_info, experiment, model_type, limit=limit):
+        image_count, image_hashes = _image_summary(ex.images)
         yield {
-            "index": _to_native(raw.get("index", item.get("index"))),
-            "person_id": _to_native(raw.get("person_id")),
-            "task": task_info["task_name"],
-            "experiment": experiment,
-            "model_type": model_type,
+            "index": ex.index,
+            "person_id": ex.person_id,
+            "task": ex.task,
+            "experiment": ex.experiment,
+            "model_type": ex.model_type,
             # windowing branch that produced the pixels (gate-2 reasoning aid): legacy
             # dispatch is is_gemma-gated; 3b moves it to by_model but the pixels must
             # stay identical per model.
-            "windowing": "multi_window_rgb" if is_gemma else "grayscale",
-            "dynamic_prompt": _clean_text(raw.get("dynamic_prompt")),
-            "adapter_prompt_string": _clean_text(raw.get(timeline_col)) if timeline_col else None,
-            "assembly_mode": LEGACY_ASSEMBLY_MODE,
+            "windowing": ex.windowing,
+            "dynamic_prompt": ex.dynamic_prompt,
+            "adapter_prompt_string": ex.adapter_prompt_string,
+            "assembly_mode": ex.assembly_mode,
             "image_count": image_count,
-            "path_tile_count": _path_tile_count(raw),
-            "selected_indices": _to_native(item.get("selected_indices")),
+            "path_tile_count": ex.path_tile_count,
+            "selected_indices": ex.selected_indices,
             "image_hashes": image_hashes,
         }
 
