@@ -1,0 +1,590 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="plan-sha256" content="9068e0a57dff5ec49b3199031374e4951efdd8a35e82e921d661dba14bfad76e">
+<title>VLM Phase 2 — config-context viewer (plan)</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1a1d23; --muted:#5b6472; --line:#e3e6eb;
+    --accent:#0e7490; --accent2:#7c3aed; --chip:#eef2f7;
+    --new:#0e7490; --mod:#b45309; --def:#7c3aed; --ship:#047857;
+    --warn:#b91c1c; --ok:#047857; --code:#0f172a; --codebg:#f1f4f9;
+    --recede:0.5;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0e1116; --card:#161b22; --ink:#e6edf3; --muted:#9aa4b2; --line:#2a313c;
+      --accent:#22d3ee; --accent2:#a78bfa; --chip:#1f2733;
+      --new:#22d3ee; --mod:#f59e0b; --def:#a78bfa; --ship:#34d399;
+      --warn:#f87171; --ok:#34d399; --code:#e6edf3; --codebg:#0d1117;
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       max-width:1180px;margin:0 auto;padding:28px 22px 90px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:20px;margin:34px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:20px 0 8px}
+  a{color:var(--accent)}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;background:var(--codebg);color:var(--code);padding:1px 5px;border-radius:5px}
+  pre{background:var(--codebg);color:var(--code);padding:12px 14px;border-radius:8px;overflow:auto;font-size:12.5px;line-height:1.5}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .meta{display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--muted);font-size:13px;margin-top:8px}
+  .meta b{color:var(--ink);font-weight:600}
+  .chip{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:999px;background:var(--chip);color:var(--ink);letter-spacing:.02em}
+  .chip.new{background:rgba(34,211,238,.16);color:var(--new)}
+  .chip.mod{background:rgba(245,158,11,.16);color:var(--mod)}
+  .chip.ship{background:rgba(52,211,153,.16);color:var(--ship)}
+  .chip.def{background:rgba(167,139,250,.16);color:var(--def)}
+  .chip.warn{background:rgba(248,113,113,.16);color:var(--warn)}
+  .tldr{font-size:15.5px;line-height:1.6}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--chip);font-weight:600}
+  .mmwrap{position:relative;border:1px solid var(--line);border-radius:10px;background:var(--card);margin:10px 0;height:520px;overflow:hidden}
+  .mmwrap.full{position:fixed;inset:14px;height:auto;z-index:60;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .mmwrap pre.mermaid{margin:0;background:transparent;padding:0}
+  .mmctl{position:absolute;top:8px;right:8px;z-index:5;display:flex;gap:6px}
+  .mmctl button{font-size:11.5px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:7px;padding:4px 8px;cursor:pointer}
+  .mmhint{position:absolute;bottom:8px;left:10px;z-index:5;font-size:11px;color:var(--muted);background:var(--card);padding:2px 7px;border-radius:6px;border:1px solid var(--line);opacity:.85}
+  details{border:1px solid var(--line);border-radius:10px;margin:9px 0;background:var(--card);overflow:hidden}
+  details[open]{box-shadow:0 1px 3px rgba(0,0,0,.05)}
+  summary{cursor:pointer;padding:11px 14px;font-weight:600;list-style:none;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:"▸";color:var(--muted);font-size:12px}
+  details[open] summary::before{content:"▾"}
+  .body{padding:2px 16px 14px 16px}
+  .files{font-size:12.5px;color:var(--muted)}
+  .files code{font-size:12px}
+  textarea.section-feedback,textarea#globalfb{width:100%;min-height:58px;margin-top:8px;border:1px dashed var(--line);border-radius:8px;background:var(--bg);color:var(--ink);padding:8px 10px;font:13px/1.5 inherit;resize:vertical}
+  textarea.section-feedback::placeholder{color:var(--muted)}
+  .resp{border-left:3px solid var(--accent);background:rgba(34,211,238,.07);border-radius:0 8px 8px 0;padding:8px 12px;margin:9px 0;font-size:13.5px}
+  .resp .lbl{font-size:10.5px;font-weight:700;letter-spacing:.08em;color:var(--accent);text-transform:uppercase}
+  .oq{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0;background:var(--card)}
+  .oq h4{margin:0 0 5px;font-size:14.5px}
+  .oq select{margin:6px 0;padding:5px 8px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:13px inherit}
+  .prov{font-size:12.5px;color:var(--muted);border-left:2px solid var(--ship);padding-left:9px;margin:6px 0}
+  .recede{opacity:var(--recede);transition:opacity .2s}
+  .recede:hover{opacity:1}
+  .cnote{font-size:12px;color:var(--mod);margin:0 0 8px;font-style:italic}
+  .toolbar{position:sticky;top:0;z-index:40;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:10px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:12.5px}
+  .toolbar button{font-size:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:7px;padding:4px 10px;cursor:pointer}
+  .fbbar{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px;z-index:50;display:flex;gap:12px;align-items:center;justify-content:center}
+  .fbbar button{font-size:14px;font-weight:600;border:none;background:var(--accent);color:#00171c;border-radius:9px;padding:9px 18px;cursor:pointer}
+  .badge{font-size:11px;background:var(--warn);color:#fff;border-radius:999px;padding:1px 8px;margin-left:4px}
+  .legend-inline{font-size:12px;color:var(--muted)}
+  .kv{font-size:13px}
+  .kv b{color:var(--ink)}
+  body.changes-only details:not([data-changed]){display:none}
+  .settled{font-size:12.5px;color:var(--muted)}
+  hr{border:none;border-top:1px solid var(--line);margin:22px 0}
+</style>
+
+<h1>VLM Phase 2 — config-context viewer</h1>
+<div class="meta">
+  <span><b>Status:</b> Draft · residuals resolved</span>
+  <span><b>Branch:</b> <code>feat/phase2-config-context-viewer</code></span>
+  <span><b>Repo:</b> vista_eval_vlm</span>
+  <span><b>Source:</b> <a href="vlm-phase2-config-context-viewer.md">vlm-phase2-config-context-viewer.md</a></span>
+  <span><b>plan-sha:</b> <code>9068e0a57dff</code></span>
+</div>
+
+<div class="card" id="changecard" style="border-color:var(--mod)">
+  <div style="font-weight:700;margin-bottom:4px">● Changes since you last saw this plan</div>
+  <div id="changesummary" class="tldr" style="font-size:13.5px"></div>
+</div>
+
+<div class="card tldr">
+  <b>TL;DR.</b> A <b>weight-free</b> CLI (<code>context_viewer.py</code>) that renders <i>exactly</i> the context a given
+  <code>(config, task, experiment, model)</code> feeds each VLM — the assembled prompt plus the selected CT slices /
+  pathology tiles (post-window, model-ready) as base64 thumbnails, with a token-budget bar — into <b>one self-contained
+  HTML file</b>. The concrete use is <b>Phil's manual pre-run input QA</b>: before a full eval run, eyeball a
+  <b>small subset</b> of examples across a couple of tasks to confirm the inputs look right (prompt well-formed, right
+  slice counts, no unexpected 0-image rows). It shows <b>inputs, not answers</b> — it <i>instruments</i> the pipeline,
+  it doesn't score it. The hard requirement is <b>zero drift with inference</b>: it reuses the same weight-free capture
+  loop the golden harness runs, so it shows what the model actually receives — not a re-derivation. Scope = the viewer +
+  two enabling seams only (a shared capture core + a per-adapter <code>context_window</code>); Phase 1 framework, golden
+  harness, model-load split, and <code>supports_inline</code> already landed on <code>main</code>.
+</div>
+
+<h2>Review history</h2>
+<table>
+  <tr><th>Pass</th><th>Reviewer</th><th>Verdict</th><th>Key findings surfaced</th><th>Applied</th></tr>
+  <tr>
+    <td>Recovery</td><td>—</td><td><span class="chip">Pivot</span></td>
+    <td>Draft was lost to a purged job-tmp dir; recovered byte-identical from the session transcript, dropped to <code>docs/plans/</code>, current-code preconditions re-verified (Phase 1 + golden harness + model-load split all landed).</td>
+    <td>n/a</td>
+  </tr>
+  <tr>
+    <td>1</td><td>Codex (gpt-5.5)</td><td><span class="chip mod">Revise</span></td>
+    <td>Core architecture <b>confirmed</b> (render off <code>PromptDataset</code>, not the assembler). Tokenizer STOP/fork contradiction; <code>--experiment</code> not bound to <code>normalize_experiments</code>; <code>context_window</code> table incomplete (4 of 10); correctness coloring needs a model response the viewer lacks.</td>
+    <td>~10 findings, 0 disagreements. 3 residuals → Phil.</td>
+  </tr>
+  <tr>
+    <td>2 (Phil)</td><td>Phil · via /explain-plan</td><td><span class="chip ship">Resolved</span></td>
+    <td>The three residuals decided: <b>Q1</b> tokenizer cache-miss = hard STOP (diagnosable — the <code>HF_HOME</code>→<code>cache_dir</code> redirect hides a default-cache tokenizer + the gated token); <b>Q2</b> CLI = <code>--type</code>/<code>--name</code> (verified Ryan's repo-wide convention, no <code>--model</code> exists); <b>Q3</b> correctness coloring omitted (viewer is input-QA only). Smokes scoped to a small subset.</td>
+    <td>All 3 applied; scope simplified (no <code>--results-csv</code> / <code>results_analyzer</code> dep).</td>
+  </tr>
+</table>
+<div class="legend-inline">Feedback: <a href="reviews/vlm-phase2-config-context-viewer-feedback.md"><code>reviews/vlm-phase2-config-context-viewer-feedback.md</code></a></div>
+
+<div class="toolbar">
+  <span id="changecounts"></span>
+  <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="onlyChanged"> Show changed only</label>
+  <button id="prevChange">← Prev change</button>
+  <button id="nextChange">Next change →</button>
+</div>
+
+<h2>Repo map — where the viewer sits</h2>
+<div class="mmwrap" id="mm-repo">
+  <div class="mmctl"><button data-act="reset">Reset</button><button data-act="full">Fullscreen</button></div>
+  <div class="mmhint">scroll to zoom • drag to pan</div>
+  <pre class="mermaid">
+flowchart LR
+  cfg["all_tasks.yaml<br/>config"]
+  orch["TaskOrchestrator<br/>weight-free construct<br/>run_bq.py"]
+  dataL["BQ + GCS<br/>real PHI data"]
+  capCore["context_capture.py<br/>iter_captured_examples<br/>NEW shared core"]
+  golden["golden_harness.py<br/>hashes images"]
+  viewer["context_viewer.py<br/>base64 thumbnails<br/>NEW"]
+  weights["model weights / GPU<br/>NOT loaded"]
+  goldOut["golden .jsonl<br/>PHI mount"]
+  htmlOut["context_view.html<br/>PHI mount, NEW"]
+  diffG["diff_golden.py<br/>byte-identity gates"]
+  human["human eyeball<br/>the instrument"]
+
+  cfg --> orch
+  orch --> dataL
+  dataL --> capCore
+  capCore --> golden
+  capCore --> viewer
+  golden --> goldOut
+  viewer --> htmlOut
+  goldOut --> diffG
+  htmlOut --> human
+  orch -. bypasses .-> weights
+
+  subgraph legend["Color legend"]
+    legNew["NEW this plan, cyan"]
+    legMod["modified, amber"]
+    legUnt["untouched, grey"]
+  end
+
+  classDef kNew fill:#0e7490,stroke:#22d3ee,color:#ecfeff,stroke-width:3px;
+  classDef kMod fill:#92400e,stroke:#f59e0b,color:#fff7ed,stroke-width:2px;
+  classDef kUnt fill:#374151,stroke:#6b7280,color:#e5e7eb,stroke-dasharray:4 3;
+  class capCore,viewer,htmlOut kNew
+  class golden,orch kMod
+  class cfg,dataL,goldOut,diffG,human,weights kUnt
+  class legNew kNew
+  class legMod kMod
+  class legUnt kUnt
+  </pre>
+</div>
+
+<h2>Blast radius — what this plan touches</h2>
+<div class="mmwrap" id="mm-blast">
+  <div class="mmctl"><button data-act="reset">Reset</button><button data-act="full">Fullscreen</button></div>
+  <div class="mmhint">scroll to zoom • drag to pan</div>
+  <pre class="mermaid">
+flowchart LR
+  subgraph seams["Enabling seams, this plan"]
+    capCore["context_capture.py<br/>CapturedExample plus iter_captured_examples<br/>NEW"]
+    tok["weight-free token counter<br/>tokenizer-only load, STOP on miss<br/>NEW"]
+    baseCW["base.py context_window attr<br/>10-key MODEL_REGISTRY table<br/>modified"]
+  end
+  subgraph buildg["Viewer, this plan"]
+    viewer["context_viewer.py<br/>CLI, preflight, render, paginate<br/>NEW"]
+  end
+  subgraph refac["Byte-identity refactor"]
+    golden["golden_harness.py<br/>consume iter_captured_examples<br/>modified, byte-identical"]
+  end
+  subgraph reuse["Reused, not modified"]
+    normEx["context.normalize<br/>normalize_experiments"]
+    genpdf["plot_code generate_pdf.py<br/>pagination pattern only"]
+  end
+  subgraph outg["Outputs and gates"]
+    htmlOut["context_view.html<br/>PHI, git-ignored"]
+    gitig[".gitignore glob<br/>context_view html<br/>modified"]
+    goldChk["diff_golden mode strict<br/>ALL GATES PASS"]
+  end
+  subgraph deferred["Deferred, out of scope"]
+    p15["Phase 1.5 inline interleave"]
+    sbs["side-by-side layout"]
+    summ["summarize, model-backed"]
+  end
+
+  capCore --> viewer
+  capCore --> golden
+  tok --> viewer
+  baseCW --> viewer
+  normEx --> viewer
+  genpdf -. pattern .-> viewer
+  viewer --> htmlOut
+  htmlOut --> gitig
+  golden --> goldChk
+
+  subgraph legend["Color legend"]
+    legNew["NEW this plan, cyan"]
+    legMod["modified, amber"]
+    legUnt["untouched, grey"]
+    legDef["deferred, muted"]
+  end
+
+  classDef kNew fill:#0e7490,stroke:#22d3ee,color:#ecfeff,stroke-width:3px;
+  classDef kMod fill:#92400e,stroke:#f59e0b,color:#fff7ed,stroke-width:2px;
+  classDef kUnt fill:#374151,stroke:#6b7280,color:#e5e7eb,stroke-dasharray:4 3;
+  classDef kDef fill:#3f3f46,stroke:#a78bfa,color:#ede9fe,stroke-dasharray:2 2;
+  class capCore,tok,viewer,htmlOut kNew
+  class golden,baseCW,gitig kMod
+  class normEx,genpdf,goldChk kUnt
+  class p15,sbs,summ kDef
+  class legNew kNew
+  class legMod kMod
+  class legUnt kUnt
+  class legDef kDef
+  </pre>
+</div>
+
+<h2>Order of operations</h2>
+<div class="mmwrap" id="mm-order">
+  <div class="mmctl"><button data-act="reset">Reset</button><button data-act="full">Fullscreen</button></div>
+  <div class="mmhint">scroll to zoom • drag to pan</div>
+  <pre class="mermaid">
+flowchart TD
+  s0["✅ Enabling seams SHIPPED, Phase 1<br/>model-load split, golden_harness, supports_inline"]
+  a["⏳ A. Extract context_capture.py<br/>shared weight-free core"]
+  b["⏳ B. Refactor golden_harness<br/>consume the core, byte-identical"]
+  c["⏳ C. base.py context_window<br/>plus 10-adapter table"]
+  d["⏳ D. Build context_viewer.py<br/>plus weight-free token counter"]
+  e["⏳ E. .gitignore glob plus docs"]
+  v1["⏳ VM 1: golden byte-identity<br/>diff_golden mode strict"]
+  v2["⏳ VM 2: run viewer on PFS smoke<br/>small subset plus no_image run"]
+  v3["⏳ VM 3: preflight edge cases<br/>all fail-closed, tokenizer STOP"]
+  land["⏳ land to main"]
+
+  s0 --> a
+  a --> b
+  a --> d
+  c --> d
+  b --> e
+  d --> e
+  b --> v1
+  d --> v2
+  d --> v3
+  v1 --> land
+  v2 --> land
+  v3 --> land
+
+  subgraph legend["Status legend"]
+    legShip["SHIPPED, green"]
+    legPend["PENDING, blue"]
+  end
+
+  classDef kShip fill:#065f46,stroke:#10b981,color:#d1fae5,stroke-width:2px;
+  classDef kPend fill:#1e3a8a,stroke:#60a5fa,color:#dbeafe,stroke-width:2px;
+  class s0 kShip
+  class a,b,c,d,e,v1,v2,v3,land kPend
+  class legShip kShip
+  class legPend kPend
+  </pre>
+</div>
+
+<h2>Knobs &amp; contracts</h2>
+<div class="grid2">
+  <div class="card">
+    <h3>CLI — <code>--type</code>/<code>--name</code> (Ryan's convention)</h3>
+    <pre>context_viewer \
+  --config &lt;cfg&gt; --type &lt;gemma3|intern&gt; --name &lt;model&gt; \
+  --task progression_recurrence_free_survival_1_yr \
+  --experiment &lt;name&gt; [--limit N] [--batches] [--out]</pre>
+    <div class="kv"><b>--type/--name</b> = MODEL_REGISTRY key + model HF name — Ryan's convention across the whole repo (<code>run_bq.py</code>, legacy <code>run.py</code>, <code>golden_harness.py</code>, every eval script; roster is a <code>model_type|model_name</code> list; <b>no <code>--model</code> flag exists</b>). <b>--experiment</b> is singular, resolved through <code>normalize_experiments</code>. <b>No <code>--results-csv</code></b> — the viewer shows inputs, not scoring (Q3).</div>
+  </div>
+  <div class="card">
+    <h3>Two enabling seams</h3>
+    <div class="kv">
+      <b>1. Shared weight-free capture core</b> — <code>context_capture.py</code> holds <code>iter_captured_examples()</code> + <code>CapturedExample</code> (carries the preprocessed PILs). Both <code>golden_harness</code> (hashes) and the viewer (thumbnails) consume it → zero drift.<br><br>
+      <b>2. Token budget</b> — tokenizer-only load (no GPU) for exact text tokens, divided by a new per-adapter <code>context_window</code>. A tokenizer miss is a preflight STOP (Q1), so the bar is always a real count. Image tokens are model-specific &amp; not weight-free computable → shown as a separate chip.
+    </div>
+  </div>
+</div>
+<div class="card">
+  <h3><code>context_window</code> — full MODEL_REGISTRY (10 keys)</h3>
+  <table>
+    <tr><th>adapter key</th><th>context_window</th><th>source</th></tr>
+    <tr><td><code>gemma3</code></td><td>120000</td><td><code>gemma3.py:21</code> max_model_len</td></tr>
+    <tr><td><code>qwen3vl</code></td><td>120000</td><td><code>qwen3.py:24</code></td></tr>
+    <tr><td><code>intern</code></td><td>120000</td><td><code>internvl3_5.py:17</code> target_seq_len</td></tr>
+    <tr><td><code>octomed</code></td><td>128000</td><td><code>octomed.py:24</code></td></tr>
+    <tr><td><code>llava</code></td><td>4096</td><td><code>llava.py:15</code></td></tr>
+    <tr><td><code>qwen2vl</code>, <code>qwen2_5vl</code>, <code>medvlm</code>, <code>lingshu</code>, <code>llavamed</code></td><td><code>None</code></td><td>no local max — bar reads "unknown"</td></tr>
+  </table>
+</div>
+
+<h2>Implementation steps</h2>
+
+<details data-section="files-capture">
+  <summary><span class="chip new">NEW</span> A. Extract the shared capture core — <code>context_capture.py</code></summary>
+  <div class="body">
+    <p><code>CapturedExample</code> dataclass carries <code>index, person_id, task, experiment, model_type, dynamic_prompt, adapter_prompt_string, assembly_mode, selected_indices, image_count, path_tile_count, images (None|PIL|list), raw_row, windowing</code>.</p>
+    <p><code>iter_captured_examples(orch, task_info, experiment, model_type, limit)</code> is the loop currently inside <code>capture_experiment</code> (<code>golden_harness.py:186-234</code>): load df → build prompts → sort by <code>(person_id, index)</code> → head <code>--limit</code> → construct <code>PromptDataset</code> → iterate, yielding one <code>CapturedExample</code> per row. Rejects retrieval experiments.</p>
+    <div class="files">Sister file: <code>golden_harness.py</code>. Reuse, don't re-implement — image handling, sorting, retrieval-reject all live in the shared core.</div>
+    <textarea class="section-feedback" data-sid="files-capture" placeholder="Feedback on the capture-core extraction…"></textarea>
+  </div>
+</details>
+
+<details data-section="files-golden">
+  <summary><span class="chip mod">MODIFIED</span> B. Refactor <code>golden_harness.py</code> to consume the core <span class="chip">byte-identical</span></summary>
+  <div class="body">
+    <p><code>capture_experiment</code> consumes <code>iter_captured_examples</code>; keeps <code>_hash_image</code>/<code>_image_summary</code>/<code>_path_tile_count</code> and builds the identical golden record from each <code>CapturedExample</code>.</p>
+    <p><b>Byte-identity constraint:</b> same record <b>field names + order</b> and the <b>same <code>json.dumps(...)</code> kwargs</b> (<code>sort_keys</code>/<code>ensure_ascii</code>/separators) the current writer uses — the extraction moves the <i>loop</i>, not the record shape or serialization.</p>
+    <div class="files">Verify: VM re-bank + <code>diff_golden --mode strict</code> vs a pre-refactor bank.</div>
+    <textarea class="section-feedback" data-sid="files-golden" placeholder="Feedback on the byte-identity refactor…"></textarea>
+  </div>
+</details>
+
+<details data-section="files-base">
+  <summary><span class="chip mod">MODIFIED</span> C. <code>base.py</code> — add <code>context_window</code> + the 10-adapter table</summary>
+  <div class="body">
+    <p>Add <code>context_window: int | None = None</code> to <code>BaseVLMAdapter</code>; set per adapter from each <code>load()</code>'s <code>max_model_len</code> (see the Knobs table). <code>None</code> → the bar renders "context window unknown" (no false denominator).</p>
+    <textarea class="section-feedback" data-sid="files-base" placeholder="Feedback on the context_window seam…"></textarea>
+  </div>
+</details>
+
+<details data-section="files-viewer">
+  <summary><span class="chip new">NEW</span> D. Build <code>context_viewer.py</code> + the token counter</summary>
+  <div class="body">
+    <p><b>CLI &amp; resolution:</b> mirror golden's <code>--type/--name</code> (Ryan's repo-wide convention; no <code>--model</code>); resolve <code>--experiment</code> through <code>context.normalize.normalize_experiments(orch.cfg)</code> (bare string resolves directly; a block-list <b>dict</b> resolves via its <code>name</code>).</p>
+    <p><b>Preflight (fail-closed, before any render):</b> reject (i) retrieval, (ii) model-backed <code>summarize</code>, (iii) unknown / ambiguous <code>--experiment</code>, (iv) invalid <code>--type</code>; <b>(v) the standalone tokenizer-only load must succeed — miss → hard STOP</b> (Q1). Assert no weights path is hit.</p>
+    <p><b>Render per example:</b> collapsible monospace <code>dynamic_prompt</code>; <code>images</code> as base64 thumbnails in assembly order; metadata chips (index, person_id, task, label, image count, selector params, assembly mode) + the token-budget bar.</p>
+    <p><b>No correctness coloring (Q3):</b> the viewer shows <b>inputs, not answers</b> — Phil's use is pre-run input QA on a small subset, not scoring. <code>is_answer_correct</code> needs a model response the weight-free viewer lacks → <b>no <code>--results-csv</code>, no <code>results_analyzer</code> dependency</b>. Any card highlighting is input-sanity only (0-image-where-expected, empty prompt).</p>
+    <p><b>Weight-free token counter:</b> the existing <code>_count_prompt_tokens</code> (<code>run_bq.py:154</code>) is weight-bearing → not reusable. Standalone preflight load, honoring the run's <code>cache_dir</code> (<code>_set_envs</code> redirects <code>HF_HOME</code> there): <code>AutoProcessor.from_pretrained(name, cache_dir=…).tokenizer</code> → <code>AutoTokenizer</code>; <b>both fail → hard STOP (Q1)</b> naming the model + likely cause (wrong <code>cache_dir</code> / missing <code>HF_TOKEN</code> for a gated repo / uncached / offline). No fabricated <code>len(split())</code> estimate — that would undermine the QA surface.</p>
+    <p><b>Output:</b> one self-contained HTML (inline CSS, base64 images, no external assets); reuse <code>generate_pdf.py</code> as a <i>pagination pattern reference only</i> — do not copy its stale CT slice-extraction constants. Write under the PHI mount.</p>
+    <textarea class="section-feedback" data-sid="files-viewer" placeholder="Feedback on the viewer generator…"></textarea>
+  </div>
+</details>
+
+<details data-section="files-glue">
+  <summary><span class="chip mod">MODIFIED</span> E. <code>.gitignore</code> glob + docs</summary>
+  <div class="body">
+    <p>Add a viewer-output glob to the existing golden PHI block (<code>.gitignore:67-70</code>, alongside <code>*_golden.jsonl</code> / <code>golden/</code>): <code>*_context_view.html</code> (and/or <code>context_view/</code>); verify it's present in the VM readback. <code>docs/04-running-the-pipeline.md</code> — add a "Config-context viewer" usage section (weight-free/VM-only, PHI-mount output, what to eyeball).</p>
+    <textarea class="section-feedback" data-sid="files-glue" placeholder="Feedback on gitignore + docs…"></textarea>
+  </div>
+</details>
+
+<h2>Verification &amp; VM handoff</h2>
+<details data-section="verification" open>
+  <summary><span class="chip">SIMPLE handoff</span> phil-sllm-01 · weight-free · run + readback co-located</summary>
+  <div class="body">
+    <p class="settled">One repo, one executor class (Claude-Code CPU box), no cross-repo SHA ripple, no bank/un-bank beyond the one pre-refactor golden baseline, no destructive writes, no non-Claude runner script. A tokenizer miss is a <b>preflight STOP</b> (halt-and-report), not a class-2 decision gate — so this stays SIMPLE. Every smoke runs on a <b>small subset</b> (small <code>--limit N</code>) — pre-run input QA, not a full pass.</p>
+    <h3>What runs on the VM</h3>
+    <ol>
+      <li><b>golden byte-identity regression</b> — re-bank a small golden post-refactor, <code>diff_golden --mode strict</code> vs a pre-refactor bank of the same <code>(task, experiment, model, N)</code>.</li>
+      <li><b>run the viewer on the canonical smoke — small subset</b> — <code>context_viewer … --task progression_recurrence_free_survival_1_yr --experiment &lt;ct-bearing&gt; --type &lt;gemma3|intern&gt; --limit N</code> with <b>N small (≈5)</b>; then a <code>no_image</code> experiment; open each HTML.</li>
+      <li><b>preflight / edge cases</b> — retrieval / summarize / unknown-experiment / invalid-type all fail-closed; dict experiment resolves or rejects cleanly; a model whose tokenizer won't load → <b>STOP</b> with a diagnostic (Q1).</li>
+    </ol>
+    <h3>Expected-vs-unexpected envelope</h3>
+    <p><b>Accepted (resolve inline):</b> <code>context_window == None</code> adapter → bar reads "unknown" (only a <i>wrong</i> denominator is unexpected).<br>
+    <b>Stop (halt):</b> golden gate failure / index-set mismatch; <b>tokenizer load fails → preflight STOP</b> (report model + likely cause); HTML references any external URL or leaks a local image path in <code>src</code>; a CT-bearing row renders 0 images or a <i>wrong</i> slice count (drift); weights/GPU touched (preflight didn't fail-closed); any reject case that doesn't fail-closed.</p>
+    <div class="files"><b>PHI:</b> the HTML embeds real timelines + imagery → su-vista mount only, git-ignored, never committed; readback reports counts / file existence / slice counts / token numbers only. <code>/phi-vet</code> gates the code commit.</div>
+    <textarea class="section-feedback" data-sid="verification" placeholder="Feedback on the VM handoff / verification…"></textarea>
+  </div>
+</details>
+
+<h2>Gotchas</h2>
+<details data-section="g-assembler">
+  <summary>Render off <code>PromptDataset</code>, NOT the assembler</summary>
+  <div class="body">The flat <code>question/image</code> that reaches the model is produced by <code>PromptDataset.__getitem__</code> (<code>CTAdapter.contextualize</code> + inline pathology-tile load) + <code>_build_prompts_for_experiment</code> — <b>not</b> <code>Assembler.to_flat_item</code>. The assembler is only partially wired into the hot path; rendering via it would show context inference doesn't actually feed. Use <code>context/</code> block metadata for provenance labels only. <span class="chip">Codex-confirmed</span></div>
+</details>
+<details data-section="g-weightfree">
+  <summary>Weight-free, but VM-only (reads real PHI)</summary>
+  <div class="body"><code>TaskOrchestrator.__init__</code> builds <code>bq_client</code> + <code>storage_client</code> and the path reads real PHI (<code>run_bq.py:99,102</code>). No GPU / no weights, but this runs on the VM like the golden harness — not on the Mac.</div>
+</details>
+<details data-section="g-tokenizer">
+  <summary>Why a tokenizer cache-miss happens (Q1) — and why it STOPs</summary>
+  <div class="body">A miss is <b>diagnosable</b>, not random. <code>TaskOrchestrator._set_envs</code> redirects <code>HF_HOME</code> to <code>cfg['runtime']['cache_dir']</code>, so a tokenizer in the default <code>~/.cache/huggingface</code> looks missing — and the same redirect hides the <code>hf auth login</code> token → gated-repo 401 for gemma/medgemma. A weight-free viewer can also run for a model whose weights/tokenizer were never downloaded; the PHI VM may be offline. So the load is a preflight precondition: miss → STOP naming the model + likely cause; Phil picks the remedy when it fires (stage the tokenizer / forward the token / relax to an estimate).</div>
+</details>
+<details data-section="g-summarize">
+  <summary><code>summarize</code> fails closed at preflight</summary>
+  <div class="body">The summarize cluster is a deferred, model-backed step (not weight-free). A viewer that silently skipped it would misrepresent the context, so it's rejected at preflight — consistent with <code>assembler.preflight</code> fail-closing <code>inline_by_timestamp</code>.</div>
+</details>
+
+<h2>Landing &amp; cleanup</h2>
+<details data-section="landing">
+  <summary>Branch → landing gate → merge → prune</summary>
+  <div class="body">
+    <p><b>Branch:</b> <code>feat/phase2-config-context-viewer</code> off <code>main</code> (fresh, post-roadmap-land). Single branch; no sibling must land first.</p>
+    <p><b>Landing gate:</b> Step-1 byte-identity <code>ALL GATES PASS</code> + Step-2 viewer green on the VM; <code>/review-implementation</code> clean; <code>/phi-vet</code> sign-off (viewer touches CT + EHR PHI); <code>/read-plan</code> (or <code>/explain-plan</code>) sign-off on this plan.</p>
+    <p><b>Merge sequence:</b> single branch → <code>main</code> via <code>/land</code> (ff-only after the gate). Prune branch + worktree + trackers on land; set this plan <code>Status: Completed</code>; update <code>docs/plans/README.md</code>; prune the <code>docs/next.md</code> Phase-2 follow-up (leave a pointer if Phase 1.5 / gate-3 remain).</p>
+    <textarea class="section-feedback" data-sid="landing" placeholder="Feedback on the landing plan…"></textarea>
+  </div>
+</details>
+
+<h2 id="oqpanel">Resolved residuals <span class="badge" id="oqbadge" style="display:none"></span></h2>
+<p class="settled"><b>Settled inline:</b> forks resolved (shared core; tokenizer + <code>context_window</code>); <code>summarize</code> fail-closed; side-by-side deferred; PFS 1yr smoke. The three Codex-surfaced residuals below are now <b>resolved with Phil (2026-07-15)</b> — flip any back to Pending to reopen it.</p>
+<div id="oqs"></div>
+
+<div class="fbbar">
+  <textarea id="globalfb" placeholder="Overall feedback…" style="max-width:520px;min-height:40px"></textarea>
+  <button id="copyfb">Copy all feedback as Claude prompt <span class="badge" id="fbcount" style="display:none"></span></button>
+</div>
+
+<script>
+const PLAN_PATH="docs/plans/vlm-phase2-config-context-viewer.md";
+const BRANCH="feat/phase2-config-context-viewer";
+const PLAN_SHA="9068e0a57dff";
+const STEM="vlm-phase2-config-context-viewer";
+
+// ---- Change-since-last-review (diff vs the pre-feedback HTML at d453810) ----
+const CHANGES={
+  round:"diff",
+  baseline:"the Codex-reviewed draft with provisional answers (prior HTML sha d453810). Deltas below = your three residual decisions, applied 2026-07-15.",
+  sections:{
+    "files-viewer":{s:"changed",note:"Q1 tokenizer cache-miss → hard STOP at preflight (no more len(split()) estimate); Q2 CLI locked to --type/--name (Ryan's convention, no --model); Q3 correctness coloring REMOVED — no --results-csv, no results_analyzer dep (viewer is input-QA only)."},
+    "verification":{s:"changed",note:"Tokenizer miss is now a preflight STOP, not an accepted 'estimated' bar; smokes scoped to a small subset (N≈5); the correctness-coloring edge case dropped."},
+    "g-tokenizer":{s:"new",note:"New gotcha spelling out WHY a tokenizer cache-miss happens (the HF_HOME→cache_dir redirect + gated token) and why Q1 resolves to STOP."}
+  },
+  oqs:{1:{s:"resolved"},2:{s:"resolved"},3:{s:"resolved"}}
+};
+
+const OQS=[
+  {n:1,title:"Tokenizer cache-miss — hard STOP or accept the estimate?",defaultStatus:"Resolved",
+   prov:"RESOLVED → hard STOP. A miss is diagnosable on these VMs (HF_HOME redirected to cfg.runtime.cache_dir hides a default-cache tokenizer + the gated HF_TOKEN; a weight-free viewer may run for a never-downloaded model; PHI VM may be offline). A fabricated len(split()) bar would undermine the QA surface, so the load is a preflight precondition — miss → STOP naming model + cause; remedy chosen when it fires. Stays SIMPLE (a STOP is halt-and-report, not a class-2 decision gate).",
+   body:"If no tokenizer loads weight-free on the VM, does the token-budget bar fall back to an 'estimated' count, or hard STOP?"},
+  {n:2,title:"Model CLI flags — --type/--name or --model?",defaultStatus:"Resolved",
+   prov:"RESOLVED → --type/--name (mirror Ryan). Verified as Ryan's convention across the whole repo — run_bq.py, legacy run.py, golden_harness.py, and every eval script; the roster is a model_type|model_name list and no --model flag exists anywhere. Nothing to disambiguate.",
+   body:"--model is ambiguous (registry key vs HF name). What did Ryan use?"},
+  {n:3,title:"Correctness coloring — opt-in or omit entirely?",defaultStatus:"Resolved",
+   prov:"RESOLVED → omitted. The viewer is input-QA only ('we don't need answers') — it shows what the model receives on a small subset before a full run, never scores it. No --results-csv, no results_analyzer dependency.",
+   body:"is_answer_correct needs a model response the weight-free viewer lacks. Opt-in via --results-csv, or omit from the first viewer entirely?"}
+];
+
+// ---- localStorage, wiped when SHA changes ----
+const LSK="explainplan::"+STEM;
+(function(){
+  const saved=JSON.parse(localStorage.getItem(LSK)||"{}");
+  if(saved.__sha && saved.__sha!==PLAN_SHA){localStorage.removeItem(LSK);}
+})();
+function lsGet(){return JSON.parse(localStorage.getItem(LSK)||"{}");}
+function lsSet(o){o.__sha=PLAN_SHA;localStorage.setItem(LSK,JSON.stringify(o));}
+
+// ---- Render change layer ----
+(function(){
+  const cs=CHANGES.sections, nSec=Object.keys(cs).length, nOq=Object.keys(CHANGES.oqs).length;
+  document.getElementById("changesummary").innerHTML=
+    "<b>Baseline:</b> "+CHANGES.baseline+"<br><b>"+nSec+" sections changed · "+nOq+" residuals resolved</b> (Q1 tokenizer STOP · Q2 --type/--name · Q3 coloring omitted). "+
+    "Changed sections are auto-expanded with a note; settled ones are dimmed.";
+  document.getElementById("changecounts").textContent="● "+nSec+" changed · ✓ "+nOq+" resolved";
+  document.querySelectorAll("details[data-section]").forEach(d=>{
+    const id=d.getAttribute("data-section");
+    if(cs[id]){
+      const isNew=cs[id].s==="new";
+      d.setAttribute("data-changed","1"); d.setAttribute("open","");
+      const note=document.createElement("div");note.className="cnote";note.textContent=(isNew?"✦ new — ":"● changed — ")+cs[id].note;
+      d.querySelector(".body").prepend(note);
+      const sum=d.querySelector("summary");const c=document.createElement("span");c.className="chip "+(isNew?"new":"mod");c.textContent=isNew?"new":"changed";sum.appendChild(c);
+    }else{
+      d.classList.add("recede");
+    }
+  });
+})();
+
+// ---- Render resolved residuals ----
+(function(){
+  const wrap=document.getElementById("oqs"), saved=lsGet();
+  OQS.forEach(oq=>{
+    const st=(saved["oq"+oq.n]&&saved["oq"+oq.n].status)||oq.defaultStatus||"Pending";
+    const nt=(saved["oq"+oq.n]&&saved["oq"+oq.n].note)||"";
+    const div=document.createElement("div");div.className="oq";div.id="oq-"+oq.n;
+    div.innerHTML=
+      '<h4>Q'+oq.n+'. '+oq.title+' <span class="chip ship">resolved</span></h4>'+
+      '<div>'+oq.body+'</div>'+
+      '<div class="prov">'+oq.prov+'</div>'+
+      '<label>Status: <select data-oq="'+oq.n+'"><option'+(st=="Pending"?" selected":"")+'>Pending</option><option'+(st=="Resolved"?" selected":"")+'>Resolved</option><option'+(st=="Deferred"?" selected":"")+'>Deferred</option></select></label>'+
+      '<textarea class="section-feedback" data-sid="oq-'+oq.n+'" placeholder="Notes / reopen Q'+oq.n+'…">'+nt.replace(/</g,"&lt;")+'</textarea>';
+    wrap.appendChild(div);
+  });
+  const b=document.getElementById("oqbadge");
+  b.style.display="inline-block";b.textContent="all resolved";b.style.background="var(--ship)";
+})();
+
+// ---- Restore + persist textareas & selects ----
+function persist(){
+  const o=lsGet();
+  document.querySelectorAll("textarea.section-feedback").forEach(t=>{
+    const k=t.getAttribute("data-sid"); if(t.value.trim()){o[k]=o[k]||{}; if(k.startsWith("oq-")){o["oq"+k.slice(3)]=o["oq"+k.slice(3)]||{};o["oq"+k.slice(3)].note=t.value;}else{o[k]=t.value;}}
+  });
+  const g=document.getElementById("globalfb"); if(g.value.trim())o.__global=g.value;
+  document.querySelectorAll("select[data-oq]").forEach(s=>{o["oq"+s.getAttribute("data-oq")]=o["oq"+s.getAttribute("data-oq")]||{};o["oq"+s.getAttribute("data-oq")].status=s.value;});
+  lsSet(o); updateCount();
+}
+(function restore(){
+  const o=lsGet();
+  document.querySelectorAll("textarea.section-feedback").forEach(t=>{
+    const k=t.getAttribute("data-sid");
+    if(k.startsWith("oq-")){const e=o["oq"+k.slice(3)]; if(e&&e.note)t.value=e.note;}
+    else if(typeof o[k]==="string")t.value=o[k];
+  });
+  if(o.__global)document.getElementById("globalfb").value=o.__global;
+})();
+document.addEventListener("input",e=>{if(e.target.matches("textarea.section-feedback,#globalfb,select[data-oq]"))persist();});
+
+function pendingCount(){
+  const o=lsGet();let n=0;
+  Object.keys(o).forEach(k=>{if(k.startsWith("__"))return;const v=o[k];if(typeof v==="string"&&v.trim())n++;else if(v&&(v.note&&v.note.trim()))n++;});
+  if(o.__global&&o.__global.trim())n++;
+  return n;
+}
+function updateCount(){
+  const n=pendingCount(),b=document.getElementById("fbcount");
+  if(n){b.style.display="inline-block";b.textContent=n;}else b.style.display="none";
+}
+updateCount();
+
+// ---- Copy feedback ----
+document.getElementById("copyfb").addEventListener("click",async()=>{
+  const o=lsGet();
+  let out="# Resume: apply explain-plan feedback\n";
+  out+="Plan: "+PLAN_PATH+" · branch: "+BRANCH+" · plan-sha: "+PLAN_SHA+"\n";
+  out+="→ If picking this up fresh, read the plan doc above (plus related docs/memory) first, then apply the feedback below.\n\n";
+  out+="# Feedback on VLM Phase 2 — config-context viewer\n\n";
+  const labels={"files-capture":"Step A — context_capture.py","files-golden":"Step B — golden_harness refactor","files-base":"Step C — base.py context_window","files-viewer":"Step D — context_viewer.py","files-glue":"Step E — gitignore + docs","verification":"Verification & VM handoff","landing":"Landing & cleanup"};
+  Object.keys(labels).forEach(k=>{if(typeof o[k]==="string"&&o[k].trim())out+="## "+labels[k]+"\n"+o[k]+"\n\n";});
+  OQS.forEach(oq=>{const e=o["oq"+oq.n];if(e&&((e.status&&e.status!=="Resolved")||(e.note&&e.note.trim()))){out+="## Q"+oq.n+" — "+oq.title+"\nStatus: "+((e.status)||"Resolved")+"\n"+((e.note)||"")+"\n\n";}});
+  if(o.__global&&o.__global.trim())out+="## Overall\n"+o.__global+"\n";
+  try{await navigator.clipboard.writeText(out);const b=document.getElementById("copyfb");const t=b.innerHTML;b.innerHTML="Copied ✓";setTimeout(()=>b.innerHTML=t,1400);}
+  catch(e){alert("Copy failed — select-all in this dialog:\n\n"+out);}
+});
+
+// ---- toolbar: show-changed-only + prev/next ----
+document.getElementById("onlyChanged").addEventListener("change",e=>{document.body.classList.toggle("changes-only",e.target.checked);});
+let ci=-1;const changed=()=>[...document.querySelectorAll('details[data-changed]')];
+function goToChange(dir){const arr=changed();if(!arr.length)return;ci=(ci+dir+arr.length)%arr.length;const el=arr[ci];el.setAttribute("open","");el.scrollIntoView({behavior:"smooth",block:"center"});}
+document.getElementById("nextChange").addEventListener("click",()=>goToChange(1));
+document.getElementById("prevChange").addEventListener("click",()=>goToChange(-1));
+
+// ---- Mermaid + pan/zoom ----
+mermaid.initialize({startOnLoad:false,theme:(window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"neutral",flowchart:{useMaxWidth:false}});
+const insts={};
+mermaid.run({querySelector:"pre.mermaid"}).then(()=>{
+  document.querySelectorAll(".mmwrap").forEach(w=>{
+    const svg=w.querySelector("svg");if(!svg)return;
+    svg.removeAttribute("style");svg.style.width="100%";svg.style.height="100%";
+    const inst=svgPanZoom(svg,{zoomEnabled:true,controlIconsEnabled:false,fit:true,center:true,minZoom:0.3,maxZoom:8});
+    insts[w.id]=inst;
+  });
+}).catch(e=>{console.error("mermaid",e);});
+document.querySelectorAll(".mmctl button").forEach(btn=>{
+  btn.addEventListener("click",()=>{
+    const w=btn.closest(".mmwrap"),inst=insts[w.id],act=btn.getAttribute("data-act");
+    if(act==="reset"&&inst){inst.resetZoom();inst.center();inst.fit();}
+    if(act==="full"){w.classList.toggle("full");setTimeout(()=>{if(inst){inst.resize();inst.fit();inst.center();}},60);}
+  });
+});
+window.addEventListener("keydown",e=>{if(e.key==="Escape")document.querySelectorAll(".mmwrap.full").forEach(w=>{w.classList.remove("full");const i=insts[w.id];setTimeout(()=>{if(i){i.resize();i.fit();i.center();}},60);});});
+window.addEventListener("resize",()=>{Object.values(insts).forEach(i=>{try{i.resize();i.fit();i.center();}catch(e){}});});
+</script>
