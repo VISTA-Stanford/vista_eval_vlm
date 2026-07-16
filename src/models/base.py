@@ -37,6 +37,15 @@ class BaseVLMAdapter:
     # raises at preflight — before weights load — if a config requests inline.
     supports_inline: bool = False
 
+    # Text-token budget denominator for the Phase-2 config-context viewer. A CLASS
+    # attribute (not set in `load()`) so the WEIGHT-FREE viewer can read it off the
+    # constructed adapter without a GPU / weights load. Each subclass sets it to the
+    # `max_model_len` (or InternVL's `target_seq_len`) it passes at load; `None` here
+    # means "context window unknown" -> the viewer renders no false denominator.
+    # (Kept as a mirrored literal rather than rewiring load() to read it, to avoid
+    # touching the weight-bearing inference path — see the plan's adapter table.)
+    context_window: int | None = None
+
     def __init__(self, model_name, device="auto", cache_dir=None):
         self.model_name = model_name
         self.device = device

@@ -5,6 +5,8 @@ from .base import BaseVLMAdapter
 
 class LlavaAdapter(BaseVLMAdapter):
     # "llava-hf/llava-1.5-7b-hf"
+    context_window = 4096  # mirrors the max_model_len passed in load() below
+
     def load(self):
         llm = LLM(
             hf_overrides= {"cache_dir": self.cache_dir},

@@ -10,6 +10,8 @@ from transformers import AutoProcessor
 from .base import BaseVLMAdapter, serialize_logprobs
 
 class Qwen3Adapter(BaseVLMAdapter):
+    context_window = 120000  # mirrors the max_model_len passed in load() below
+
     def load(self):
         # Initialize vLLM engine
         llm_kwargs = dict(

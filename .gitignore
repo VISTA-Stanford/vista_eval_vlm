@@ -70,3 +70,9 @@ figures/*
 *_golden.jsonl
 *_golden.meta.json
 golden/
+
+# config-context viewer output (PHI: real de-identified prompts / timelines / imagery).
+# Same posture as the golden dumps above — written under results_dir (su-vista mount);
+# this glob is the defensive backstop against an --out that points inside the tree.
+*_context_view.html
+context_view/

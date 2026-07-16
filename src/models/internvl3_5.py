@@ -11,6 +11,8 @@ from .base import BaseVLMAdapter, serialize_logprobs
 
 
 class InternVL35Adapter(BaseVLMAdapter):
+    context_window = 120000  # mirrors target_seq_len (the patched max_model_len) in load() below
+
     def load(self):
         os.environ["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
 
