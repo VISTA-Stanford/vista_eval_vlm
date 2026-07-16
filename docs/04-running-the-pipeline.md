@@ -165,6 +165,43 @@ This method returns a DataFrame (possibly with more rows for per-iteration retri
 - **Columns:** Original row columns minus heavy ones (`note_text`, `patient_string`, `report`, `path_note_text`, and the timeline column used for that experiment), plus `model_response`, `cumulative_logprob`, `log_probs`, `used_image`. Some retrieval experiments add `input_token_length`; `no_image` can add `timeline_token_count`.
 - **Retrieval experiments:** Output file is overwritten (no resume) when running retrieval experiments.
 
+## Config-context viewer (weight-free input QA)
+
+Before kicking off a full eval run, you can eyeball **exactly** what a model will receive —
+the assembled prompt text + the selected CT slices / pathology tiles (post-window,
+model-ready) as thumbnails + a text-token-budget bar — for a small subset of examples. This
+is **input QA, not scoring**: it shows inputs, never answers (no correctness coloring).
+
+```bash
+cd src && python -m results.context_viewer \
+  --config configs/all_tasks.yaml \
+  --type gemma3 --name google/medgemma-1.5-4b-it \
+  --task progression_recurrence_free_survival_1_yr \
+  --experiment axial_all_image \
+  --limit 5
+```
+
+- **Weight-free but VM-only.** It reuses the golden harness's capture core
+  ([context_capture.py](../src/vista_run/context_capture.py)) — builds the orchestrator with
+  **no** model weights / GPU, then iterates `PromptDataset` directly, so what it renders is
+  what inference feeds (zero drift). It still constructs the BigQuery + GCS clients and reads
+  real de-identified data, so it runs **on the VM**, not the planner Mac.
+- **`--type` / `--name`** mirror the repo-wide convention (the `MODEL_REGISTRY` key + the HF
+  model name), exactly like `run_bq.py` and the eval scripts. **`--experiment` is singular**
+  and must be one of the config's `experiments` (resolved via `normalize_experiments`).
+  **`--limit`** caps rows after the `(person_id, index)` sort — keep it small (this is
+  subset QA). **`--batches`** caps the number of display pages.
+- **Token bar** = exact text tokens (a standalone tokenizer-only load, honoring
+  `runtime.cache_dir`) over each adapter's `context_window`. Image tokens are model-specific
+  and **not** included (image count is a separate chip). If the tokenizer can't load, the run
+  **STOPs** with a diagnostic (wrong `cache_dir` / missing `HF_TOKEN` for a gated repo /
+  uncached / offline) rather than fabricate a budget.
+- **Fail-closed preflight** (no weights ever touched): rejects retrieval experiments and
+  model-backed `summarize` steps, an unknown/ambiguous `--experiment`, and an invalid `--type`.
+- **Output is PHI.** One self-contained HTML (inline CSS, base64 images, no external assets)
+  written under `{results_dir}/context_view/{source_csv}/{task}/{model}/…_context_view.html`
+  (su-vista mount). It is **git-ignored** (`*_context_view.html`) and must never be committed.
+
 ## Prerequisites
 
 - **Python environment:** Dependencies per repo (e.g. `uv sync` or requirements); vLLM/transformers for the chosen models.

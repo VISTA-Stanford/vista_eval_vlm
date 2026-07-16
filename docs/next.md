@@ -20,10 +20,11 @@ Provenance (all on `main`): [roadmap plan](plans/vlm-modular-preprocessing-and-c
 
 - **Phase 2 — config-context viewer** — weight-free HTML input-QA viewer (assembled prompt + CT-slice /
   pathology-tile thumbnails + token-budget bar) over the ContextBlock assembly, for manual pre-run QA on a
-  small subset. **Plan drafted + Codex-reviewed + 3 residuals resolved** (Q1 tokenizer-miss=STOP / Q2 CLI
-  `--type/--name` / Q3 coloring omitted), UNCOMMITTED on `feat/phase2-config-context-viewer` →
-  [plans/vlm-phase2-config-context-viewer.md](plans/vlm-phase2-config-context-viewer.md). NEXT =
-  `/commit-review` → implement (VM `phil-sllm-01`); side-by-side layout deferred (single-column first cut).
+  small subset. **IMPLEMENTED + Codex-reviewed (Critical summarize-selector-chain fixed)** on
+  `feat/phase2-config-context-viewer` → [plans/vlm-phase2-config-context-viewer.md](plans/vlm-phase2-config-context-viewer.md).
+  **VM smoke pending:** [docs/vm-status/2026-07-15-phase2-config-context-viewer.md](vm-status/2026-07-15-phase2-config-context-viewer.md)
+  — golden byte-identity re-bank (`diff_golden --mode strict`) + viewer N≈5 + fail-closed preflight edges on
+  `phil-sllm-01`. NEXT = pull + run the smoke on the VM → `/land`; side-by-side layout deferred (single-column first cut).
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2.
 - **Step 5 — gate-3 EHR golden (deferred, LUMIA-live)** — strict passthrough is the current gate; the
