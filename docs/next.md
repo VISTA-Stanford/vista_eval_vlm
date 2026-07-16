@@ -16,15 +16,20 @@ Provenance (all on `main`): [roadmap plan](plans/vlm-modular-preprocessing-and-c
 [rung-0 0b decoding-fix plan](plans/vlm-rung0-0b-decoding-fix.md) ·
 [rung-0 reproduce-Ryan plan](plans/vlm-rung0-reproduce-ryan-feb26.md) · the per-step `docs/vm-status/` handoff docs.
 
+## ✅ Landed to `main` — Phase 2 config-context viewer (2026-07-16)
+
+Weight-free HTML input-QA viewer (assembled prompt + CT-slice / pathology-tile thumbnails +
+token-budget bar) over the ContextBlock assembly, for manual pre-run QA on a small subset.
+Codex-reviewed (Critical summarize-selector-chain fixed) + VM smoke on `phil-sllm-01` (golden
+byte-identity re-bank `diff_golden --mode strict` → ALL GATES PASS, viewer N=5 self-contained
+30-slice / 120000-token bar, all 5 fail-closed preflight edges GREEN) →
+[docs/vm-status/2026-07-15-phase2-config-context-viewer.md](vm-status/2026-07-15-phase2-config-context-viewer.md).
+Landed `main` `166e7f9` (ff-only, branch `feat/phase2-config-context-viewer` pruned) →
+[plans/vlm-phase2-config-context-viewer.md](plans/vlm-phase2-config-context-viewer.md).
+Side-by-side layout deferred (single-column first cut).
+
 ## Live follow-ups (roadmap not-yet-built)
 
-- **Phase 2 — config-context viewer** — weight-free HTML input-QA viewer (assembled prompt + CT-slice /
-  pathology-tile thumbnails + token-budget bar) over the ContextBlock assembly, for manual pre-run QA on a
-  small subset. **IMPLEMENTED + Codex-reviewed (Critical summarize-selector-chain fixed)** on
-  `feat/phase2-config-context-viewer` → [plans/vlm-phase2-config-context-viewer.md](plans/vlm-phase2-config-context-viewer.md).
-  **VM smoke PASS `5649339`:** [docs/vm-status/2026-07-15-phase2-config-context-viewer.md](vm-status/2026-07-15-phase2-config-context-viewer.md)
-  — golden byte-identity re-bank (`diff_golden --mode strict` → ALL GATES PASS) + viewer N=5 (self-contained, 30-slice, 120000 token bar) + all 5 fail-closed preflight edges on
-  `phil-sllm-01`, all GREEN. NEXT = `/land` to `main`; side-by-side layout deferred (single-column first cut).
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2.
 - **Step 5 — gate-3 EHR golden (deferred, LUMIA-live)** — strict passthrough is the current gate; the
