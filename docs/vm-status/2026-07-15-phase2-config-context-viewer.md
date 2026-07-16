@@ -185,3 +185,28 @@ or image data. Read large content from the file, don't inline it.
 
 ## VM run results
 _(left empty by the planner; the executor fills this in readback mode)_
+
+## VM run results — readback on `phil-sllm-01`, 2026-07-16 · REPO `vista_eval_vlm` · BRANCH `feat/phase2-config-context-viewer` @ `7eb6f0c` (Claude-Code CPU; run + readback co-located)
+
+**Net: ALL STEPS GREEN — the extraction is a byte-identity no-op and the viewer is self-contained + weight-free. Cleared to `/land`.**
+
+- **Step 0 — setup:** ✅ Reached `7eb6f0c` (not `904896a`). Ran in an **isolated git worktree** off `7eb6f0c` (the shared checkout was on an unrelated parallel branch). Localized golden config `all_tasks.vm.yaml` + a viewer copy `all_tasks.viewer.vm.yaml` (tasks → `progression_recurrence_free_survival_1_yr`; experiments → `no_image`, `axial_all_image`, `retrieved_timeline`, the `axial_all_image_summ` + `axial_all_image_ok` dict entries) — both git-ignored. Precondition mounts all present (base/results/model_cache/ct_dir; `progression_recurrence_free_survival_1_yr` in valid_tasks).
+
+- **Step 1 — golden byte-identity regression (THE critical gate):** ✅ `RESULT: ALL GATES PASS`, exit 0. Banked before (`904896a`, throwaway worktree) + after (`7eb6f0c`), same `(task, exp, model, N)`, `--limit 5`. `diff_golden --mode strict`: **shared indices 5** (same index set both banks); `[PASS] structure (image_hashes / selected_indices / counts / assembly_mode) byte-identical`; `[PASS] text (dynamic_prompt / adapter_prompt_string) within strict gate`. After-bank structure: 4/5 rows `image_count=30, n_hashes=30, n_selected=30`; row0 is a legitimately no-CT patient (`image_count=0`). Throwaway worktree removed.
+
+- **Step 2 — viewer smoke (CT + no-image):** ✅ both HTML written, non-empty, **self-contained**.
+  - `axial_all_image`: `examples=5 rendered=5 context_window=120000`. Self-containment grep: **0** `http(s)://`, **0** non-`data:` `<img src>`. **120** base64 PNG thumbnails = 4 CT-cards × **30** slices each (card0 = the no-CT patient → 0 thumbs); 5 `card`s, 4 `thumbs` blocks, 1 `noimg` flag. Token bars real over denominator **120000**: 7290 / 15838 / 47902 / 62500 / 95978 (6.1%–80.0%).
+  - `no_image`: `examples=5 rendered=5 context_window=120000`. 0 base64 thumbnails; **5 cards, 5 `noimg` flags** (0 images flagged on every card); 0 external URLs, 0 filesystem leaks.
+
+- **Step 3 — fail-closed preflight edge cases:** ✅ all five behaved as specified (no weights/GPU touched):
+  - (a) `retrieved_timeline` → exit **1**, `STOP: … retrieval experiment … requires model weights … out of scope for the weight-free viewer.`
+  - (b) `axial_all_image_summ` → exit **1**, `STOP: … model-backed summarize step … fail-closes rather than misrepresent the context.` (selector-chain guard reached)
+  - (c) `does_not_exist` → exit **1**, `STOP: unknown --experiment … Available (normalized) names: …`
+  - (d) `axial_all_image_ok` (non-model-backed dict entry) → exit **0**, `examples=5 rendered=5 context_window=120000` (resolves + renders cleanly).
+  - (e) `--type bogus` → exit **1**, `STOP: unknown --type 'bogus'. Valid model types: …` — rejected **before** any BigQuery query (no "Querying BigQuery" line preceded the STOP → before BQ/GCS client build).
+
+- **Also verify — `.gitignore` PHI globs:** ✅ `*_context_view.html` (L77) + `context_view/` (L78) present, parallel to `*_golden.jsonl` (L70) / `golden/` (L72). Rendered HTML can never be committed.
+
+- **In-lane corrections (class 1):** the branch's `pyproject.toml` under-declares runtime deps (9 deps; no `pyyaml`/`torch`/`transformers`), so a fresh `uv sync` in a new worktree yields an incomplete env (missing `yaml`) — and on the default Python it also tries to build `numpy` from sdist (no wheel; pin 3.11). Ran instead with the **existing hand-augmented golden-harness venv** `~/code/vista_eval_vlm/.venv` (Python 3.11, has yaml 6.0.3 / torch 2.8.0+cu128 / transformers 4.57.1) driving the worktree's source (`-m` from `src/` shadows the editable main-checkout copy — verified `context_capture` resolved to the worktree path). This is the same env the harness already runs with on this box; design + Expected/Stop unchanged. No class-3 deviations.
+
+- **PHI:** counts / exit codes / file existence / slice + token numbers only — no prompt text, timelines, or image data pasted.
