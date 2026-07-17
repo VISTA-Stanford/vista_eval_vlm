@@ -36,8 +36,10 @@ Side-by-side layout deferred (single-column first cut).
   via `/explain-plan` (2026-07-16). Implemented on `feat/lumia-live-ehr-adapter` (2026-07-17):
   `presets.py`'s `_ehr_block` now emits real `window`/`code_filter` chains, `run_bq.py` wires
   `_apply_ehr_adapter` (fail-closed on missing LUMIA file) into `_build_prompts_for_experiment`,
-  docs updated. Not yet VM-verified — awaiting `phil-sllm-01` Verification Phases 0–3 (coverage join,
-  `timeline`-variant `code_filter` decision gate, allowlist fill-in, Phil's human HTML QA) before
+  docs updated. **VM smoke pending:**
+  [docs/vm-status/2026-07-17-4989a20.md](vm-status/2026-07-17-4989a20.md) — awaiting `phil-sllm-01`
+  Verification Phases 0–3 (coverage join, `timeline`-variant `code_filter` decision gate, allowlist
+  fill-in, Phil's human HTML QA) before
   `/land`. [plans/vlm-step5-lumia-live-ehr-adapter.md](plans/vlm-step5-lumia-live-ehr-adapter.md).
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
