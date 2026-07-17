@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="plan-sha256" content="8f99261412a7d163064fb970aff01deadea34173d16224130f30eeac7c08fb50">
+<title>vista_eval_vlm — Step 5: LUMIA-live EHR adapter</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --card: #f8f9fb; --border: #e2e5ea;
+    --accent: #b8860b; --accent-bg: #fff3cd; --link: #2563eb; --recede: #9ca3af;
+    --ok: #16a34a; --warn: #b45309; --bad: #dc2626; --resp-bg: #eef2ff; --resp-border: #6366f1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --fg: #e5e7eb; --muted: #9aa1ac; --card: #161a21; --border: #262b35;
+      --accent: #eab676; --accent-bg: #2a2313; --link: #7dabff; --recede: #565d69;
+      --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --resp-bg: #1a1f3a; --resp-border: #818cf8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 1100px; margin: 0 auto; padding: 24px 20px 80px; line-height: 1.55;
+  }
+  h1, h2, h3 { line-height: 1.25; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  h2 { font-size: 1.15rem; margin-top: 40px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  code { background: var(--card); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+  a { color: var(--link); }
+  .hero { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+  .hero .meta { color: var(--muted); font-size: 0.88rem; margin-top: 6px; }
+  .hero .meta span { margin-right: 14px; }
+  .first-pass-banner {
+    background: var(--accent-bg); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 10px 14px; margin: 16px 0; font-size: 0.9rem; color: var(--fg);
+  }
+  .tldr { font-size: 1.02rem; margin: 18px 0 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.92rem; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+  .chip-pivot { background: #ede9fe; color: #5b21b6; }
+  .chip-revise { background: #fef3c7; color: #92400e; }
+  .chip-draft { background: #e0e7ff; color: #3730a3; }
+  @media (prefers-color-scheme: dark) {
+    .chip-pivot { background: #3b2a5c; color: #d8b4fe; }
+    .chip-revise { background: #4a3510; color: #fcd34d; }
+    .chip-draft { background: #2b2f5c; color: #a5b4fc; }
+  }
+  .diagram-section { margin: 18px 0; }
+  .diagram-wrap {
+    position: relative; height: 520px; overflow: hidden; border: 1px solid var(--border);
+    border-radius: 10px; background: var(--card);
+  }
+  .diagram-wrap.fullscreen { position: fixed; inset: 0; z-index: 1000; height: 100vh; border-radius: 0; }
+  .diagram-hint { font-size: 0.8rem; color: var(--muted); margin: 6px 0 4px; }
+  .diagram-controls { position: absolute; top: 8px; right: 8px; z-index: 10; display: flex; gap: 6px; }
+  .diagram-controls button {
+    font-size: 0.78rem; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--fg); cursor: pointer;
+  }
+  pre.mermaid { margin: 0; }
+  .knobs-card table code { display: block; white-space: pre-wrap; }
+  details {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; margin: 10px 0;
+  }
+  details.recede { opacity: 0.55; }
+  details[data-changed] summary::after { content: " ✦ changed"; color: var(--accent); font-weight: 600; }
+  .oq-card.recede { opacity: 0.55; }
+  .oq-card[data-changed] .oq-title::after { content: " ✦ changed"; color: var(--accent); font-weight: 600; font-size: 0.8rem; }
+  body.changes-only details:not([data-changed]),
+  body.changes-only .oq-card:not([data-changed]) { display: none; }
+  summary { cursor: pointer; font-weight: 600; }
+  .step-body, .gotcha-body { margin-top: 10px; font-size: 0.94rem; }
+  .step-body p, .gotcha-body p { margin: 6px 0; }
+  .verify-gate { background: var(--bg); border-left: 3px solid var(--ok); padding: 6px 10px; margin-top: 8px; font-size: 0.88rem; }
+  textarea.section-feedback {
+    width: 100%; min-height: 54px; margin-top: 8px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--fg); padding: 6px 8px; font-family: inherit; font-size: 0.88rem;
+  }
+  .resp {
+    border-left: 3px solid var(--resp-border); background: var(--resp-bg); border-radius: 0 6px 6px 0;
+    padding: 8px 12px; margin-top: 8px; font-size: 0.9rem;
+  }
+  .resp .resp-label { text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.04em; color: var(--resp-border); font-weight: 700; }
+  .oq-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+  .oq-card select { padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
+  .oq-card .oq-title { font-weight: 600; margin-bottom: 4px; }
+  footer.feedback-footer {
+    position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--border);
+    padding: 12px 0; margin-top: 30px;
+  }
+  footer.feedback-footer textarea {
+    width: 100%; min-height: 60px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--card); color: var(--fg); padding: 6px 8px; font-family: inherit; font-size: 0.9rem;
+  }
+  .copy-btn {
+    margin-top: 8px; padding: 8px 16px; border-radius: 8px; border: none; background: var(--accent);
+    color: #1a1a1a; font-weight: 600; cursor: pointer; font-size: 0.92rem;
+  }
+  .toast {
+    position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg);
+    padding: 8px 16px; border-radius: 8px; font-size: 0.88rem; opacity: 0; transition: opacity 0.25s; pointer-events: none;
+  }
+  .toast.show { opacity: 0.95; }
+  .review-history td { font-size: 0.88rem; }
+  code.inline-schema { display: inline; }
+  .files-touched-list code { font-size: 0.85em; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>vista_eval_vlm — Step 5: wire the LUMIA-live EHR adapter into the real hot path</h1>
+  <div class="meta">
+    <span>Status: Draft</span>
+    <span>Branch: main (target: feat/lumia-live-ehr-adapter)</span>
+    <span>Source: <code>docs/plans/vlm-step5-lumia-live-ehr-adapter.md</code></span>
+    <span>Plan SHA: <code>8f99261412a7</code></span>
+    <span>Generated: 2026-07-16</span>
+  </div>
+</header>
+
+<div class="first-pass-banner" id="change-banner">
+  <strong>Changed since your last review</strong> (baseline: plan-sha <code>1c17f4f4ba40</code>, the version you gave
+  feedback on) — <span id="change-count-text">computing…</span>.
+  <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+    <label style="font-size:0.85rem;"><input type="checkbox" id="changes-only-toggle"> Show changed only</label>
+    <button onclick="jumpChange(-1)" style="font-size:0.8rem;padding:3px 9px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);cursor:pointer;">&larr; Prev change</button>
+    <button onclick="jumpChange(1)" style="font-size:0.8rem;padding:3px 9px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);cursor:pointer;">Next change &rarr;</button>
+  </div>
+</div>
+
+<p class="tldr">
+  <code>EHRAdapter</code> and its filter chain (<code>src/context/adapters/ehr.py</code>,
+  <code>src/context/selectors/ehr_filters.py</code>) are fully built but entirely unused — the real inference
+  hot path still substitutes a pre-rendered CSV column instead of parsing real patient LUMIA timelines. This
+  plan wires it in for 5 presets, with a fail-closed policy for patients missing a LUMIA file (Phil's call:
+  exclude the row, don't silently degrade). It went through a full <code>/review-plan</code> Codex audit
+  (two passes) that caught a real bug in the verification design itself — the decision gate meant to resolve
+  one open design question wasn't actually guaranteed to test what it claimed to test. Ends with a batch of
+  real rendered HTML for Phil to personally read before this becomes default behavior.
+</p>
+
+<h2>Review history</h2>
+<table class="review-history">
+  <tr><th>Pass</th><th>Reviewer</th><th>Verdict</th><th>Key findings surfaced</th><th>Applied</th></tr>
+  <tr>
+    <td>1</td>
+    <td>Initial draft — 2 Plan subagents (implementation design + verification/handoff design), grounded in direct code reading</td>
+    <td><span class="chip chip-draft">Draft</span></td>
+    <td>Core adapter-wiring shape (mirrors <code>PathologyAdapter</code> inline-construction pattern); 4-phase VM verification design</td>
+    <td>Baseline</td>
+  </tr>
+  <tr>
+    <td>Pivot</td>
+    <td>Phil (<code>AskUserQuestion</code>)</td>
+    <td><span class="chip chip-pivot">Pivot</span></td>
+    <td>Missing-LUMIA-file policy: <strong>fail-closed</strong> (exclude the row) instead of the initially-proposed fallback to <code>patient_string</code></td>
+    <td>Reshaped Approach #2 + Verification Phase 0's coverage thresholds (coverage now equals cohort size, not just fallback quality)</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>Codex — main design review</td>
+    <td><span class="chip chip-revise">Revise</span></td>
+    <td>Phase 1's decision gate wasn't actually self-resolving (index-set mismatch confound); truncation-idempotence claim was false; Phase 2 needed a PHI-clean readback contract; two pipeline docs still described the old CSV-substitution behavior</td>
+    <td>~13 findings applied, 0 disagreements (all spot-checked against actual code)</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>Codex — verification &amp; handoff-design review (auto-run: this handoff is complex-tier per the repo's own classifier)</td>
+    <td><span class="chip chip-revise">Revise</span></td>
+    <td>Precise coverage-threshold boundaries; bank-forward wording was imprecise; <code>--lenient</code> must never gate the final committed run; <code>axial_all_image</code> QA render made mandatory not optional; per-phase destructive/no-rollback statements</td>
+    <td>~12 findings applied (several reinforcing pass 2), 0 disagreements</td>
+  </tr>
+</table>
+<p style="font-size:0.85rem;color:var(--muted)">
+  Full reviewer output: <code>docs/plans/reviews/vlm-step5-lumia-live-ehr-adapter-feedback.md</code> and
+  <code>docs/plans/reviews/vlm-step5-lumia-live-ehr-adapter-verification-feedback.md</code>.
+</p>
+
+<h2>Repo map</h2>
+<p class="diagram-hint">scroll to zoom • drag to pan</p>
+<div class="diagram-wrap" data-diagram="repo-map">
+  <div class="diagram-controls">
+    <button onclick="resetDiagram('repo-map')">Reset</button>
+    <button onclick="toggleFullscreen('repo-map')">Fullscreen</button>
+  </div>
+  <pre class="mermaid">
+flowchart LR
+    lumia["LUMIA XML corpus<br/>gs://vista_bench/thoracic_cohort_lumia"]
+
+    subgraph cfgLayer["Config and adapter layer"]
+        cfg["configs/all_tasks.yaml<br/>no committed change, reused key"]
+        presets["presets.py<br/>_ehr_block"]
+        adapter["ehr.py<br/>EHRAdapter, filters"]
+    end
+
+    subgraph hotPathLayer["Hot path"]
+        hotpath["run_bq.py<br/>_build_prompts_for_experiment"]
+    end
+
+    subgraph consumersA["Consumers"]
+        evalrun["Real eval run"]
+        golden["golden_harness.py<br/>context_capture.py"]
+        viewer["context_viewer.py<br/>Phase 2, already landed"]
+    end
+
+    verify["diff_golden.py<br/>gate-3 allowlist"]
+
+    subgraph outOfScopeA["Out of scope, untouched by this plan"]
+        passthrough["passthrough presets<br/>all_vb_timeline_only, path_full"]
+        retrieval["retrieval experiments"]
+    end
+
+    lumia --> adapter
+    cfg --> hotpath
+    presets --> hotpath
+    adapter --> hotpath
+    hotpath --> evalrun
+    hotpath --> golden
+    golden --> viewer
+    hotpath --> verify
+    hotpath -.-> passthrough
+    hotpath -.-> retrieval
+
+    subgraph legendA["Color legend"]
+        legMod["Modified this plan, amber"]
+        legUnt["Untouched consumer, grey"]
+        legExt["External upstream, blue"]
+        legDef["Out of scope, dashed grey"]
+    end
+
+    class presets,adapter,hotpath,verify,legMod modified
+    class evalrun,golden,viewer,cfg,legUnt untouched
+    class lumia,legExt external
+    class passthrough,retrieval,legDef deferred
+
+    classDef modified fill:#fff3cd,stroke:#b8860b,stroke-width:2px,color:#5c4400
+    classDef untouched fill:#f0f0f0,stroke:#999999,color:#444444
+    classDef external fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef deferred fill:#f5f5f5,stroke:#aaaaaa,stroke-dasharray: 5 5,color:#888888
+  </pre>
+</div>
+
+<h2>Blast radius</h2>
+<p class="diagram-hint">scroll to zoom • drag to pan</p>
+<div class="diagram-wrap" data-diagram="blast-radius">
+  <div class="diagram-controls">
+    <button onclick="resetDiagram('blast-radius')">Reset</button>
+    <button onclick="toggleFullscreen('blast-radius')">Fullscreen</button>
+  </div>
+  <pre class="mermaid">
+flowchart LR
+    subgraph knobsB["Knobs"]
+        k1["retrieval.corpus_dir<br/>reused, not a new key"]
+        k2["_EHR_ADAPTER_EXPERIMENTS<br/>5 wired presets"]
+        k3["select chain<br/>window, code_filter"]
+    end
+
+    subgraph filesTouchedB["Files touched"]
+        f1["presets.py"]
+        f2["run_bq.py"]
+        f3["ehr.py"]
+        f5["diff_golden.py"]
+        f6["docs, 2 files"]
+    end
+
+    subgraph outputsB["Outputs"]
+        o1["dynamic_prompt column<br/>live-rendered text"]
+        o2["EHR dropping N of M rows<br/>console log"]
+        o3["golden JSONL<br/>verification artifact"]
+        o4["viewer HTML<br/>Phase 3 QA render"]
+    end
+
+    subgraph consumersC["Consumers"]
+        c1["Real eval run"]
+        c2["golden_harness, context_viewer"]
+        c3["Phil, manual QA"]
+    end
+
+    subgraph outOfScopeB["Out of scope"]
+        x1["passthrough presets"]
+        x2["retrieval experiments"]
+    end
+
+    k1 --> f2
+    k2 --> f2
+    k3 --> f1
+    f1 --> f2
+    f3 --> f2
+    f2 --> o1
+    f2 --> o2
+    f2 --> f5
+    f5 --> o3
+    o1 --> c1
+    o1 --> c2
+    o3 --> c3
+    o4 --> c3
+    f2 -.-> x1
+    f2 -.-> x2
+    f6 -.-> f2
+
+    subgraph legendB["Color legend"]
+        lb1["Knob, cyan"]
+        lb2["File touched, amber"]
+        lb3["Output, green"]
+        lb4["Consumer, grey"]
+        lb5["Out of scope, dashed grey"]
+    end
+
+    class k1,k2,k3,lb1 knobclass
+    class f1,f2,f3,f5,f6,lb2 fileclass
+    class o1,o2,o3,o4,lb3 outclass
+    class c1,c2,c3,lb4 consclass
+    class x1,x2,lb5 deferredB
+
+    classDef knobclass fill:#cffafe,stroke:#0891b2,color:#164e63
+    classDef fileclass fill:#fff3cd,stroke:#b8860b,color:#5c4400
+    classDef outclass fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef consclass fill:#f0f0f0,stroke:#999999,color:#444444
+    classDef deferredB fill:#f5f5f5,stroke:#aaaaaa,stroke-dasharray: 5 5,color:#888888
+  </pre>
+</div>
+
+<h2>Order of operations</h2>
+<p class="diagram-hint">scroll to zoom • drag to pan</p>
+<div class="diagram-wrap" data-diagram="order-of-ops">
+  <div class="diagram-controls">
+    <button onclick="resetDiagram('order-of-ops')">Reset</button>
+    <button onclick="toggleFullscreen('order-of-ops')">Fullscreen</button>
+  </div>
+  <pre class="mermaid">
+flowchart TD
+    s1["Step 1<br/>presets.py: emit select chains<br/>PENDING"]
+    s2["Step 2<br/>run_bq.py: _apply_ehr_adapter<br/>reuses retrieval.corpus_dir<br/>PENDING"]
+    s3["Step 3<br/>docs update<br/>PENDING"]
+    s4["Step 4, VM Phase 0<br/>coverage precondition<br/>PENDING"]
+    s5["Step 5, VM Phase 1<br/>code filter decision gate<br/>PENDING"]
+    s6["Step 6, VM Phase 2<br/>gate-3 allowlist fill-in<br/>PENDING"]
+    s7["Step 7, VM Phase 3<br/>human QA render<br/>PENDING"]
+    s8["Step 8<br/>Land<br/>PENDING"]
+
+    s1 --> s2
+    s2 --> s3
+    s3 -. implementation done .-> s4
+    s4 -. coverage confirmed, banks covered set .-> s5
+    s5 -. code filter resolved .-> s6
+    s5 -. code filter resolved .-> s7
+    s6 --> s8
+    s7 -. Phil approves HTML .-> s8
+
+    subgraph legendC["Color legend"]
+        lc1["Pending, grey"]
+    end
+    class s1,s2,s3,s4,s5,s6,s7,s8,lc1 pendingclass
+    classDef pendingclass fill:#f0f0f0,stroke:#999999,color:#444444
+  </pre>
+</div>
+
+<h2>Knobs and contracts</h2>
+<div class="knobs-card">
+<table>
+  <tr><th>Knob</th><th>Type</th><th>Default</th><th>Used in</th></tr>
+  <tr>
+    <td><code>retrieval.corpus_dir</code></td>
+    <td>string, local path</td>
+    <td>committed value is a dead contributor-specific path (broken on the real VM) — real value set
+    per-VM in the git-ignored overlay (fail-closed: raises if unset). <strong>Reused, not a new key</strong>
+    — Phil, via <code>/explain-plan</code> feedback: "one config path, no reason to be independent."</td>
+    <td><code>_apply_ehr_adapter</code> (run_bq.py), <code>lumia_path_for</code> (ehr.py), plus the existing retrieval path</td>
+  </tr>
+  <tr>
+    <td><code>_EHR_ADAPTER_EXPERIMENTS</code></td>
+    <td>frozen set</td>
+    <td><code>{no_image, axial_all_image, no_report, timeline_only, report}</code></td>
+    <td><code>_apply_ehr_adapter</code> gate check</td>
+  </tr>
+  <tr>
+    <td>EHR <code>select</code> chain</td>
+    <td>list of dicts</td>
+    <td><code>[{"fn": "window", "before": "6mo", "after": "0d"}, {"fn": "code_filter", "exclude_stanford": true}]</code> for <code>no_img_report</code>; <code>[]</code> for <code>timeline</code> pending Phase 1</td>
+    <td><code>presets.py:_ehr_block</code>, <code>ehr_filters.py:resolve_ehr_filter</code></td>
+  </tr>
+  <tr>
+    <td><code>diff_golden --mode</code></td>
+    <td>enum</td>
+    <td><code>strict</code> (Phase 1) / <code>allowlist</code> (Phase 2)</td>
+    <td><code>diff_golden.py</code></td>
+  </tr>
+  <tr>
+    <td><code>diff_golden --lenient</code></td>
+    <td>bool flag</td>
+    <td>local-iteration only — <strong>forbidden on the final committed gate</strong> (can exit 0 despite real text drift)</td>
+    <td><code>diff_golden.py</code></td>
+  </tr>
+</table>
+</div>
+
+<h2>Steps</h2>
+
+<details data-section="step-1">
+  <summary>Step 1 — presets.py: emit real select chains</summary>
+  <div class="step-body">
+    <p><code>_ehr_block(variant)</code> currently only stamps a <code>variant</code> label; this makes it emit the concrete
+    <code>select</code> filter chain per variant (<code>no_img_report</code> = window + code_filter; <code>timeline</code> = <code>[]</code>
+    pending Phase 1; <code>passthrough</code> = untouched).</p>
+    <p>Files: <code>src/context/presets.py</code></p>
+    <div class="verify-gate">Verify: structural review only (Mac, no runtime) — confirm the emitted config dict shape matches what <code>EHRAdapter</code> expects.</div>
+  </div>
+  <textarea class="section-feedback" data-key="step-1" placeholder="Feedback on this step..."></textarea>
+</details>
+
+<details data-section="step-2">
+  <summary>Step 2 — run_bq.py: _apply_ehr_adapter helper</summary>
+  <div class="step-body">
+    <p><em>Updated per Phil's <code>/explain-plan</code> feedback: reuses the existing <code>retrieval.corpus_dir</code>
+    key directly — no separate config step needed (a standalone "add a new config key" step was merged into this one
+    and removed).</em></p>
+    <p>New helper called first-line of <code>_build_prompts_for_experiment</code>: resolves each row's LUMIA file via
+    <code>retrieval.corpus_dir</code> (its committed value is a dead contributor-specific path, broken on the real VM
+    — real value set per-VM in the git-ignored overlay, same fix as before, just applied to the existing key instead
+    of a new one), fail-closed drops rows without one (logs the count), then renders survivors via
+    <code>EHRAdapter.ingest()</code>/<code>.contextualize()</code>. <code>context_capture.py</code> shares this
+    method, so golden harness and the viewer get live rendering for free.</p>
+    <p>Files: <code>src/vista_run/run_bq.py</code></p>
+    <div class="verify-gate">Verify: structural review (Mac) — confirm the mutation point doesn't disturb the <code>report</code>/<code>path_full</code>
+    branches' column-append logic, which run after it.</div>
+  </div>
+  <textarea class="section-feedback" data-key="step-2" placeholder="Feedback on this step..."></textarea>
+</details>
+
+<details data-section="step-3">
+  <summary>Step 3 — docs update</summary>
+  <div class="step-body">
+    <p><code>docs/04-running-the-pipeline.md</code> and <code>docs/00-data-setup.md</code> both currently describe the EHR
+    source as the pre-rendered <code>patient_string</code> column — update to describe the live LUMIA path, fail-closed
+    row exclusion, and that <code>retrieval.corpus_dir</code> is now dual-purpose.</p>
+    <p>Files: <code>docs/04-running-the-pipeline.md</code>, <code>docs/00-data-setup.md</code></p>
+    <div class="verify-gate">Verify: read-through only.</div>
+  </div>
+  <textarea class="section-feedback" data-key="step-3" placeholder="Feedback on this step..."></textarea>
+</details>
+
+<details data-section="step-4">
+  <summary>Step 4 — VM Phase 0: cohort-vs-LUMIA coverage precondition</summary>
+  <div class="step-body">
+    <p>Derive the eval cohort from the actual loader path (<code>_load_task_data</code>'s real BQ+CSV merge), not a
+    hand-authored parallel query — this was a Codex finding: an independently-authored SQL query risks silently
+    diverging from what the eval actually iterates. Join against the LUMIA <code>.xml</code> filenames; also
+    reconfirm the LUMIA schema shape, local corpus reachability, and that the fail-closed guard actually fires.</p>
+    <div class="verify-gate">Expected: coverage_pct + matched/missing counts. Decision gate: <code>&gt;=95.0</code> proceed;
+    <code>80.0</code> to <code>&lt;95.0</code> proceed with dropped-N called out; <code>&lt;80.0</code> STOP.
+    Machine: Claude-Code CPU <code>phil-sllm-01</code>. Destructive: no.</div>
+  </div>
+  <textarea class="section-feedback" data-key="step-4" placeholder="Feedback on this step..."></textarea>
+</details>
+
+<details data-section="step-5">
+  <summary>Step 5 — VM Phase 1: does the timeline variant need code_filter?</summary>
+  <div class="step-body">
+    <p><strong>This is where Codex caught the real bug.</strong> The originally-drafted gate sampled "N≈20 from
+    Phase 0's covered set" — but since fail-closed filtering runs before the golden harness's sort+limit step, the
+    before/after banks weren't actually guaranteed to draw from the same patients. A missing LUMIA file anywhere in
+    the naive first-20 would cause an index-set mismatch that looks like a gate failure but has nothing to do with
+    <code>code_filter</code>. Fixed by restricting both banks to a Phase-0-confirmed-covered subset before banking,
+    so the fail-closed drop becomes a no-op and the diff is actually testing the right thing.</p>
+    <div class="verify-gate">Expected/Stop: index-set mismatch even on the restricted input → STOP (distinct precondition
+    failure). Strict PASS → no code_filter needed. Strict FAIL → re-bank with code_filter, re-diff. Both pass → default
+    to no-filter, note it. Neither passes → STOP, hand back. Destructive: no.</div>
+  </div>
+  <textarea class="section-feedback" data-key="step-5" placeholder="Feedback on this step..."></textarea>
+</details>
+
+<details data-section="step-6">
+  <summary>Step 6 — VM Phase 2: gate-3 allowlist fill-in</summary>
+  <div class="step-body">
+    <p>Extend to N=20-50 across both resolved variants. Any normalization rule codified into
+    <code>diff_golden.normalize_text</code> must be field-local, event-line-local, preserve line count/order/content
+    exactly, and only normalize numeric equivalence within a bounded tolerance — no catch-all substitutions.
+    <code>--lenient</code> is for local iteration only; the final committed gate must run without it.</p>
+    <div class="verify-gate">PHI-clean readback: report counts/field-names/index-counts only — <code>diff_golden</code>
+    prints raw text previews on failure that must never be pasted into the vm-status doc. Destructive: no.</div>
+  </div>
+  <textarea class="section-feedback" data-key="step-6" placeholder="Feedback on this step..."></textarea>
+</details>
+
+<details data-section="step-7">
+  <summary>Step 7 — VM Phase 3: human visual-QA render (the step Phil asked for)</summary>
+  <div class="step-body">
+    <p>Render N≈5 each of <code>no_image</code>, <code>no_report</code>/<code>timeline_only</code>, and
+    <code>axial_all_image</code> — all three mandatory (a Codex finding: <code>axial_all_image</code> is the only
+    wired preset that exercises CT+EHR composition, so it can't be optional). Structural checks expanded per the
+    prior Phase-2-viewer precedent: non-empty rendered text per card, non-empty token bar, expected image counts,
+    no STOP/traceback text.</p>
+    <div class="verify-gate">Report back: file paths, existence, card counts, exit codes only — never rendered content
+    (PHI). Phil opens the files himself on <code>phil-sllm-01</code> to actually read them. Destructive: no.</div>
+  </div>
+  <textarea class="section-feedback" data-key="step-7" placeholder="Feedback on this step..."></textarea>
+</details>
+
+<details data-section="step-8">
+  <summary>Step 8 — Land</summary>
+  <div class="step-body">
+    <p>Branch <code>feat/lumia-live-ehr-adapter</code> off main. Landing gate: all 4 verification phases green AND
+    Phil has actually opened and read the Phase 3 HTML — an agent's structural check alone doesn't satisfy this.
+    Also flags two operational notes for whoever runs the first full eval post-landing: use a fresh output tag
+    (resume-by-index could otherwise silently mix pre/post-wiring row counts), and any report comparing these
+    presets to historical full-cohort results should carry the post-drop denominator.</p>
+  </div>
+  <textarea class="section-feedback" data-key="step-8" placeholder="Feedback on this step..."></textarea>
+</details>
+
+<h2>Gotchas</h2>
+
+<details data-section="gotcha-1">
+  <summary>The Phase 1 decision gate wasn't actually self-resolving</summary>
+  <div class="gotcha-body">
+    <p><code>iter_captured_examples</code> runs <code>_build_prompts_for_experiment</code> (where fail-closed filtering
+    happens) <em>before</em> its stable-sort + <code>head(limit)</code> step. The "after" bank's first-20 is drawn from
+    already-covered patients; the "before" (legacy) bank's first-20 has no such filtering. If even one of the naive
+    first-20 lacks a LUMIA file, the two banks' index sets diverge and <code>diff_golden</code> hard-fails on
+    index-set mismatch — a precondition failure that looks like (but isn't) a <code>code_filter</code> verdict.
+    Fixed by restricting both banks to a confirmed-covered subset first.</p>
+  </div>
+  <textarea class="section-feedback" data-key="gotcha-1" placeholder="Feedback on this gotcha..."></textarea>
+</details>
+
+<details data-section="gotcha-2">
+  <summary>truncate_timeline is not idempotent (moot here, but worth knowing)</summary>
+  <div class="gotcha-body">
+    <p>An earlier draft of this plan claimed re-truncating already-truncated text was safe/idempotent. Direct code
+    read showed the opposite: <code>meds_timeline_utils.py</code> unconditionally prepends a newline on every call, so
+    calling it twice produces a double newline, not a no-op. Turns out irrelevant here — the fail-closed redesign means
+    every surviving row's timeline text is fully replaced and truncated exactly once — but the false claim was removed
+    rather than left in the doc.</p>
+  </div>
+  <textarea class="section-feedback" data-key="gotcha-2" placeholder="Feedback on this gotcha..."></textarea>
+</details>
+
+<details data-section="gotcha-3">
+  <summary>retrieval.corpus_dir is a dead path on the real executor VM</summary>
+  <div class="gotcha-body">
+    <p><code>configs/all_tasks.yaml:93</code> has <code>retrieval.corpus_dir: "/data/fries/datasets/vista_bench_ryan/thoracic_cohort_lumia"</code>
+    — contributor Ryan D'Cunha's own machine-specific path. A prior VM-status doc documents this exact path as absent
+    on <code>phil-sllm-01</code> (which only has <code>/mnt/su-vista-hot</code> and <code>/mnt/su-vista-uscentral1</code>).
+    This plan's new <code>paths.lumia_corpus_dir</code> key deliberately avoids repeating the mistake — no committed
+    absolute default, VM-local overlay only.</p>
+  </div>
+  <textarea class="section-feedback" data-key="gotcha-3" placeholder="Feedback on this gotcha..."></textarea>
+</details>
+
+<details data-section="gotcha-4">
+  <summary>diff_golden --lenient can silently mask real drift</summary>
+  <div class="gotcha-body">
+    <p>The tool's own flag help text says it "can exit 0 despite text drift." Useful while tuning the Phase 2
+    normalizer, but the plan explicitly requires the final committed VM gate to run without it and print
+    <code>RESULT: ALL GATES PASS</code>.</p>
+  </div>
+  <textarea class="section-feedback" data-key="gotcha-4" placeholder="Feedback on this gotcha..."></textarea>
+</details>
+
+<details data-section="gotcha-5">
+  <summary>Resume-by-index could silently mix row counts after fail-closed lands</summary>
+  <div class="gotcha-body">
+    <p><code>_setup_output_and_resume</code> resumes by <code>index</code>. A stale pre-wiring result CSV for one of
+    these presets could silently resume against a mismatched row count now that fail-closed filtering changes N.
+    Flagged as an operational note for the first full (non-smoke) eval run after landing — use a fresh output tag.</p>
+  </div>
+  <textarea class="section-feedback" data-key="gotcha-5" placeholder="Feedback on this gotcha..."></textarea>
+</details>
+
+<h2>Open questions</h2>
+
+<div class="oq-card" data-section="oq-1">
+  <div class="oq-title">OQ1 — timeline variant's code_filter scope</div>
+  <p>Whether the full-timeline preset should also drop STANFORD-tagged codes like <code>no_img_report</code> does
+  was left unresolved in the original design. Resolved via the self-resolving VM decision gate in Step 6/Phase 1 —
+  not a Phil judgment call, an objective byte-diff question.</p>
+  <label>Status: <select class="oq-status" data-oq="1"><option>Pending</option><option>Resolved</option><option>Deferred</option></select></label>
+  <textarea class="section-feedback" data-key="oq-1" placeholder="Notes..."></textarea>
+</div>
+
+<div class="oq-card" data-section="oq-2">
+  <div class="oq-title">OQ2 — full-run coverage threshold</div>
+  <p>Phase 0's &gt;=95%/80-95%/&lt;80% bands are sized for this plan's PFS-1yr smoke. What threshold should gate a
+  full default (multi-task) run once this lands — same bands, or a stricter bar given the cohort-size consequence
+  is now permanent, not just a smoke artifact?</p>
+  <label>Status: <select class="oq-status" data-oq="2"><option>Pending</option><option>Resolved</option><option>Deferred</option></select></label>
+  <textarea class="section-feedback" data-key="oq-2" placeholder="Notes..."></textarea>
+</div>
+
+<div class="oq-card" data-section="oq-3">
+  <div class="oq-title">OQ3 — where dropped-row/post-drop-denominator reporting should live long-term</div>
+  <p>This plan surfaces it via a console log plus the VM handoff doc readback, sufficient for this plan's scope.
+  Should it also become a persisted per-run field (result CSV metadata or a run manifest) so future comparisons
+  against historical full-cohort results can see the denominator without re-reading logs? Out of scope either way —
+  flagging so it isn't silently forgotten.</p>
+  <div class="resp"><span class="resp-label">Claude, re: "this is just input coverage right? we should have it all"</span><br/>
+  Two distinct things worth separating: <strong>Step 4 / VM Phase 0's coverage_pct</strong> is purely <em>input</em>
+  coverage — does the raw LUMIA <code>.xml</code> file exist for each person_id, nothing about labels or downstream
+  coverage. <strong>This OQ (OQ3)</strong> is a separate, secondary question — not whether coverage is complete, but
+  where to persist the dropped-row count for future reference once the check runs.
+  On "we should have it all": that's a reasonable prior, but genuinely unverified — cohort-level LUMIA file coverage
+  has never actually been measured before (only field-level coverage within a 12-patient sample, back in July).
+  That's exactly why Phase 0 exists rather than assuming it — if coverage does turn out to be ~100%, this OQ becomes
+  moot in practice (the denominator barely moves); it only matters if coverage is meaningfully less than complete.</div>
+  <label>Status: <select class="oq-status" data-oq="3"><option>Pending</option><option>Resolved</option><option>Deferred</option></select></label>
+  <textarea class="section-feedback" data-key="oq-3" placeholder="Notes..."></textarea>
+</div>
+
+<footer class="feedback-footer">
+  <h2 style="margin-top:0;border:none;padding:0;">Overall feedback</h2>
+  <textarea id="overall-feedback" placeholder="Any feedback not tied to a specific section..."></textarea>
+  <div>
+    <button class="copy-btn" id="copy-feedback-btn" onclick="copyFeedback()">Copy feedback (0 pending)</button>
+  </div>
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const PLAN_STEM = "vlm-step5-lumia-live-ehr-adapter";
+  const PLAN_SHA = "8f99261412a7d163064fb970aff01deadea34173d16224130f30eeac7c08fb50";
+  const PLAN_PATH = "docs/plans/vlm-step5-lumia-live-ehr-adapter.md";
+  const BRANCH = "main";
+
+  const CHANGES = {
+    round: "diff",
+    baseline: "plan-sha 1c17f4f4ba40 (the version reviewed via the first /explain-plan pass)",
+    sections: {
+      "step-2": {
+        s: "changed",
+        note: "Reuses the existing retrieval.corpus_dir key instead of introducing a new " +
+              "paths.lumia_corpus_dir key + a standalone config step (Phil, via /explain-plan " +
+              "feedback: \"one config path, no reason to be independent\"). The old Step 3 " +
+              "(config-file change) was folded in here and removed, since there's no committed " +
+              "config change left to make."
+      }
+    },
+    oqs: {
+      3: {
+        s: "changed",
+        note: "Added a response clarifying that Phase 0's coverage check is input-only " +
+              "coverage, distinct from this OQ's question about where to persist the dropped-row " +
+              "count long-term. The old OQ2 (config-path naming) was resolved and removed."
+      }
+    }
+  };
+
+  function applyChangesLayer() {
+    let changedCount = 0;
+    const sectionCount = Object.keys(CHANGES.sections).length;
+    const oqCount = Object.keys(CHANGES.oqs).length;
+    const textEl = document.getElementById('change-count-text');
+    if (textEl) {
+      textEl.textContent = sectionCount + " section" + (sectionCount === 1 ? "" : "s") + " changed, " +
+        oqCount + " open question" + (oqCount === 1 ? "" : "s") + " updated (1 prior OQ resolved and removed)";
+    }
+    document.querySelectorAll('details[data-section]').forEach(function (d) {
+      const key = d.getAttribute('data-section');
+      const entry = CHANGES.sections[key];
+      if (entry) {
+        changedCount++;
+        d.setAttribute('data-changed', '');
+        d.open = true;
+        const body = d.querySelector('.step-body, .gotcha-body');
+        if (body && entry.note) {
+          const note = document.createElement('p');
+          note.style.cssText = 'color:var(--accent);font-size:0.85rem;font-style:italic;margin-top:0;';
+          note.textContent = 'Changed: ' + entry.note;
+          body.insertBefore(note, body.firstChild);
+        }
+      } else {
+        d.classList.add('recede');
+      }
+    });
+    document.querySelectorAll('.oq-card[data-section]').forEach(function (card) {
+      const key = card.getAttribute('data-section');
+      const m = key.match(/oq-(\d+)/);
+      const entry = m ? CHANGES.oqs[m[1]] : null;
+      if (entry) {
+        changedCount++;
+        card.setAttribute('data-changed', '');
+      } else {
+        card.classList.add('recede');
+      }
+    });
+    return changedCount;
+  }
+
+  function wireChangeToolbar() {
+    const toggle = document.getElementById('changes-only-toggle');
+    if (toggle) {
+      toggle.addEventListener('change', function (e) {
+        document.body.classList.toggle('changes-only', e.target.checked);
+      });
+    }
+  }
+
+  window.jumpChange = function (dir) {
+    const changed = Array.from(document.querySelectorAll('[data-changed]'));
+    if (!changed.length) return;
+    const scrollTargets = changed.map(function (el) { return { el: el, top: el.getBoundingClientRect().top }; });
+    let idx;
+    if (dir > 0) {
+      idx = scrollTargets.findIndex(function (t) { return t.top > 80; });
+      if (idx === -1) idx = 0;
+    } else {
+      const above = scrollTargets.filter(function (t) { return t.top < -20; });
+      idx = above.length ? scrollTargets.indexOf(above[above.length - 1]) : scrollTargets.length - 1;
+    }
+    scrollTargets[idx].el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (scrollTargets[idx].el.tagName === 'DETAILS') scrollTargets[idx].el.open = true;
+  };
+
+  mermaid.initialize({ startOnLoad: false, theme: "neutral", flowchart: { useMaxWidth: false } });
+
+  const panZoomInstances = {};
+
+  function storageKey(key) {
+    return "explainplan::" + PLAN_STEM + "::" + PLAN_SHA + "::" + key;
+  }
+
+  function wipeStaleStorage() {
+    // Clear any feedback saved against a different plan SHA (plan was regenerated).
+    const prefix = "explainplan::" + PLAN_STEM + "::";
+    const keepPrefix = "explainplan::" + PLAN_STEM + "::" + PLAN_SHA + "::";
+    Object.keys(localStorage).forEach(function (k) {
+      if (k.indexOf(prefix) === 0 && k.indexOf(keepPrefix) !== 0) {
+        localStorage.removeItem(k);
+      }
+    });
+  }
+
+  function restoreFeedback() {
+    document.querySelectorAll("textarea.section-feedback, #overall-feedback").forEach(function (ta) {
+      const key = ta.id === "overall-feedback" ? "overall" : ta.getAttribute("data-key");
+      const saved = localStorage.getItem(storageKey("fb::" + key));
+      if (saved) ta.value = saved;
+      ta.addEventListener("input", function () {
+        localStorage.setItem(storageKey("fb::" + key), ta.value);
+        updatePendingCount();
+      });
+    });
+    document.querySelectorAll("select.oq-status").forEach(function (sel) {
+      const n = sel.getAttribute("data-oq");
+      const saved = localStorage.getItem(storageKey("oqstatus::" + n));
+      if (saved) sel.value = saved;
+      sel.addEventListener("change", function () {
+        localStorage.setItem(storageKey("oqstatus::" + n), sel.value);
+      });
+    });
+  }
+
+  function updatePendingCount() {
+    let count = 0;
+    document.querySelectorAll("textarea.section-feedback, #overall-feedback").forEach(function (ta) {
+      if (ta.value.trim().length > 0) count++;
+    });
+    document.getElementById("copy-feedback-btn").textContent = "Copy feedback (" + count + " pending)";
+  }
+
+  function copyFeedback() {
+    let out = "# Resume: apply explain-plan feedback\n";
+    out += "Plan: " + PLAN_PATH + " · branch: " + BRANCH + " · plan-sha: " + PLAN_SHA.slice(0, 12) + "\n";
+    out += "→ If you're picking this up in a fresh session, read the plan doc above (plus any related docs / memory it points to) first. Then apply the feedback below.\n\n";
+    out += "# Feedback on " + PLAN_STEM + "\n\n";
+
+    document.querySelectorAll("details[data-section]").forEach(function (d) {
+      const key = d.getAttribute("data-section");
+      const ta = d.querySelector("textarea.section-feedback");
+      if (ta && ta.value.trim()) {
+        out += "## " + key + "\n" + ta.value.trim() + "\n\n";
+      }
+    });
+    document.querySelectorAll(".oq-card").forEach(function (card) {
+      const key = card.getAttribute("data-section");
+      const ta = card.querySelector("textarea.section-feedback");
+      const sel = card.querySelector("select.oq-status");
+      if (ta && ta.value.trim()) {
+        out += "## " + key.toUpperCase().replace("-", "") + "\n";
+        out += "Status: " + sel.value + "\n";
+        out += ta.value.trim() + "\n\n";
+      }
+    });
+    const overall = document.getElementById("overall-feedback").value.trim();
+    if (overall) {
+      out += "## Overall\n" + overall + "\n";
+    }
+
+    navigator.clipboard.writeText(out).then(function () {
+      showToast("Feedback copied — paste into a Claude session.");
+    }, function () {
+      showToast("Copy failed — select and copy manually.");
+    });
+  }
+
+  function showToast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    setTimeout(function () { t.classList.remove("show"); }, 2400);
+  }
+
+  function wrapAndRenderDiagrams() {
+    mermaid.run({ querySelector: "pre.mermaid" }).then(function () {
+      document.querySelectorAll(".diagram-wrap").forEach(function (wrap) {
+        const svg = wrap.querySelector("svg");
+        if (!svg) return;
+        svg.removeAttribute("style");
+        svg.style.width = "100%";
+        svg.style.height = "100%";
+        const name = wrap.getAttribute("data-diagram");
+        panZoomInstances[name] = svgPanZoom(svg, {
+          zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
+          minZoom: 0.3, maxZoom: 8
+        });
+      });
+    });
+  }
+
+  function resetDiagram(name) {
+    const inst = panZoomInstances[name];
+    if (inst) { inst.resetZoom(); inst.center(); }
+  }
+
+  function toggleFullscreen(name) {
+    const wrap = document.querySelector('.diagram-wrap[data-diagram="' + name + '"]');
+    wrap.classList.toggle("fullscreen");
+    setTimeout(function () {
+      const inst = panZoomInstances[name];
+      if (inst) { inst.resize(); inst.fit(); inst.center(); }
+    }, 60);
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      document.querySelectorAll(".diagram-wrap.fullscreen").forEach(function (w) {
+        w.classList.remove("fullscreen");
+        const name = w.getAttribute("data-diagram");
+        setTimeout(function () {
+          const inst = panZoomInstances[name];
+          if (inst) { inst.resize(); inst.fit(); inst.center(); }
+        }, 60);
+      });
+    }
+  });
+
+  window.addEventListener("resize", function () {
+    Object.keys(panZoomInstances).forEach(function (name) {
+      const inst = panZoomInstances[name];
+      if (inst) { inst.resize(); inst.fit(); inst.center(); }
+    });
+  });
+
+  wipeStaleStorage();
+  restoreFeedback();
+  updatePendingCount();
+  wrapAndRenderDiagrams();
+  applyChangesLayer();
+  wireChangeToolbar();
+</script>
+
+</body>
+</html>
