@@ -14,7 +14,7 @@ Main sections in [configs/all_tasks.yaml](../configs/all_tasks.yaml):
 | **models** | List of `{ type, name }` (e.g. `gemma3`, `google/medgemma-4b-it`). |
 | **tasks** | List of task names to run (subset of valid_tasks; use config tasks or override via `--tasks`). |
 | **experiments** | List of experiment names (e.g. `no_image`, `path_full`, `axial_all_image`, retrieval variants). |
-| **retrieval** | Used when any experiment is retrieval-based: `enabled`, `corpus_dir`, `cache_dir`, iterations, batch size, timeline cache, etc. |
+| **retrieval** | Used when any experiment is retrieval-based: `enabled`, `corpus_dir`, `cache_dir`, iterations, batch size, timeline cache, etc. `corpus_dir` is now dual-purpose (Step 5): the live-LUMIA EHR adapter also reads it to resolve each patient's `<person_id>.xml` file, even when no experiment in the run is retrieval-based. Set it in your VM-local `configs/all_tasks.vm.yaml` overlay. |
 | **timeline_truncation** | `mode` (`last_k_events` or `max_chars`), `k` or `max_chars`. |
 | **subsample** | If `true`, use `_subsampled*.csv` filenames. |
 | **weill** | `gpu_nodes` (list of GPU IDs) for [eval/weill.sh](../eval/weill.sh). |
@@ -93,12 +93,12 @@ If the chosen loader returned None (e.g. missing file), that experiment is skipp
 
 | Experiment | Data source | Timeline column | Prompt construction | Images (in vqa_dataset) |
 |------------|-------------|-----------------|---------------------|-------------------------|
-| **no_image** | BQ/cache + `_subsampled.csv` | From timeline CSV merge | `prompts_map[task]` with `[PATIENT_TIMELINE]` replaced by truncated timeline | None |
+| **no_image** | BQ/cache + `_subsampled.csv` | Live LUMIA render (Step 5) | `prompts_map[task]` with `[PATIENT_TIMELINE]` replaced by truncated timeline | None |
 | **axial_all_image** | Same as no_image | Same | Same (timeline in prompt) | 30 axial CT slices from `nifti_path` |
 | **no_timeline** | BQ/cache + `_subsampled_no_img_report.csv` (no timeline merge) | None | `image_prompts_map` or `prompts_map` (template only, no timeline) | 50 axial CT slices |
-| **no_report** | BQ/cache + `_subsampled_no_img_report.csv` + timeline | From CSV | `prompts_map` with timeline only (no report) | 10 axial CT slices |
-| **timeline_only** | Same as no_report | From CSV | `prompts_map` with timeline only | None |
-| **report** | Same as no_report | From CSV | `prompts_map` with timeline + `"\nRadiology Report: " + row['report']` | None |
+| **no_report** | BQ/cache + `_subsampled_no_img_report.csv` + timeline | Live LUMIA render, windowed + STANFORD-filtered (Step 5) | `prompts_map` with timeline only (no report) | 10 axial CT slices |
+| **timeline_only** | Same as no_report | Same | `prompts_map` with timeline only | None |
+| **report** | Same as no_report | Same | `prompts_map` with timeline + `"\nRadiology Report: " + row['report']` | None |
 | **all_vb_timeline_only** | `{task}_full.parquet` | `patient_string` | `prompts_map` with truncated `patient_string` | None |
 | **all_vb_image_only** | `{task}_full.parquet` (rows with `nifti_path`, `_accession_number`) | None | `image_prompts_map` or `prompts_map` | 50 axial CT slices |
 | **path** | `v1_3/.../{task}_path_subsampled.csv` + `path_tile_paths` from test_patch | None | `image_prompts_map` or `prompts_map` (template only) | Pathology tiles from `path_tile_paths` |
@@ -110,9 +110,24 @@ If the chosen loader returned None (e.g. missing file), that experiment is skipp
 | **retrieved_timeline_with_image** | Same | N/A | Per-iteration timeline + image | 50 axial CT slices |
 | **retrieved_timeline_per_iteration_summarization_with_image** | Same | N/A | Summarized per-iteration + image | 50 axial CT slices |
 
+### EHR source (Step 5): live LUMIA render vs. pre-rendered `patient_string`
+
+For `no_image`, `axial_all_image`, `no_report`, `timeline_only`, and `report`, `timeline_col` is no
+longer read directly from the pre-rendered `patient_string`/`patient_timeline` CSV column. The local
+timeline CSV merge (see [00-data-setup.md](00-data-setup.md)) still runs first and still restricts
+the task cohort via the `person_id` join — but `_apply_ehr_adapter` (`run_bq.py`) then **overwrites**
+`timeline_col` by parsing each surviving patient's real LUMIA `.xml` (from `retrieval.corpus_dir`),
+running it through the preset's filter chain (`window`/`code_filter`, see `context/presets.py`), and
+rendering via the canonical `get_llm_event_string`/`truncate_timeline`. **Fail-closed:** a patient
+with no resolvable LUMIA file is dropped from the experiment entirely — there is no fallback to the
+old CSV text — and the dropped-row count is always printed (`[EHR] dropping N/M rows ...`), since it
+now directly shrinks the eval cohort. `all_vb_timeline_only` and `path_full` are untouched
+(`passthrough` variant, pre-rendered text kept as-is), as are retrieval experiments (their own
+`build_retrieval_prompts` path never reaches this method's generic branch).
+
 ### Prompt building: `_build_prompts_for_experiment(df, task_info, experiment, timeline_col)`
 
-This method returns a DataFrame (possibly with more rows for per-iteration retrieval) with a `dynamic_prompt` column. Branch order:
+This method returns a DataFrame (possibly with more rows for per-iteration retrieval) with a `dynamic_prompt` column. The EHR-adapter overwrite above runs first (right after `df_exp = df.copy()`), for the wired experiments only. Branch order below then follows on the (possibly row-reduced) `df_exp`:
 
 1. **no_timeline, all_vb_image_only, path** — Use `image_prompts_map.get(task_name)` or `prompts_map.get(task_name)` as the only prompt text; no timeline or report injected.
 2. **path_image_and_report** — Same base template; append `"\n\nPathology note:\n" + row[path_note_text]` (or template only if no path_note column).
