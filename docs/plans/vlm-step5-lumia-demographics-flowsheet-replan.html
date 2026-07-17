@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="plan-sha256" content="ff817278f8389d921224a4f9b6d94b8fd13c156058bf18f17730082082ff8795">
+<title>Step 5 re-plan: demographics gap + flowsheet divergence</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<style>
+  :root {
+    --bg: #f7f7f9; --panel: #ffffff; --text: #1c1e21; --muted: #5b6572;
+    --border: #dcdfe4; --accent: #0b6bcb; --accent-soft: #e8f1fb;
+    --pending: #b8860b; --blocked: #b02a37; --shipped: #147a3f; --partial: #a15c00;
+    --pradd: #0891b2; --pradd-soft: #e0f7fb;
+    --mod: #b45309; --mod-soft: #fdf1e0;
+    --untouched: #8a94a3; --legacy: #a15c00;
+    --code-bg: #eef0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1d2025; --text: #e7e9ec; --muted: #9aa4b2;
+      --border: #34383f; --accent: #6cb2ff; --accent-soft: #17324a;
+      --pending: #e0b03b; --blocked: #ff6b76; --shipped: #55d18a; --partial: #f0a94e;
+      --pradd: #37c9e6; --pradd-soft: #0f2f36;
+      --mod: #f0a94e; --mod-soft: #3a2a12;
+      --untouched: #6b7280; --legacy: #f0a94e;
+      --code-bg: #262a30;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.55;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 20px 80px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px 22px; margin-bottom: 20px;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 6px; }
+  h2 { font-size: 1.15rem; margin: 0 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 1rem; margin: 14px 0 8px; }
+  code, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.86em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre.snippet {
+    background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.82rem; line-height: 1.5;
+  }
+  .header-meta { color: var(--muted); font-size: 0.86rem; }
+  .header-meta span { margin-right: 14px; }
+  .tldr { font-size: 1.02rem; }
+  .chip {
+    display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.74rem;
+    font-weight: 600; letter-spacing: 0.02em; margin-right: 6px;
+  }
+  .chip.pending { background: color-mix(in srgb, var(--pending) 18%, transparent); color: var(--pending); }
+  .chip.blocked { background: color-mix(in srgb, var(--blocked) 18%, transparent); color: var(--blocked); }
+  .chip.shipped { background: color-mix(in srgb, var(--shipped) 18%, transparent); color: var(--shipped); }
+  .chip.partial { background: color-mix(in srgb, var(--partial) 18%, transparent); color: var(--partial); }
+
+  .diagram-wrap {
+    height: 460px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px;
+    position: relative; background: var(--panel);
+  }
+  .diagram-wrap.tall { height: 560px; }
+  .diagram-hint {
+    position: absolute; bottom: 6px; left: 10px; font-size: 0.72rem; color: var(--muted);
+    background: color-mix(in srgb, var(--panel) 80%, transparent); padding: 1px 6px; border-radius: 4px;
+    pointer-events: none;
+  }
+  .diagram-controls { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 5; }
+  .diagram-controls button {
+    font-size: 0.72rem; padding: 3px 8px; border-radius: 5px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); cursor: pointer;
+  }
+  .diagram-wrap.fullscreen {
+    position: fixed; inset: 20px; height: auto; z-index: 100; box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+  }
+
+  details.step, details.gotcha {
+    border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; padding: 0;
+    background: var(--panel);
+  }
+  details.step > summary, details.gotcha > summary {
+    padding: 11px 14px; cursor: pointer; font-weight: 600; list-style: none;
+  }
+  details.step > summary::-webkit-details-marker, details.gotcha > summary::-webkit-details-marker { display: none; }
+  details.step > summary::before, details.gotcha > summary::before { content: "▸ "; color: var(--muted); }
+  details[open] > summary::before { content: "▾ "; }
+  .step-body, .gotcha-body { padding: 4px 16px 16px; }
+  .step-body .files { font-size: 0.86rem; color: var(--muted); margin-top: 8px; }
+  textarea.section-feedback {
+    width: 100%; min-height: 54px; margin-top: 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--code-bg); color: var(--text); font-family: inherit; font-size: 0.86rem; padding: 8px;
+    resize: vertical;
+  }
+
+  .oq-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .oq-card .oq-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .oq-card select {
+    background: var(--code-bg); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px;
+  }
+  .oq-card textarea {
+    width: 100%; min-height: 44px; margin-top: 6px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--code-bg); color: var(--text); font-family: inherit; font-size: 0.86rem; padding: 8px;
+  }
+
+  .legend-note { font-size: 0.78rem; color: var(--muted); margin-top: 6px; }
+
+  .footer-feedback {
+    position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--border);
+    padding: 12px 20px; margin: 0 -20px -80px; box-shadow: 0 -4px 14px rgba(0,0,0,0.06);
+  }
+  .footer-feedback textarea {
+    width: 100%; min-height: 50px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--code-bg); color: var(--text); font-family: inherit; font-size: 0.86rem; padding: 8px;
+  }
+  .footer-feedback button {
+    margin-top: 8px; padding: 7px 14px; border-radius: 6px; border: none; background: var(--accent);
+    color: white; font-weight: 600; cursor: pointer; font-size: 0.86rem;
+  }
+  .toast {
+    position: fixed; bottom: 90px; right: 24px; background: var(--panel); border: 1px solid var(--border);
+    padding: 8px 14px; border-radius: 8px; font-size: 0.84rem; box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    display: none; z-index: 200;
+  }
+  .first-review-banner {
+    background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 10px 14px; font-size: 0.86rem; margin-bottom: 18px;
+  }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card">
+    <div class="header-meta">
+      <span>Status: <strong>Draft</strong></span>
+      <span>Branch: <code>feat/lumia-live-ehr-adapter</code></span>
+      <span>Repo: <code>vista_eval_vlm</code></span>
+      <span>Source: <code>docs/plans/vlm-step5-lumia-demographics-flowsheet-replan.md</code></span>
+      <span>SHA-256: <code id="sha-display">ff817278f838…2ff8795</code></span>
+      <span>Generated: 2026-07-17</span>
+    </div>
+    <h1>Step 5 re-plan: close the parse_lumia demographics gap, accept the flowsheet divergence, re-verify</h1>
+    <p class="tldr">
+      The VM hit a class-3 deviation verifying the LUMIA-live EHR adapter: the live render and the legacy
+      <code>patient_string</code> were near-disjoint (102/~24,000 shared lines). Planner-side investigation
+      found this splits into a <strong>confirmed parser bug</strong> (demographics — birthdate/ethnicity/gender —
+      live in a real, documented XML element <code>parse_lumia</code> never reads) and a
+      <strong>likely-intentional upstream data-quality exclusion</strong> (flowsheet observations, stripped by
+      meds2text's default STARR-OMOP extraction transform for documented reliability reasons). Phil's call: fix
+      the bug, accept the exclusion, re-measure. This plan adds the fix, a new comparison mechanism for the
+      accepted exclusion, and re-runs the original plan's Phase&nbsp;1 decision gate.
+    </p>
+  </div>
+
+  <div class="first-review-banner">
+    First review — this is the first generated HTML for this plan doc; there is no prior version to diff
+    against. The change-since-last-review layer activates on the next regeneration.
+  </div>
+
+  <div class="card">
+    <h2>Repo map — where this lands</h2>
+    <div class="diagram-wrap" id="dw-repo">
+      <div class="diagram-controls">
+        <button onclick="resetDiagram('dw-repo')">Reset</button>
+        <button onclick="toggleFullscreen('dw-repo')">Fullscreen</button>
+      </div>
+      <pre class="mermaid" id="mm-repo">
+flowchart LR
+  subgraph meds2text["meds2text, upstream, external"]
+    textify["textify.py<br/>event_to_xml generator"]
+    stanfordxform["transforms/core.py<br/>_get_stanford_transformations<br/>strips STANFORD_OBS/Flowsheet"]
+    corpus["gs cohort_lumia bucket<br/>*.xml corpus"]
+  end
+  subgraph vlmrepo["vista_eval_vlm, this PR"]
+    ehr["ehr.py<br/>parse_lumia, _lumia_event_to_row"]
+    diffgolden["diff_golden.py<br/>strip_excluded_lines, new"]
+    plandoc["docs and plan updates"]
+  end
+  subgraph legacy["Legacy DB-refetch fork, untouched, being retired"]
+    remove_report["remove_imaging_report.py"]
+    medsdb["meds_reader.SubjectDatabase<br/>direct MEDS query"]
+  end
+
+  stanfordxform --> corpus
+  textify --> corpus
+  corpus --> ehr
+  medsdb --> remove_report
+  remove_report --> patientstring["patient_string CSV column<br/>legacy baseline"]
+  ehr --> diffgolden
+  patientstring --> diffgolden
+  diffgolden --> plandoc
+
+  subgraph legend["Color legend"]
+    lg1["THIS PR modifies, cyan"]
+    lg2["Untouched upstream context, grey dashed"]
+    lg3["Legacy fork being retired, amber"]
+  end
+
+  class ehr,diffgolden pradd
+  class textify,stanfordxform,corpus untouched
+  class remove_report,medsdb,patientstring legacyfork
+  class lg1 pradd
+  class lg2 untouched
+  class lg3 legacyfork
+  classDef pradd fill:#0891b2,stroke:#0e7490,color:#fff,stroke-width:2px;
+  classDef untouched fill:transparent,stroke:#8a94a3,color:#8a94a3,stroke-dasharray:4 3;
+  classDef legacyfork fill:#fdf1e0,stroke:#a15c00,color:#7a4600;
+      </pre>
+      <div class="diagram-hint">scroll to zoom &bull; drag to pan</div>
+    </div>
+    <p class="legend-note">
+      Negative space matters: meds2text's generator and the flowsheet-stripping transform are untouched context
+      — the fix lands entirely inside <code>vista_eval_vlm</code>. The legacy DB-refetch fork is a structurally
+      separate pipeline, already flagged for retirement in the original 2026-07-06 roadmap review.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Blast radius</h2>
+    <div class="diagram-wrap tall" id="dw-blast">
+      <div class="diagram-controls">
+        <button onclick="resetDiagram('dw-blast')">Reset</button>
+        <button onclick="toggleFullscreen('dw-blast')">Fullscreen</button>
+      </div>
+      <pre class="mermaid" id="mm-blast">
+flowchart LR
+  subgraph inputs["Data sources"]
+    personxml["&lt;person&gt; element<br/>birthdate, ethnicity, gender"]
+    eventxml["&lt;event&gt; elements<br/>existing path, unchanged"]
+  end
+  subgraph files["Files touched"]
+    parselumia["parse_lumia<br/>ehr.py"]
+    rowfn["_lumia_event_to_row<br/>ehr.py"]
+    stripfn["strip_excluded_lines<br/>diff_golden.py, new"]
+    clidiff["--exclude-line-patterns<br/>diff_golden.py CLI flag, new"]
+  end
+  subgraph outputs["Outputs"]
+    demorows["MEDS_BIRTH, Ethnicity, Gender<br/>pseudo-event rows, new"]
+    renderedtext["dynamic_prompt,<br/>adapter_prompt_string"]
+    gateresult["RESULT: ALL GATES PASS<br/>or GATE FAILURE"]
+  end
+  subgraph consumers["Consumers, unchanged"]
+    renderer["get_llm_event_string<br/>meds_timeline_utils.py"]
+    phase1gate["Phase 1 decision gate<br/>code_filter for timeline variant"]
+  end
+
+  personxml --> parselumia
+  eventxml --> rowfn
+  parselumia --> demorows
+  rowfn --> demorows
+  demorows --> renderer
+  renderer --> renderedtext
+  renderedtext --> stripfn
+  stripfn --> clidiff
+  clidiff --> gateresult
+  gateresult --> phase1gate
+
+  subgraph legend["Color legend"]
+    lg1["New, added, cyan"]
+    lg2["Modified existing function, amber"]
+    lg3["Unchanged consumer, grey dashed"]
+  end
+
+  class personxml,demorows,stripfn,clidiff pradd
+  class parselumia,rowfn modn
+  class renderer,phase1gate,eventxml untouched
+  class lg1 pradd
+  class lg2 modn
+  class lg3 untouched
+  classDef pradd fill:#0891b2,stroke:#0e7490,color:#fff,stroke-width:2px;
+  classDef modn fill:#fdf1e0,stroke:#b45309,color:#7a4600,stroke-width:2px;
+  classDef untouched fill:transparent,stroke:#8a94a3,color:#8a94a3,stroke-dasharray:4 3;
+      </pre>
+      <div class="diagram-hint">scroll to zoom &bull; drag to pan</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Order of operations</h2>
+    <div class="diagram-wrap tall" id="dw-order">
+      <div class="diagram-controls">
+        <button onclick="resetDiagram('dw-order')">Reset</button>
+        <button onclick="toggleFullscreen('dw-order')">Fullscreen</button>
+      </div>
+      <pre class="mermaid" id="mm-order">
+flowchart TD
+  vmready["Phase 0.5: VM inspects real .xml person block<br/>plus already-banked legacy golden lines<br/>PENDING"]
+  macfix["Mac: ehr.py fix<br/>demographics rows plus table attr<br/>BLOCKED on Phase 0.5"]
+  macdiff["Mac: diff_golden.py<br/>strip_excluded_lines plus CLI flag<br/>PENDING, no blocker"]
+  phase1step["Phase 1: re-run decision gate<br/>with fix plus exclusion flag<br/>BLOCKED"]
+  phase2step["Phase 2: allowlist gate<br/>unchanged from original plan<br/>BLOCKED"]
+  phase3step["Phase 3: human visual-QA render<br/>unchanged from original plan<br/>BLOCKED"]
+  landstep["Land to main<br/>BLOCKED"]
+
+  vmready -->|confirms conventions| macfix
+  macdiff -->|feeds gate tooling| phase1step
+  macfix --> phase1step
+  phase1step --> phase2step
+  phase2step --> phase3step
+  phase3step -->|Phil reads rendered HTML himself| landstep
+
+  class vmready,macdiff pending
+  class macfix,phase1step,phase2step,phase3step,landstep blocked
+  classDef pending fill:#fdf1e0,stroke:#b8860b,color:#7a5c00,stroke-width:2px;
+  classDef blocked fill:transparent,stroke:#b02a37,color:#b02a37,stroke-dasharray:3 3;
+      </pre>
+      <div class="diagram-hint">scroll to zoom &bull; drag to pan</div>
+    </div>
+    <p class="legend-note">
+      Phase 0.5 and the <code>diff_golden.py</code> mechanism can proceed in parallel — the CLI flag has no
+      dependency on the VM's schema confirmation. The <code>ehr.py</code> fix specifically needs Phase 0.5's
+      code/description conventions first, per the plan's "don't speculate" discipline.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Knobs and contracts</h2>
+    <h3><code>--exclude-line-patterns</code> (new CLI flag, <code>diff_golden.py</code>)</h3>
+    <p>Type: list of substrings. Default: empty (no exclusions — existing non-EHR callers unaffected).
+      Applied to both BEFORE and AFTER text, before the existing <code>normalize_text</code> comparison.
+      Distinct from <code>normalize_text</code>'s allowlist: this drops whole lines for a <em>declared,
+      permanent</em> divergence, not a formatting delta.</p>
+    <pre class="snippet">diff_golden ... --mode strict --exclude-line-patterns "STANFORD_OBS/Flowsheet"</pre>
+
+    <h3>Demographic pseudo-event row shape (new, <code>ehr.py</code>)</h3>
+    <p>Synthesized rows use the exact same shape <code>_lumia_event_to_row</code> already produces —
+      <code>time</code> / <code>code</code> / <code>description</code> / <code>numeric_value</code> /
+      <code>unit</code> / <code>text_value</code> — so <code>get_llm_event_string</code> renders them with
+      zero special-casing. Exact <code>code</code>/<code>description</code> string conventions are VM-confirmed
+      in Phase 0.5, not guessed here (see Open Questions).</p>
+
+    <h3><code>_lumia_event_to_row</code> attribute fix</h3>
+    <pre class="snippet">- "type": attrib.get("type"),
++ "type": attrib.get("table"),</pre>
+    <p>Matches meds2text's real emitted attribute (<code>textify.py</code>'s <code>attribute_order</code>
+      defaults to <code>["table", "code", "name"]</code>). Fixes a silently-broken field for any future
+      <code>type</code>-keyed filter; doesn't affect the demographics or flowsheet gap directly.</p>
+  </div>
+
+  <div class="card">
+    <h2>Steps</h2>
+
+    <details class="step" data-section="step-1" open>
+      <summary>1. VM-side inspection first — don't speculate the conventions on the Mac</summary>
+      <div class="step-body">
+        <p>Confirm two things before writing the <code>ehr.py</code> fix: whether <code>&lt;person&gt;</code>
+          repeats identically per-encounter (needs dedup?) and whether real files carry a race field beyond
+          <code>markup.md</code>'s documented <code>ethnicity</code>/<code>gender</code>. Also inspect the
+          <strong>already-banked</strong> legacy golden file's rendered demographic lines — format only, never
+          a real patient's actual line — to get the exact code/description conventions.</p>
+        <div class="files">Files: none yet — read-only VM inspection (Phase 0.5)</div>
+        <textarea class="section-feedback" placeholder="Comment on this step..."></textarea>
+      </div>
+    </details>
+
+    <details class="step" data-section="step-2">
+      <summary>2. Extend <code>parse_lumia</code> to synthesize demographic rows from <code>&lt;person&gt;</code></summary>
+      <div class="step-body">
+        <p>Once Phase 0.5 confirms conventions: read <code>&lt;birthdate&gt;</code> and
+          <code>&lt;demographics&gt;&lt;ethnicity/gender&gt;</code> per patient (deduped across encounters if
+          they repeat), append rows in the existing event-row shape. Flows through the unmodified
+          <code>get_llm_event_string</code> renderer. If Phase 0.5 shows no race field in real XML, Race joins
+          the accepted-divergence list alongside STANFORD_OBS (step 4).</p>
+        <div class="files">Files: <code>src/context/adapters/ehr.py</code></div>
+        <textarea class="section-feedback" placeholder="Comment on this step..."></textarea>
+      </div>
+    </details>
+
+    <details class="step" data-section="step-3">
+      <summary>3. Fix <code>_lumia_event_to_row</code>'s attribute read (type &rarr; table)</summary>
+      <div class="step-body">
+        <p><code>ehr.py:106</code> currently reads <code>attrib.get("type")</code>; change to
+          <code>attrib.get("table")</code> to match meds2text's real emitted attribute name. Doesn't affect the
+          demographics or STANFORD_OBS gap directly, but fixes a silently-broken field for any future
+          <code>type</code>-keyed filter (<code>note_type_filter</code>).</p>
+        <div class="files">Files: <code>src/context/adapters/ehr.py</code></div>
+        <textarea class="section-feedback" placeholder="Comment on this step..."></textarea>
+      </div>
+    </details>
+
+    <details class="step" data-section="step-4">
+      <summary>4. Add a "declared-excluded-class" mechanism to <code>diff_golden.py</code></summary>
+      <div class="step-body">
+        <p><code>normalize_text</code>'s guardrails are deliberately line-count-preserving (formatting-only).
+          The STANFORD_OBS (and possibly Race) divergence is permanent and event-count-changing, and cannot be
+          resolved via <code>code_filter</code> config choice alone — the "before" bank runs the old pre-wiring
+          code path, which has no concept of <code>select</code>/<code>code_filter</code> at all. Add
+          <code>strip_excluded_lines(text, patterns)</code>: split into lines, drop any line containing a
+          declared substring (e.g. <code>"STANFORD_OBS/Flowsheet"</code>), rejoin. Apply to both BEFORE/AFTER
+          before the existing comparison. Sound because <code>get_llm_event_string</code> embeds the literal
+          <code>code</code> string in every rendered line — the same convention its own <code>exclude_report</code>
+          flag already substring-matches on.</p>
+        <div class="files">Files: <code>src/vista_run/diff_golden.py</code></div>
+        <textarea class="section-feedback" placeholder="Comment on this step..."></textarea>
+      </div>
+    </details>
+
+    <details class="step" data-section="step-5">
+      <summary>5. Re-run Phase 1's decision gate with the fix + exclusion mechanism</summary>
+      <div class="step-body">
+        <p>Re-uses the existing plan's Phase 1 mechanism unchanged (restricted-input worktree banking,
+          <code>diff_golden --mode strict</code>) — only adds
+          <code>--exclude-line-patterns STANFORD_OBS/Flowsheet</code> (and <code>Race</code> if Phase 0.5
+          concluded it's a genuine source gap) to the invocation.</p>
+        <div class="files">Files: none new — re-run of existing Phase 1 tooling</div>
+        <textarea class="section-feedback" placeholder="Comment on this step..."></textarea>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>Gotchas</h2>
+
+    <details class="gotcha" data-section="gotcha-oldbank">
+      <summary>The "before" bank runs old code — it can't be reconfigured</summary>
+      <div class="gotcha-body">
+        <p>Phase 1's before-bank is generated from a worktree at the pre-wiring parent SHA. That code has no
+          concept of <code>select</code>/<code>code_filter</code> chains at all — changing the after-side's
+          config can only ever reduce the after-side's content, never make legacy's baked-in
+          <code>patient_string</code> exclude flowsheets it already contains. This is why a new comparison
+          mechanism (step 4) is necessary rather than optional.</p>
+      </div>
+    </details>
+
+    <details class="gotcha" data-section="gotcha-markup">
+      <summary><code>markup.md</code> is a known-incomplete schema doc</summary>
+      <div class="gotcha-body">
+        <p>It documented <code>type=</code> instead of the real <code>table=</code> attribute, and originally
+          listed fewer fields than real files carry. Don't treat its silence on a Race field as proof Race is
+          absent from real XML — that needs an empirical VM check (Open Questions).</p>
+      </div>
+    </details>
+
+    <details class="gotcha" data-section="gotcha-phi">
+      <summary>PHI discipline when inspecting the already-banked golden file</summary>
+      <div class="gotcha-body">
+        <p>Report the structural pattern only (e.g. "MEDS_BIRTH as a bare code, no description" or
+          "Gender/FEMALE-style value-in-code") — never a real patient's actual rendered line. Same discipline as
+          the existing plan's Phase-2/Step-3 PHI notes.</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>Open questions</h2>
+
+    <div class="oq-card" id="oq-1">
+      <div class="oq-head">
+        <strong>OQ1 — Demographic code/description string conventions</strong>
+        <select data-oq="1"><option>Pending</option><option>Resolved</option><option>Deferred</option></select>
+      </div>
+      <p>VM confirms against the already-banked legacy golden file's format in Phase 0.5 — do not speculate on
+        the Mac.</p>
+      <textarea placeholder="Notes..."></textarea>
+    </div>
+
+    <div class="oq-card" id="oq-2">
+      <div class="oq-head">
+        <strong>OQ2 — Does &lt;person&gt; repeat per-encounter?</strong>
+        <select data-oq="2"><option>Pending</option><option>Resolved</option><option>Deferred</option></select>
+      </div>
+      <p>VM confirms against a real <code>.xml</code> whether dedup logic is needed before synthesizing one row
+        per patient.</p>
+      <textarea placeholder="Notes..."></textarea>
+    </div>
+
+    <div class="oq-card" id="oq-3">
+      <div class="oq-head">
+        <strong>OQ3 — Is Race present in real LUMIA XML at all?</strong>
+        <select data-oq="3"><option>Pending</option><option>Resolved</option><option>Deferred</option></select>
+      </div>
+      <p>Not in <code>markup.md</code>'s documented <code>&lt;demographics&gt;</code> fields (only
+        ethnicity/gender). If absent, Race joins the accepted-divergence list; if present, it gets synthesized
+        alongside the other demographic fields.</p>
+      <textarea placeholder="Notes..."></textarea>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Landing and cleanup</h2>
+    <p>Unchanged from the existing plan: single branch (<code>feat/lumia-live-ehr-adapter</code>) off
+      <code>main</code>, <code>/land</code> at the end once all phases are green <em>including</em> Phil's
+      Phase-3 human read of the rendered HTML. This re-plan doesn't change the landing gate, only what
+      Phases 1&ndash;2 verify against.</p>
+  </div>
+
+</div>
+
+<div class="footer-feedback">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+    <strong style="font-size:0.9rem;">Overall feedback</strong>
+    <button id="copy-btn" onclick="copyFeedback()">Copy feedback (0 pending)</button>
+  </div>
+  <textarea id="overall-feedback" placeholder="Any overall comments..."></textarea>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+  const planPath = "docs/plans/vlm-step5-lumia-demographics-flowsheet-replan.md";
+  const planBranch = "feat/lumia-live-ehr-adapter";
+  const planSha = "ff817278f8389d921224a4f9b6d94b8fd13c156058bf18f17730082082ff8795";
+
+  mermaid.initialize({ startOnLoad: false, theme: 'neutral', flowchart: { useMaxWidth: false } });
+
+  function storageKey(id) { return `explainplan::${planSha}::${id}`; }
+
+  function persistTextareas() {
+    document.querySelectorAll('textarea').forEach((ta, i) => {
+      const id = ta.id || ta.closest('[data-section]')?.dataset.section || ta.closest('.oq-card')?.id || `ta-${i}`;
+      ta.addEventListener('input', () => localStorage.setItem(storageKey(id), ta.value));
+      const saved = localStorage.getItem(storageKey(id));
+      if (saved) ta.value = saved;
+    });
+    document.querySelectorAll('select[data-oq]').forEach(sel => {
+      const id = `oq-select-${sel.dataset.oq}`;
+      sel.addEventListener('change', () => localStorage.setItem(storageKey(id), sel.value));
+      const saved = localStorage.getItem(storageKey(id));
+      if (saved) sel.value = saved;
+    });
+  }
+
+  function countPending() {
+    let n = 0;
+    document.querySelectorAll('textarea').forEach(ta => { if (ta.value.trim()) n++; });
+    return n;
+  }
+
+  function updateCopyButton() {
+    document.getElementById('copy-btn').textContent = `Copy feedback (${countPending()} pending)`;
+  }
+
+  function copyFeedback() {
+    let out = `# Resume: apply explain-plan feedback\n`;
+    out += `Plan: ${planPath} · branch: ${planBranch} · plan-sha: ${planSha.slice(0,12)}\n`;
+    out += `→ If you're picking this up in a fresh session, read the plan doc above (plus any related docs / memory it points to) first. Then apply the feedback below.\n\n`;
+    out += `# Feedback on Step 5 demographics/flowsheet re-plan\n\n`;
+    document.querySelectorAll('[data-section]').forEach(el => {
+      const ta = el.querySelector('textarea.section-feedback');
+      if (ta && ta.value.trim()) {
+        out += `## ${el.dataset.section}\n${ta.value.trim()}\n\n`;
+      }
+    });
+    document.querySelectorAll('.oq-card').forEach(card => {
+      const n = card.querySelector('select').dataset.oq;
+      const status = card.querySelector('select').value;
+      const notes = card.querySelector('textarea').value.trim();
+      if (status !== 'Pending' || notes) {
+        out += `## OQ${n}\nStatus: ${status}\n${notes}\n\n`;
+      }
+    });
+    const overall = document.getElementById('overall-feedback').value.trim();
+    if (overall) out += `## Overall\n${overall}\n`;
+
+    navigator.clipboard.writeText(out).then(() => showToast('Feedback copied — paste into Claude.'));
+  }
+
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg; t.style.display = 'block';
+    setTimeout(() => t.style.display = 'none', 2600);
+  }
+
+  const panZoomInstances = {};
+  function resetDiagram(wrapId) {
+    const inst = panZoomInstances[wrapId];
+    if (inst) { inst.resize(); inst.fit(); inst.center(); }
+  }
+  function toggleFullscreen(wrapId) {
+    const el = document.getElementById(wrapId);
+    el.classList.toggle('fullscreen');
+    setTimeout(() => resetDiagram(wrapId), 60);
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      document.querySelectorAll('.diagram-wrap.fullscreen').forEach(el => {
+        el.classList.remove('fullscreen');
+        setTimeout(() => resetDiagram(el.id), 60);
+      });
+    }
+  });
+
+  async function renderDiagrams() {
+    await mermaid.run({ querySelector: 'pre.mermaid' });
+    document.querySelectorAll('.diagram-wrap').forEach(wrap => {
+      const svg = wrap.querySelector('svg');
+      if (!svg) return;
+      svg.removeAttribute('style');
+      panZoomInstances[wrap.id] = svgPanZoom(svg, {
+        minZoom: 0.3, maxZoom: 8, fit: true, center: true, zoomEnabled: true, controlIconsEnabled: false,
+      });
+    });
+    window.addEventListener('resize', () => {
+      Object.keys(panZoomInstances).forEach(id => resetDiagram(id));
+    });
+  }
+
+  persistTextareas();
+  document.querySelectorAll('textarea').forEach(ta => ta.addEventListener('input', updateCopyButton));
+  updateCopyButton();
+  renderDiagrams();
+</script>
+</body>
+</html>

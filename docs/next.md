@@ -1,6 +1,6 @@
 # Next steps
 
-_Last updated: 2026-07-16_
+_Last updated: 2026-07-17_
 
 ## ✅ Landed to `main` — modular VLM preprocessing roadmap (2026-07-15)
 
@@ -32,18 +32,13 @@ Side-by-side layout deferred (single-column first cut).
 
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2.
-- **Step 5 — LUMIA-live EHR adapter** — plan drafted, Codex `/review-plan`'d (two passes), Phil-approved
-  via `/explain-plan` (2026-07-16). Implemented on `feat/lumia-live-ehr-adapter` (2026-07-17):
-  `presets.py`'s `_ehr_block` now emits real `window`/`code_filter` chains, `run_bq.py` wires
-  `_apply_ehr_adapter` (fail-closed on missing LUMIA file) into `_build_prompts_for_experiment`,
-  docs updated. **VM smoke BLOCKED (class-3 deviation) — re-plan on Mac:**
-  [docs/vm-status/2026-07-17-4989a20.md](vm-status/2026-07-17-4989a20.md) — `phil-sllm-01` readback
-  (2026-07-17): Steps 0–1 PASS (coverage **100%**, 1238/1238), but Step 2's strict byte-diff shows
-  the live LUMIA render and legacy `patient_string` are **near-disjoint** (102/~24k shared lines; live
-  render omits `STANFORD_OBS` + all demographics, is otherwise richer) — no `code_filter` config can
-  byte-match, so the byte-diff verification premise fails and Steps 3–4 are moot. Planner must pick a
-  new acceptance criterion (no byte baseline exists). See the doc's `⚠️ DEVIATION` block.
-  [plans/vlm-step5-lumia-live-ehr-adapter.md](plans/vlm-step5-lumia-live-ehr-adapter.md).
+- **Step 5 — LUMIA-live EHR adapter** — implemented on `feat/lumia-live-ehr-adapter`
+  (`presets.py`/`run_bq.py`/`ehr.py`/docs); VM Phase 1 hit a class-3 deviation
+  ([docs/vm-status/2026-07-17-4989a20.md](vm-status/2026-07-17-4989a20.md)) — live LUMIA render vs.
+  legacy `patient_string` near-disjoint. Root-caused + re-planned (demographics = fixable parser bug,
+  STANFORD_OBS = likely-intentional upstream exclusion); Phil-approved via `/explain-plan` (2026-07-17):
+  [plans/vlm-step5-lumia-demographics-flowsheet-replan.md](plans/vlm-step5-lumia-demographics-flowsheet-replan.md).
+  NEXT = VM Phase 0.5 (schema/convention confirmation on `phil-sllm-01`), then Mac lands the fix.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
