@@ -1,6 +1,6 @@
 # Next steps
 
-_Last updated: 2026-07-15_
+_Last updated: 2026-07-16_
 
 ## ✅ Landed to `main` — modular VLM preprocessing roadmap (2026-07-15)
 
@@ -32,9 +32,9 @@ Side-by-side layout deferred (single-column first cut).
 
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2.
-- **Step 5 — gate-3 EHR golden (deferred, LUMIA-live)** — strict passthrough is the current gate; the
-  full gate-3 EHR golden lands with the LUMIA-live filter/render chain. Still-open small decision:
-  `summarize` on/off + its failure mode.
+- **Step 5 — LUMIA-live EHR adapter** — plan drafted, Codex `/review-plan`'d (two passes), Phil-approved
+  via `/explain-plan` (2026-07-16) → ready to implement.
+  [plans/vlm-step5-lumia-live-ehr-adapter.md](plans/vlm-step5-lumia-live-ehr-adapter.md).
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
