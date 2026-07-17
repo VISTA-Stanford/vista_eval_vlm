@@ -50,8 +50,15 @@ _RENDERER_EXTRA_FIELDS = ("numeric_value", "unit", "text_value", "description")
 _STATE_TOKENS = {"start", "end", "", None}
 
 
-def lumia_path_for(person_id, corpus_dir) -> Path:
-    """Resolve the per-patient LUMIA file: ``<corpus_dir>/<person_id>.xml``."""
+def lumia_path_for(person_id, corpus_dir) -> Path | None:
+    """Resolve the per-patient LUMIA file: ``<corpus_dir>/<person_id>.xml``.
+
+    Returns ``None`` (rather than raising) when ``corpus_dir`` is unset, so callers
+    that probe reachability (e.g. ``context_viewer.py``) get a clean falsy result
+    instead of a ``TypeError`` from ``Path(None)``.
+    """
+    if corpus_dir is None:
+        return None
     return Path(corpus_dir) / f"{person_id}.xml"
 
 

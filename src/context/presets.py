@@ -28,27 +28,33 @@ def _ehr_block(variant: str = "timeline"):
     (``timeline`` = full, ``no_img_report`` = imaging-report-skipped,
     ``passthrough`` = pre-rendered from parquet/retrieval).
 
-    ⚠ DEFERRED-TO-WIRING (fresh-Claude review 2026-07-06): the concrete LUMIA-live
-    ``select`` filter chain is **not** emitted here yet — only the ``variant`` label
-    is. The hot-path wiring pass resolves ``variant`` -> a ``select`` chain and
-    validates gate 3 against the VM. Intended chains (per the plan's retire-
-    ``remove_imaging_report.py`` / LUMIA-live decision):
+    Concrete LUMIA-live ``select`` chains (wired in the Step 5 hot-path pass,
+    `docs/plans/vlm-step5-lumia-live-ehr-adapter.md`):
       * ``no_img_report`` -> ``[{fn: window, before: "6mo", after: "0d"},
         {fn: code_filter, exclude_stanford: true}]`` (reproduces the legacy
         ``get_described_events_window`` window + ``exclude_report=True`` STANFORD skip).
-      * ``timeline`` -> full timeline; whether the full ``patient_string`` also
-        excludes STANFORD codes is gate-3-VM-gated (confirm before encoding).
-      * ``passthrough`` -> no ``select`` (the adapter auto-passes a pre-rendered
-        timeline string through; filters are inapplicable to already-rendered text).
-    Encoding the chains here now would bake in VM-gated assumptions, so it waits
-    for the wiring pass where gate 3 can verify byte-identity.
+      * ``timeline`` -> ``select=[]`` (full timeline, unfiltered) pending that plan's
+        Verification Phase 1 VM decision gate: whether the full timeline should also
+        drop STANFORD-tagged codes like ``no_img_report`` does. Flip this one line to
+        add ``code_filter(exclude_stanford=True)`` if the gate resolves that way —
+        single edit point, not a second runtime toggle.
+      * ``passthrough`` -> ``select`` key omitted entirely (the adapter auto-passes a
+        pre-rendered timeline string through; filters are inapplicable to already-
+        rendered text).
     """
-    return {
-        "id": "ehr",
-        "modality": "text",
-        "adapter": "ehr",
-        "config": {"variant": variant, "serialize": {"style": "flat_timeline"}},
-    }
+    if variant == "no_img_report":
+        select = [
+            {"fn": "window", "before": "6mo", "after": "0d"},
+            {"fn": "code_filter", "exclude_stanford": True},
+        ]
+    elif variant == "timeline":
+        select = []  # Verification Phase 1 (see docstring) may flip this to add code_filter
+    else:  # passthrough
+        select = None
+    config = {"variant": variant, "serialize": {"style": "flat_timeline"}}
+    if select is not None:
+        config["select"] = select
+    return {"id": "ehr", "modality": "text", "adapter": "ehr", "config": config}
 
 
 def _ct_block(k: int):

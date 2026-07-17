@@ -1,5 +1,6 @@
 import os
 import argparse
+import copy
 import json
 import yaml
 import torch
@@ -19,6 +20,8 @@ from google.cloud import storage
 
 from vqa_dataset import PromptDataset, prompt_collate
 from models import load_model_adapter
+from context.presets import get_preset
+from context.adapters.ehr import EHRAdapter, lumia_path_for
 from data_tools.utils.query_utils import VISTA_BENCH_DATASET, fetch_task_data_from_bq
 from data_tools.utils.meds_timeline_utils import (
     count_unique_event_dates,
@@ -49,6 +52,11 @@ RETRIEVAL_EXPERIMENTS = RETRIEVAL_SINGLE_TIMELINE | RETRIEVAL_PER_ITERATION
 
 # Columns to drop from raw_row when building result row (heavy or redundant)
 HEAVY_RESULT_COLUMNS = ("note_text", "patient_string", "report", "path_note_text")
+
+# Experiments wired to the live LUMIA-parsing EHR adapter (Step 5). `passthrough`
+# presets (all_vb_timeline_only, path_full) and retrieval experiments are
+# deliberately excluded — see docs/plans/vlm-step5-lumia-live-ehr-adapter.md.
+_EHR_ADAPTER_EXPERIMENTS = {"no_image", "axial_all_image", "no_report", "timeline_only", "report"}
 
 
 class TaskOrchestrator:
@@ -730,11 +738,55 @@ class TaskOrchestrator:
                 print(f"Could not read existing file, starting fresh: {e}")
         return out_file, existing_indices
 
+    def _apply_ehr_adapter(self, df_exp, experiment, timeline_col):
+        """Overwrite ``timeline_col`` with the live LUMIA-parsed + filtered + rendered
+        timeline for the wired presets (Step 5). Fail-closed: rows with no resolvable
+        LUMIA file are dropped from the experiment entirely (Phil's call — no fallback
+        to the pre-rendered ``patient_string``/``patient_timeline`` CSV text)."""
+        if experiment not in _EHR_ADAPTER_EXPERIMENTS or timeline_col not in df_exp.columns:
+            return df_exp
+        if "person_id" not in df_exp.columns:
+            raise ValueError(
+                f"experiment={experiment!r} requires person_id to resolve LUMIA files, but it's missing"
+            )
+        ehr_block = next(b for b in get_preset(experiment)["blocks"] if b["id"] == "ehr")
+        adapter = EHRAdapter(config=copy.deepcopy(ehr_block["config"]))
+        corpus_dir = self.cfg.get("retrieval", {}).get("corpus_dir")
+        if not corpus_dir:
+            raise ValueError(
+                f"retrieval.corpus_dir is not configured (experiment={experiment!r}); "
+                f"set it in your VM-local configs/all_tasks.vm.yaml overlay, e.g. pointing at a local "
+                f"mount of gs://vista_bench/thoracic_cohort_lumia/"
+            )
+
+        def has_lumia(pid):
+            xml_path = lumia_path_for(pid, corpus_dir)
+            return xml_path is not None and xml_path.exists()
+
+        mask = df_exp["person_id"].apply(has_lumia)
+        n_dropped = int((~mask).sum())
+        if n_dropped:
+            print(f"[EHR] dropping {n_dropped}/{len(df_exp)} rows with no LUMIA file (experiment={experiment})")
+        df_exp = df_exp[mask].copy()
+
+        def render(row):
+            ctx = {
+                "embed_time": row.get("embed_time"),
+                "model_type": self.model_type,
+                "lumia_corpus_dir": corpus_dir,
+                "timeline_truncation": self.cfg.get("timeline_truncation"),
+            }
+            return adapter.contextualize(adapter.ingest(row["person_id"], ctx), ctx).payload
+
+        df_exp[timeline_col] = df_exp.apply(render, axis=1)
+        return df_exp
+
     def _build_prompts_for_experiment(self, df, task_info, experiment, timeline_col):
         """Build dynamic_prompt column for the given experiment. Returns df_exp (copy or expanded)."""
         task_name = task_info['task_name']
         source_csv = task_info['task_source_csv']
         df_exp = df.copy()
+        df_exp = self._apply_ehr_adapter(df_exp, experiment, timeline_col)
 
         if experiment in ('no_timeline', 'all_vb_image_only', 'path'):
             base_prompt_template = self.image_prompts_map.get(task_name, "") or self.prompts_map.get(task_name, "")
