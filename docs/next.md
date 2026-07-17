@@ -36,11 +36,14 @@ Side-by-side layout deferred (single-column first cut).
   via `/explain-plan` (2026-07-16). Implemented on `feat/lumia-live-ehr-adapter` (2026-07-17):
   `presets.py`'s `_ehr_block` now emits real `window`/`code_filter` chains, `run_bq.py` wires
   `_apply_ehr_adapter` (fail-closed on missing LUMIA file) into `_build_prompts_for_experiment`,
-  docs updated. **VM smoke pending:**
-  [docs/vm-status/2026-07-17-4989a20.md](vm-status/2026-07-17-4989a20.md) — awaiting `phil-sllm-01`
-  Verification Phases 0–3 (coverage join, `timeline`-variant `code_filter` decision gate, allowlist
-  fill-in, Phil's human HTML QA) before
-  `/land`. [plans/vlm-step5-lumia-live-ehr-adapter.md](plans/vlm-step5-lumia-live-ehr-adapter.md).
+  docs updated. **VM smoke BLOCKED (class-3 deviation) — re-plan on Mac:**
+  [docs/vm-status/2026-07-17-4989a20.md](vm-status/2026-07-17-4989a20.md) — `phil-sllm-01` readback
+  (2026-07-17): Steps 0–1 PASS (coverage **100%**, 1238/1238), but Step 2's strict byte-diff shows
+  the live LUMIA render and legacy `patient_string` are **near-disjoint** (102/~24k shared lines; live
+  render omits `STANFORD_OBS` + all demographics, is otherwise richer) — no `code_filter` config can
+  byte-match, so the byte-diff verification premise fails and Steps 3–4 are moot. Planner must pick a
+  new acceptance criterion (no byte baseline exists). See the doc's `⚠️ DEVIATION` block.
+  [plans/vlm-step5-lumia-live-ehr-adapter.md](plans/vlm-step5-lumia-live-ehr-adapter.md).
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
