@@ -38,7 +38,13 @@ Side-by-side layout deferred (single-column first cut).
   legacy `patient_string` near-disjoint. Root-caused + re-planned (demographics = fixable parser bug,
   STANFORD_OBS = likely-intentional upstream exclusion); Phil-approved via `/explain-plan` (2026-07-17):
   [plans/vlm-step5-lumia-demographics-flowsheet-replan.md](plans/vlm-step5-lumia-demographics-flowsheet-replan.md).
-  NEXT = VM Phase 0.5 (schema/convention confirmation on `phil-sllm-01`), then Mac lands the fix.
+  **VM Phase 0.5 DONE (2026-07-17, `4b5239e`)** — all 3 OQs resolved
+  ([docs/vm-status/2026-07-17-4b5239e.md](vm-status/2026-07-17-4b5239e.md)): `<person>` present 100%
+  (child of every encounter, demographics identical across encounters → dedup trivial); **Race IS in
+  source** (synthesize it, exclude only STANFORD_OBS); legacy render = `MEDS_BIRTH`×2 (bare) +
+  `Ethnicity`/`Race`/`Gender` = xml `code` attr verbatim, no desc, all @ birthdate ts, order
+  `BIRTH,BIRTH,Eth,Race,Gender`. ⚠ NEW: 7/20 legacy rows lack demographics despite full source →
+  Mac must pick the acceptance treatment. NEXT(Mac) = write `ehr.py`+`diff_golden.py` fix, then re-run Phase 1.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
