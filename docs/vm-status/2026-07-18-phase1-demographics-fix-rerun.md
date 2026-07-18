@@ -3,7 +3,8 @@ Reference: docs/claude_ops.md
 # VM Phase 1 re-run — demographics fix + flowsheet/demographic-gap exclusion mechanisms
 
 **Status: Handoff to VM** (2026-07-18)
-**Branch:** `feat/lumia-live-ehr-adapter` @ `fd4e831` (pushed to `origin`)
+**Branch:** `feat/lumia-live-ehr-adapter`, fix landed at `fd4e831` (pushed to `origin`; HEAD may be a
+commit or two ahead from doc touch-ups — verify ancestry, not exact match, see Step 0)
 **Locator:** REPO `vista_eval_vlm` · BRANCH `feat/lumia-live-ehr-adapter` — **`git fetch` first** (local branch is stale) · this doc `docs/vm-status/2026-07-18-phase1-demographics-fix-rerun.md`. Reach it: `git fetch origin && git checkout feat/lumia-live-ehr-adapter && git pull --ff-only` (shared / dirty checkout, or non-ff → `git worktree add ../vista_eval_vlm-lumia-live1 fd4e831`).
 **Machine posture:** authored on the planner Mac (no runtime). Everything below has **never executed** — run it on the **Claude-Code CPU** box (`phil-sllm-01`, holds the `/mnt/su-vista-*` PHI mounts). Run + readback co-located there, same posture as the prior two handoffs on this branch.
 **Target machine:** Claude-Code CPU (`phil-sllm-01`). No hcpu/GPU leg.
@@ -50,7 +51,7 @@ The fix is committed + pushed as of this handoff (three commits: `ehr.py`, `diff
 ```bash
 cd <repo-root>/vista_eval_vlm
 git fetch origin && git checkout feat/lumia-live-ehr-adapter && git pull --ff-only   # fetch FIRST — local branch is stale
-git rev-parse --short HEAD   # must show fd4e831 — if not, the fetch didn't land the handoff
+git merge-base --is-ancestor fd4e831 HEAD && echo "OK: fix landed"   # ancestry, not exact SHA — later doc touch-ups move HEAD past fd4e831
 ```
 **Env:** reuse the existing hand-augmented golden-harness venv (`~/code/vista_eval_vlm/.venv`,
 Python 3.11, yaml/torch/transformers already present) per the Phase-0.5 readback's carry-note —
