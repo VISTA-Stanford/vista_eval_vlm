@@ -125,6 +125,15 @@ now directly shrinks the eval cohort. `all_vb_timeline_only` and `path_full` are
 (`passthrough` variant, pre-rendered text kept as-is), as are retrieval experiments (their own
 `build_retrieval_prompts` path never reaches this method's generic branch).
 
+The live render includes synthesized `MEDS_BIRTH`/`Ethnicity`/`Race`/`Gender` demographic lines
+(read from each patient's `<person>` block, `ehr.py`'s `_demographic_rows`) and, by design, **never**
+includes `STANFORD_OBS`/flowsheet observation lines — an upstream STARR-OMOP extraction stage
+strips those before the LUMIA export even runs (documented reason: known timing bugs make
+flowsheet events unsuitable as features or labels). Both are expected behavior of the live path, not
+defects — see the Step-5 re-plan (`docs/plans/vlm-step5-lumia-demographics-flowsheet-replan.md`) for
+the full investigation and `src/vista_run/diff_golden.py`'s module docstring for how the
+verification gate accounts for them.
+
 ### Prompt building: `_build_prompts_for_experiment(df, task_info, experiment, timeline_col)`
 
 This method returns a DataFrame (possibly with more rows for per-iteration retrieval) with a `dynamic_prompt` column. The EHR-adapter overwrite above runs first (right after `df_exp = df.copy()`), for the wired experiments only. Branch order below then follows on the (possibly row-reduced) `df_exp`:

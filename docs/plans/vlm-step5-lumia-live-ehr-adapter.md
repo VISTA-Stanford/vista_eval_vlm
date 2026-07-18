@@ -4,6 +4,24 @@ Reference: docs/claude_ops.md
 
 **Status: Draft** (2026-07-16)
 
+> **Deviation resolved (2026-07-17):** Phase 1's original byte-diff hit a class-3 deviation — the
+> live LUMIA render and legacy `patient_string` were near-disjoint (102/~24,000 shared lines), not
+> just a `code_filter` config gap. Root-caused and re-planned in
+> [`vlm-step5-lumia-demographics-flowsheet-replan.md`](vlm-step5-lumia-demographics-flowsheet-replan.md):
+> `parse_lumia` never read `<person>` (a plain parser oversight, now fixed — see `ehr.py`'s
+> `_demographic_rows`) and read the event-class attribute as `type=` instead of meds2text's real
+> `table=` (also fixed). Two divergences are **accepted as permanent, not bugs**: (1) `STANFORD_OBS`
+> flowsheets — legacy's baseline carries them, live never will, because an upstream STARR-OMOP
+> extraction stage strips them by design (`meds2text`'s `_remove_flowsheets`, documented reason:
+> known timing bugs); (2) ~35% of legacy golden rows predate the demographic fields entirely (a
+> legacy-vintage gap, not a bug) — live will always render demographics now, so those specific rows
+> can't prove a byte match for a class the legacy baseline never captured. Both are handled by new
+> `diff_golden.py` mechanisms (`--exclude-line-patterns` for (1), `--exclude-if-legacy-missing` for
+> (2) — module docstring there has the full mechanism-by-mechanism rationale), **not** by
+> `code_filter` tuning. Race is **not** an accepted divergence — Phase 0.5 confirmed it's present in
+> real LUMIA XML, so it's synthesized alongside Ethnicity/Gender like everything else. Phase 1 below
+> is updated accordingly; Phases 2–3 are unchanged.
+
 ## Context
 
 vista_eval_vlm's ContextBlock modality-adapter roadmap already landed (2026-07-15/16): CT and
@@ -170,7 +188,10 @@ retrieval's own code (it already reads this key unchanged).
   STANFORD-tagged codes like `no_img_report` does was left explicitly unresolved in the original
   design (`presets.py` docstring: "gate-3-VM-gated, confirm before encoding"). Resolved via a
   self-resolving VM decision gate (Phase 1 below) rather than a Phil judgment call — it's an
-  objective byte-diff question.
+  objective byte-diff question. **Status:** still open as of 2026-07-17 — Phase 1's first attempt
+  hit the class-3 deviation described in the header note above; the demographics fix + exclusion
+  mechanisms restore a meaningful baseline, and this question gets re-asked against Phase 1's
+  re-run (updated criteria below).
 - **Full-run coverage threshold** (Codex review): Phase 0's ≥95%/80–95%/<80% bands below are sized
   for this plan's PFS-1yr smoke. What threshold should gate a full default (multi-task) run once
   this lands — same bands, or does a production run warrant a stricter bar given the cohort-size
@@ -236,6 +257,14 @@ on why "sampling from the covered set" needs a concrete mechanism, not just a de
 
 ### Phase 1 — decision gate: does the `timeline` variant need `code_filter`?
 
+**Updated 2026-07-17 (see the header deviation note):** the first attempt at this phase found the
+live/legacy renders near-disjoint, not a `code_filter` config gap — root-caused to the
+`parse_lumia` demographics gap (now fixed) plus two permanent, accepted divergences. Re-run this
+phase with the fix in place and the `diff_golden` invocation below extended with:
+`--exclude-line-patterns STANFORD_OBS/Flowsheet --exclude-if-legacy-missing MEDS_BIRTH Ethnicity/
+Race/ Gender/` (mechanism + rationale: `src/vista_run/diff_golden.py` module docstring). Everything
+else in this phase (restricted-input banking, worktree-at-parent-SHA) is unchanged.
+
 **Critical fix (Codex review, verified against code): "sample from Phase 0's covered set" isn't
 automatic.** `iter_captured_examples` runs `_build_prompts_for_experiment` (where fail-closed
 filtering happens) *before* its stable-sort + `head(limit)` step
@@ -255,21 +284,29 @@ SHA, `--tag legacy_small --limit 20`) and after (`select=[]`, `--tag lumia_live_
 becomes a no-op and both banks' `head(20)` draw from the identical set.
 
 ```bash
-diff_golden <legacy_small> <lumia_live_nofilter> --mode strict
+diff_golden <legacy_small> <lumia_live_nofilter> --mode strict \
+  --exclude-line-patterns STANFORD_OBS/Flowsheet \
+  --exclude-if-legacy-missing MEDS_BIRTH Ethnicity/ Race/ Gender/
 ```
 
 **Expected/Stop:**
 - Index-set mismatch even against the restricted input → **STOP** (a distinct, unexpected
   precondition failure — something other than coverage is causing divergence; hand back, don't
   proceed to interpreting it as a `code_filter` verdict).
-- Strict PASS → `timeline` needs **no** `code_filter` — done.
-- Strict FAIL (with index sets matching) → re-bank with `code_filter(exclude_stanford=True)` added
+- Strict PASS → `timeline` needs **no** `code_filter` — done. Expect residual `[NOTE]`/exclusion
+  lines from the two accepted-divergence flags above (STANFORD_OBS always, demographics on the
+  legacy-vintage-gap subset) — that's not a failure, it's the declared scope of what this gate does
+  and doesn't verify; a genuine `[FAIL]` on structure or on any *other* text content is still a
+  real STOP.
+- Strict FAIL (with index sets matching, and *not* attributable to the two accepted-divergence
+  classes above) → re-bank with `code_filter(exclude_stanford=True)` added
   (`--tag lumia_live_filtered`), re-diff strict — whichever configuration passes byte-identical is
   the answer, encode that into `presets.py`.
 - **Both** configurations pass strict → the two are byte-identical on this sample (`code_filter` is
   a no-op here); default to `select=[]` (simpler, keeps `timeline` maximally permissive) and note
   this outcome explicitly rather than picking silently.
-- **Neither** passes strict → STOP (class-3 — a third variable is at play; hand back for
+- **Neither** passes strict, and the residual is NOT fully explained by STANFORD_OBS + the
+  legacy-vintage demographic gap → STOP (class-3 — a third variable is at play; hand back for
   re-planning, don't guess).
 
 **Clean up the worktree after** (mirrors the Phase-2-viewer precedent,

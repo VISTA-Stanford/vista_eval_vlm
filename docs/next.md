@@ -44,7 +44,13 @@ Side-by-side layout deferred (single-column first cut).
   source** (synthesize it, exclude only STANFORD_OBS); legacy render = `MEDS_BIRTH`×2 (bare) +
   `Ethnicity`/`Race`/`Gender` = xml `code` attr verbatim, no desc, all @ birthdate ts, order
   `BIRTH,BIRTH,Eth,Race,Gender`. ⚠ NEW: 7/20 legacy rows lack demographics despite full source →
-  Mac must pick the acceptance treatment. NEXT(Mac) = write `ehr.py`+`diff_golden.py` fix, then re-run Phase 1.
+  Mac must pick the acceptance treatment. **Fix implemented (2026-07-18, uncommitted)**: `ehr.py`
+  synthesizes demographics from `<person>` + fixes `type`→`table`; `diff_golden.py` adds
+  `--exclude-line-patterns` (STANFORD_OBS, unconditional) and `--exclude-if-legacy-missing`
+  (demographics, per-row conditional — Phil's resolution to the 7/20 gap: verify wherever legacy
+  has a baseline, exclude only where it doesn't). VM smoke pending:
+  [docs/vm-status/2026-07-18-phase1-demographics-fix-rerun.md](vm-status/2026-07-18-phase1-demographics-fix-rerun.md)
+  — Phase 1's decision gate (does `timeline` need `code_filter`?) re-run with the fix in place.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 

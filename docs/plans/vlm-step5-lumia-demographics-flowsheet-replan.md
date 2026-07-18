@@ -157,13 +157,29 @@ source gap) flag is added to the invocation.
 
 ## Open Questions
 
-- Exact demographic `code`/`description` string conventions (VM confirms against the already-banked
-  legacy golden file's format in Phase 0.5 — do not speculate on the Mac).
-- Whether `<person>` repeats identically per-encounter or needs dedup logic (VM confirms against a
-  real `.xml`).
-- Whether Race is present anywhere in real LUMIA XML beyond `markup.md`'s documented
-  `ethnicity`/`gender` (VM confirms) — if absent, it joins the accepted-divergence list; if present,
-  it gets synthesized alongside the other demographic fields in Approach #2.
+**All three resolved by Phase 0.5** (`docs/vm-status/2026-07-17-4b5239e.md`), plus one new question
+it raised:
+
+- ~~Exact demographic `code`/`description` string conventions~~ — **resolved:** bare `MEDS_BIRTH`
+  (no description, emitted twice) then `Ethnicity`/`Race`/`Gender` reading `<demographics>/<tag>`'s
+  `code` attr verbatim (already `Class/<omop_concept_id>` form), no description, all anchored at
+  `<birthdate>`, in that fixed order — matched legacy 13/13 patients. Implemented in `ehr.py`'s
+  `_demographic_rows`.
+- ~~Whether `<person>` repeats identically per-encounter~~ — **resolved:** yes, identical across all
+  encounters (distinct-signature count = 1/patient); dedup by reading the first encounter's
+  `<person>`, no cross-encounter merge needed. Implemented.
+- ~~Whether Race is present in real LUMIA XML~~ — **resolved the opposite way from the tentative
+  fallback:** Race **is** present (100% of sampled files) — synthesized alongside Ethnicity/Gender
+  (Approach #2), **not** added to the accepted-divergence list. `--exclude-line-patterns` needs only
+  `STANFORD_OBS/Flowsheet`.
+- **New (raised by Phase 0.5, not anticipated by this plan):** 7/20 sampled legacy golden rows carry
+  no demographic lines at all despite full `<person>` data in the source XML — a legacy-vintage
+  omission. **Resolved (Phil, 2026-07-17):** per-row conditional acceptance — verify demographics
+  wherever the legacy baseline has them, exclude them from comparison (both sides) only for rows
+  where the legacy baseline lacks them entirely, rather than restricting Phase 1's whole gate to the
+  demographic-bearing subset or blanket-excluding demographics everywhere. Implemented as
+  `diff_golden.py`'s new `--exclude-if-legacy-missing` flag (module docstring has the full
+  rationale); wired into Phase 1's re-run below.
 
 ## Verification & VM handoff
 
@@ -190,13 +206,24 @@ not before, per Approach #1's "don't speculate" discipline.)*
 
 ### Phase 1 — re-run the decision gate with the fix + exclusion mechanism
 
-Re-run the existing plan's Phase 1 mechanism unchanged (restricted-input worktree banking,
-`diff_golden --mode strict`), adding `--exclude-line-patterns STANFORD_OBS/Flowsheet` (+ `Race` if
-Phase 0.5 confirmed it's genuinely absent from source).
-**Expected:** demographic classes (`MEDS_BIRTH`/`Ethnicity`/`Gender`) now match between legacy and
-live; the only residual difference is the declared-excluded class(es); Phase 1's original decision
-gate (does `timeline` need `code_filter`?) resolves per the original plan's logic against this
-(now much closer) residual.
+Re-run the existing plan's Phase 1 mechanism unchanged (restricted-input worktree banking),
+`diff_golden --mode strict`, adding:
+
+```bash
+--exclude-line-patterns STANFORD_OBS/Flowsheet \
+--exclude-if-legacy-missing MEDS_BIRTH Ethnicity/ Race/ Gender/
+```
+
+(Race is **not** excluded — Phase 0.5 confirmed it's present in source, so it's synthesized and
+verified like Ethnicity/Gender. `--exclude-if-legacy-missing` is the new per-row conditional
+mechanism added for the 7/20 legacy-vintage demographic-omission asymmetry Phase 0.5 flagged —
+Phil's resolution, see Open Questions above.)
+**Expected:** demographic classes (`MEDS_BIRTH`/`Ethnicity`/`Race`/`Gender`) now match between
+legacy and live wherever legacy has a baseline to check against; rows where legacy predates
+demographics entirely are excluded from that specific comparison (not from the row overall — their
+non-demographic content is still verified); the only other residual difference is the
+declared-excluded `STANFORD_OBS` class. Phase 1's original decision gate (does `timeline` need
+`code_filter`?) resolves per the original plan's logic against this (now much closer) residual.
 **Stop:** any *other*, previously-unseen divergence appears — that would mean something beyond
 demographics/flowsheets is at play (a genuine new class-3 deviation) — hand back rather than
 patching further.
