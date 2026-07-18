@@ -3,8 +3,8 @@ Reference: docs/claude_ops.md
 # VM Phase 1 re-run — demographics fix + flowsheet/demographic-gap exclusion mechanisms
 
 **Status: Handoff to VM** (2026-07-18)
-**Branch:** `feat/lumia-live-ehr-adapter` (commit + push first, SHA set at commit time — see Step 0)
-**Locator:** REPO `vista_eval_vlm` · BRANCH `feat/lumia-live-ehr-adapter` — **`git fetch` first** (local branch is stale) · this doc `docs/vm-status/2026-07-18-phase1-demographics-fix-rerun.md`. Reach it: `git fetch origin && git checkout feat/lumia-live-ehr-adapter && git pull --ff-only` (shared / dirty checkout, or non-ff → `git worktree add ../vista_eval_vlm-lumia-live1 <sha>`).
+**Branch:** `feat/lumia-live-ehr-adapter` @ `fd4e831` (pushed to `origin`)
+**Locator:** REPO `vista_eval_vlm` · BRANCH `feat/lumia-live-ehr-adapter` — **`git fetch` first** (local branch is stale) · this doc `docs/vm-status/2026-07-18-phase1-demographics-fix-rerun.md`. Reach it: `git fetch origin && git checkout feat/lumia-live-ehr-adapter && git pull --ff-only` (shared / dirty checkout, or non-ff → `git worktree add ../vista_eval_vlm-lumia-live1 fd4e831`).
 **Machine posture:** authored on the planner Mac (no runtime). Everything below has **never executed** — run it on the **Claude-Code CPU** box (`phil-sllm-01`, holds the `/mnt/su-vista-*` PHI mounts). Run + readback co-located there, same posture as the prior two handoffs on this branch.
 **Target machine:** Claude-Code CPU (`phil-sllm-01`). No hcpu/GPU leg.
 **Plans:** [`vlm-step5-lumia-demographics-flowsheet-replan.md`](../plans/vlm-step5-lumia-demographics-flowsheet-replan.md#verification--vm-handoff) — criteria source of truth (Phase 1, updated 2026-07-18). Base plan: [`vlm-step5-lumia-live-ehr-adapter.md`](../plans/vlm-step5-lumia-live-ehr-adapter.md#phase-1--decision-gate-does-the-timeline-variant-need-code_filter) (Phase 1's Expected/Stop, updated in lockstep).
@@ -42,15 +42,15 @@ config to bank against) and get their own handoff once Phase 1 resolves.
 outcome back into this doc's readback section — **never** raw timeline text, person_ids, or
 `diff_golden.py`'s printed BEFORE/AFTER previews (it prints those on failure — summarize instead).
 
-## Step 0 — commit the fix, get it onto the VM
+## Step 0 — get the fix onto the VM
 
-The fix is uncommitted on the Mac as of this handoff. Commit it there first (`/commit-review`,
-which this doc's author offers after landing the handoff doc + pointer), then on the VM:
+The fix is committed + pushed as of this handoff (three commits: `ehr.py`, `diff_golden.py`, docs
++ this doc). On the VM:
 
 ```bash
 cd <repo-root>/vista_eval_vlm
 git fetch origin && git checkout feat/lumia-live-ehr-adapter && git pull --ff-only   # fetch FIRST — local branch is stale
-git rev-parse --short HEAD   # must show the SHA this doc's header names once committed — if not, the fetch didn't land the handoff
+git rev-parse --short HEAD   # must show fd4e831 — if not, the fetch didn't land the handoff
 ```
 **Env:** reuse the existing hand-augmented golden-harness venv (`~/code/vista_eval_vlm/.venv`,
 Python 3.11, yaml/torch/transformers already present) per the Phase-0.5 readback's carry-note —
