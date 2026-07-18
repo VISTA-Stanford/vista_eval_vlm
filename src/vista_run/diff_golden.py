@@ -29,6 +29,30 @@ Run once per (experiment, model) pair, e.g.::
 The ``normalize_text`` hook below is intentionally minimal (trailing-whitespace
 only). The real within-line field-order allowlist gets filled in once the VM shows
 the actual LUMIA-render vs ``patient_string`` diffs — do not speculate it now.
+
+``--exclude-line-patterns`` is a **separate, distinct mechanism** from ``normalize_text``
+(added for the Step-5 LUMIA-live re-plan, ``docs/plans/vlm-step5-lumia-demographics-flowsheet-replan.md``):
+``normalize_text``'s allowlist is deliberately line-count- and event-order-preserving
+(formatting-only normalization). ``--exclude-line-patterns`` instead drops whole lines
+containing a declared substring from **both** sides before any comparison — for a
+*permanent, event-count-changing* divergence between the legacy and live renders (e.g.
+``STANFORD_OBS/Flowsheet`` observations, upstream-excluded from the live LUMIA source but
+still present in the legacy ``patient_string`` baseline). Default empty, so existing
+non-EHR callers are unaffected. Do not confuse the two: a normalizer match means "same
+content, different formatting"; an excluded-line match means "this class is declared
+out of scope for this gate, not verified here at all."
+
+``--exclude-if-legacy-missing`` is a **third, per-row-conditional** variant, for classes
+that legacy sometimes has and sometimes doesn't (unlike ``STANFORD_OBS``, which legacy
+*always* has). For each row independently: if BEFORE contains none of the given patterns,
+those patterns are stripped from **both** BEFORE and AFTER for that row only (AFTER's
+extra content is accepted as a richer/correct render with no baseline to check against);
+if BEFORE *does* contain a matching class, nothing is stripped and the normal comparison
+verifies it byte-for-byte. Added for the demographics fix (``MEDS_BIRTH``/``Ethnicity``/
+``Race``/``Gender``): some legacy golden rows predate the demographic fields entirely (a
+legacy-vintage omission, not a bug), so those rows can't prove a byte match for a class
+that was never captured in the baseline — but rows where legacy *does* carry it still get
+verified.
 """
 
 import argparse
@@ -65,6 +89,31 @@ def normalize_text(value):
     if value is None:
         return None
     return "\n".join(line.rstrip() for line in str(value).splitlines())
+
+
+def strip_excluded_lines(value, patterns):
+    """Drop any line containing a declared-excluded substring — a permanent, accepted
+    divergence (e.g. ``STANFORD_OBS/Flowsheet``), not a formatting delta. See the module
+    docstring for how this differs from ``normalize_text``.
+    """
+    if value is None or not patterns:
+        return value
+    lines = str(value).splitlines()
+    kept = [line for line in lines if not any(p in line for p in patterns)]
+    return "\n".join(kept)
+
+
+def strip_if_legacy_missing(bv, av, patterns):
+    """Per-row conditional variant of ``strip_excluded_lines`` — see the module docstring's
+    ``--exclude-if-legacy-missing`` section. Only strips when BEFORE has no matching class;
+    when BEFORE has it, both sides pass through unchanged so the class is still verified.
+    """
+    if not patterns:
+        return bv, av
+    before_has_class = bv is not None and any(p in bv for p in patterns)
+    if before_has_class:
+        return bv, av
+    return strip_excluded_lines(bv, patterns), strip_excluded_lines(av, patterns)
 
 
 def _load(path):
@@ -115,7 +164,7 @@ def _check_compatible(before_rows, after_rows, before_path, after_path):
             )
 
 
-def diff(before, after, mode, lenient, max_report):
+def diff(before, after, mode, lenient, max_report, exclude_line_patterns=(), exclude_if_legacy_missing=()):
     before_rows = _load(before)
     after_rows = _load(after)
     _check_compatible(before_rows, after_rows, before, after)
@@ -138,6 +187,9 @@ def diff(before, after, mode, lenient, max_report):
                 structure_fail.append((idx, field, b.get(field), a.get(field)))
         for field in TEXT_FIELDS:
             bv, av = b.get(field), a.get(field)
+            bv = strip_excluded_lines(bv, exclude_line_patterns)
+            av = strip_excluded_lines(av, exclude_line_patterns)
+            bv, av = strip_if_legacy_missing(bv, av, exclude_if_legacy_missing)
             if bv == av:
                 continue
             if mode == "allowlist" and normalize_text(bv) == normalize_text(av):
@@ -149,6 +201,10 @@ def diff(before, after, mode, lenient, max_report):
     print(f"BEFORE: {before}  ({len(before_rows)} rows)")
     print(f"AFTER : {after}  ({len(after_rows)} rows)")
     print(f"mode  : {mode}    shared indices: {len(shared)}")
+    if exclude_line_patterns:
+        print(f"exclude-line-patterns (declared-excluded, stripped from both sides): {list(exclude_line_patterns)}")
+    if exclude_if_legacy_missing:
+        print(f"exclude-if-legacy-missing (stripped per-row only where BEFORE lacks the class): {list(exclude_if_legacy_missing)}")
     print("-" * 72)
 
     ok = True
@@ -208,9 +264,22 @@ def main():
                              "while building the Gate-3 allowlist, NOT for the committed/VM gate run "
                              "(it never masks structure drift, but it can exit 0 despite text drift)")
     parser.add_argument("--max-report", type=int, default=20, help="max mismatches to print per section")
+    parser.add_argument("--exclude-line-patterns", nargs="*", default=(), metavar="SUBSTRING",
+                        help="declared-excluded class(es) — lines containing any of these substrings "
+                             "are dropped from BOTH before/after text before comparison. A permanent, "
+                             "accepted divergence (e.g. STANFORD_OBS/Flowsheet), NOT a formatting delta "
+                             "— distinct from --mode allowlist's normalize_text. Default: none.")
+    parser.add_argument("--exclude-if-legacy-missing", nargs="*", default=(), metavar="SUBSTRING",
+                        help="per-row conditional variant: lines matching these substrings are "
+                             "stripped from BOTH sides only for rows where BEFORE has none of them "
+                             "(no baseline to check against); rows where BEFORE has the class are "
+                             "verified normally. For classes legacy sometimes has and sometimes "
+                             "doesn't (e.g. MEDS_BIRTH Ethnicity/ Race/ Gender/ — a legacy-vintage "
+                             "gap, not a bug). Default: none.")
     args = parser.parse_args()
 
-    ok = diff(args.before, args.after, args.mode, args.lenient, args.max_report)
+    ok = diff(args.before, args.after, args.mode, args.lenient, args.max_report,
+              args.exclude_line_patterns, args.exclude_if_legacy_missing)
     sys.exit(0 if ok else 1)
 
 
