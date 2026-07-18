@@ -26,6 +26,16 @@ documents ``<event>`` with only ``type/code/name/note_id/provider_id/care_site_i
 and default to ``None`` otherwise; every fully-absent field is recorded on the
 block metadata (``lumia_missing_fields``) so gate 3 degrades to a declared-delta
 (OQ-K) instead of failing.
+
+Demographics (VM-gated, see ``_demographic_rows``): ``<person>`` is a sibling of
+``<events>`` under every ``<encounter>``, not an ``<event>`` itself, so the walk
+above never sees it — ``parse_lumia`` separately reads one ``<person>`` block per
+patient (demographics are identical across encounters; deduped by taking the
+first) and synthesizes ``MEDS_BIRTH``/``Ethnicity``/``Race``/``Gender`` pseudo-event
+rows so they flow through the same renderer as everything else. Conventions
+(order, bare vs. described codes, birthdate anchor) confirmed against the real
+schema + the legacy ``patient_string`` render — see
+``docs/vm-status/2026-07-17-4b5239e.md``.
 """
 
 from __future__ import annotations
@@ -48,6 +58,10 @@ _RENDERER_EXTRA_FIELDS = ("numeric_value", "unit", "text_value", "description")
 
 # Event <event> element text tokens that are pure state markers (not note bodies).
 _STATE_TOKENS = {"start", "end", "", None}
+
+# <person>/<demographics> child tags to synthesize as pseudo-event rows, in the fixed order
+# confirmed against the legacy render (13/13 patients, VM Phase 0.5): Ethnicity, Race, Gender.
+_DEMOGRAPHIC_TAGS = ("ethnicity", "race", "gender")
 
 
 def lumia_path_for(person_id, corpus_dir) -> Path | None:
@@ -103,11 +117,54 @@ def _lumia_event_to_row(entry_ts, event_el, provider_speciality: dict) -> dict:
         "unit": attrib.get("unit") or attrib.get("unit_source_value"),
         "text_value": text_value,
         # non-renderer fields, used by filters:
-        "type": attrib.get("type"),
+        # meds2text's textify.py (event_to_xml) actually emits this as `table=`, not `type=` —
+        # markup.md's documented attribute name is wrong (confirmed via meds2text source + the
+        # Step-5 re-plan's git-blame investigation, 2026-07-17).
+        "type": attrib.get("table"),
         "note_id": attrib.get("note_id"),
         "provider_id": attrib.get("provider_id"),
         "speciality": provider_speciality.get(attrib.get("provider_id")),
     }
+
+
+def _demographic_rows(person_el: ET.Element) -> list[dict]:
+    """Synthesize MEDS_BIRTH/Ethnicity/Race/Gender pseudo-event rows from one ``<person>`` block.
+
+    Conventions confirmed against the real LUMIA schema + the already-banked legacy
+    ``patient_string`` render (VM Phase 0.5, ``docs/vm-status/2026-07-17-4b5239e.md``):
+    ``<demographics>/<tag>``'s ``code`` attribute is already in ``Class/<omop_concept_id>`` form
+    (e.g. ``"Gender/8532"``) — used verbatim, no re-prefixing, no description. All rows anchor at
+    the ``<birthdate>`` timestamp; ``MEDS_BIRTH`` (bare code, no description) is emitted twice, then
+    Ethnicity/Race/Gender in that order — this exact sequence matched legacy 13/13 patients.
+    """
+    birthdate_el = person_el.find("birthdate")
+    birthdate = pd.to_datetime((birthdate_el.text or "").strip(), errors="coerce") if birthdate_el is not None else pd.NaT
+    if pd.isna(birthdate):
+        return []
+
+    def _row(code):
+        return {
+            "time": birthdate,
+            "code": code,
+            "description": None,
+            "numeric_value": None,
+            "unit": None,
+            "text_value": None,
+            "type": None,
+            "note_id": None,
+            "provider_id": None,
+            "speciality": None,
+        }
+
+    rows = [_row("MEDS_BIRTH"), _row("MEDS_BIRTH")]
+    demographics_el = person_el.find("demographics")
+    if demographics_el is not None:
+        for tag in _DEMOGRAPHIC_TAGS:
+            tag_el = demographics_el.find(tag)
+            code = tag_el.attrib.get("code") if tag_el is not None else None
+            if code:
+                rows.append(_row(code))
+    return rows
 
 
 def parse_lumia(source) -> pd.DataFrame:
@@ -131,7 +188,11 @@ def parse_lumia(source) -> pd.DataFrame:
             root = ET.parse(s).getroot()
 
     rows: list[dict] = []
+    person_el = None
     for encounter in root.iter("encounter"):
+        # <person> repeats identically per-encounter (VM-confirmed) — dedup by taking the first.
+        if person_el is None:
+            person_el = encounter.find("person")
         # provider_id -> speciality, for note_type_filter
         provider_speciality = {
             p.attrib.get("provider_id"): p.attrib.get("speciality")
@@ -141,6 +202,8 @@ def parse_lumia(source) -> pd.DataFrame:
             entry_ts = pd.to_datetime(entry.attrib.get("timestamp"), errors="coerce")
             for event_el in entry.findall("event"):
                 rows.append(_lumia_event_to_row(entry_ts, event_el, provider_speciality))
+    if person_el is not None:
+        rows.extend(_demographic_rows(person_el))
 
     df = pd.DataFrame(rows)
     if not df.empty:
