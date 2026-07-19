@@ -132,5 +132,46 @@ any `presets.py`/`diff_golden.py` edits made + committed on this branch; any cla
 corrections. A class-3 deviation gets its own `⚠️ DEVIATION` block per `docs/claude_ops.md` / this
 skill's Deviation workflow — STOP, don't improvise past it.
 
-## VM run results
-_(left empty by the planner; the executor fills this in on readback)_
+## VM run results — readback on `phil-sllm-01`, 2026-07-18 · REPO `vista_eval_vlm` · BRANCH `feat/lumia-live-ehr-adapter` @ `afeed41` (run + readback co-located on the Claude-Code CPU box)
+
+**Net: ❌ BLOCKED — class-3 deviation. Phase 1's strict gate FAILED on all 20 rows / both text fields even with the demographics fix + both exclusion mechanisms active. The residual is NOT the STANFORD_OBS + demographic-vintage-gap the plan's mechanisms were designed to absorb — it is a pervasive, whole-timeline render divergence (a `VALUE:` vs `NOTE:` field-label mismatch on every lab/measurement line, plus live emitting ~2.36× the events). This supersedes the Phase-0.5 demographics root-cause as the primary blocker. Back to the Mac to re-plan the live-adapter render alignment. `code_filter` was analytically ruled out (not run — see below).**
+
+- **Step 0:** ✅ synced `feat/lumia-live-ehr-adapter` → `afeed41`; `git merge-base --is-ancestor fd4e831 HEAD` OK ("fix landed"). Reused the existing hand-augmented golden venv (`~/code/vista_eval_vlm/.venv`, py3.11). LUMIA mirror (9350 `.xml`) + `configs/all_tasks.viewer.vm.yaml` present, not re-fetched.
+- **Step 1 — banking:**
+  - **BEFORE** (`legacy_small_v2`): ✅ banked from a fresh prewiring worktree at `6ded1e6` (verified ancestor of HEAD; legacy render path `meds_timeline_utils` is unchanged 6ded1e6→HEAD). 20 rows, config `all_tasks.viewer.vm.yaml` + `--limit 20`. Matched 1238/1238 timeline rows.
+  - **AFTER** (`lumia_live_fixed`): ✅ banked on `afeed41` (with the fix, `select=[]` as committed). 20 rows, same config + `--limit 20`. Matched 1238/1238. Ran detached (~10-min slow-`/mnt` XML parse — a foreground 10-min timeout killed the first attempt with a 0-byte file; re-ran unbuffered in background, exit 0).
+  - *In-lane note:* used the plain `all_tasks.viewer.vm.yaml` (the config both prior banks in this workstream used, per their `.meta.json`) as the "restricted scratch config" rather than building a new covered-only CSV. Coverage is 100% (1238/1238 matched both sides), so `--limit 20` draws the identical index set for both banks — the diff confirmed this (see below). No separate restriction plumbing was needed.
+- **Step 1 — diff** (`diff_golden --mode strict --exclude-line-patterns STANFORD_OBS/Flowsheet --exclude-if-legacy-missing MEDS_BIRTH Ethnicity/ Race/ Gender/`): **❌ GATE FAILURE (exit 1)**.
+  - `[PASS] structure` — image_hashes / selected_indices / counts / assembly_mode byte-identical (Gates 1/2 pass).
+  - **Index sets MATCHED** — `shared indices: 20`, 0 only-in-BEFORE / 0 only-in-AFTER. The precondition-failure STOP did **not** fire.
+  - `[FAIL] text drift (strict): 40 field mismatches` — i.e. **all 20 rows × both text fields** (`dynamic_prompt`, `adapter_prompt_string`) diverge. (`--max-report 20` capped the printed rows; total is 40.)
+- **Decision gates (class 2):** Phase 1's index-set precondition gate → **did not fire** (sets matched, coverage 100%). The `code_filter` fork was evaluated and **resolved to "not applicable" analytically** — see the deviation below; I did **not** re-bank with `code_filter(exclude_stanford=True)` because the dominant residual is non-STANFORD and even excluding all STANFORD_* classes leaves thousands of divergent LOINC/SNOMED/RxNorm lines. Running it would have cost another ~10-min slow-mount bank for a foregone FAIL.
+- **In-lane corrections (class 1):** none — no code/config changed on this leg (banking + diff only). Prewiring worktree removed after banking (`git worktree remove ../vista_eval_vlm-prewiring`); `legacy_small_v2` + `lumia_live_fixed` banks persist on the results mount.
+
+### ⚠️ DEVIATION (class 3) — the residual is a whole-timeline render mismatch, not the two accepted-divergence classes
+
+**Expected (per Step 1's gate):** after the demographics fix + both exclusion mechanisms, a strict PASS (or a residual attributable only to STANFORD_OBS + the ~35% legacy-vintage demographic gap, i.e. `code_filter`-resolvable).
+
+**Found:** near-total divergence. PHI-safe structural characterization of the two banks (all values digit-masked, descriptions collapsed — no timeline text, dates, values, or person_ids surfaced):
+
+1. **Line-level overlap is ~8%.** Of 5,841 legacy timeline lines (STANFORD_OBS excluded), only 454 (7.8%) appear byte-identically in the live render; live has 13,774 lines (≈2.36× legacy). Not a shared-core-plus-extra and not a strict superset — genuinely divergent in both directions.
+2. **Dominant cause — `VALUE:` vs `NOTE:` field-label mismatch on measurement lines.** Digit-masked line-template histogram:
+   - legacy top templates: `[…] | LOINC/… (…) | VALUE: D.D` (×2071), `… | VALUE: D.D | NOTE: D.D` (×460), `SNOMED/… | VALUE: D.D` (×222) — legacy renders numeric lab/measurement results under a **`VALUE:`** field.
+   - live top templates: `[…] | LOINC/… (…) | NOTE: D` (×4486), `… | NOTE: D.D` (×2561), `SNOMED/… | NOTE: D` (×215) — live renders the **same** lab lines under a **`NOTE:`** field, and never emits `VALUE:` at all.
+   - Because labs/measurements are the bulk of the timeline, this single field-label convention difference makes essentially every measurement line diverge byte-for-byte on its own.
+3. **Secondary — extra era suffixes + event-scope.** Live emits `RxNorm/… | NOTE: start|end` and `NUCC/… | NOTE: start|end` (drug/provider era bounds) that legacy lacks; and even *shared* line-templates differ in count (e.g. `SNOMED/… | NOTE: N` B180 / A352), i.e. a scope/truncation/dedup difference on top of the formatting one.
+
+**Why it blocks:** the plan assumed the only Phase-1 residuals would be STANFORD_OBS (always-excluded) + demographics on the legacy-vintage-gap rows (per-row excluded). Neither mechanism — nor `code_filter(exclude_stanford)` — touches the `VALUE:`/`NOTE:` label convention or the ~2× event scope, which are the actual blockers. The demographics fix landed correctly but addressed only ~5 lines/patient; it was never the primary divergence. Resolving this needs a code change to the **live adapter's render** (align the measurement value field to legacy's `VALUE:` convention, and reconcile event scope/era suffixes) and/or a decision about which render is canonical — a plan-level call, not an executor one.
+
+**Escalating to planner.** Recommended Mac next step: re-enter plan mode; a masked-line inspection (Phase-0.5 style) of `_lumia_event_to_row` / the live render path in `src/context/adapters/ehr.py` to confirm the `VALUE:`-vs-`NOTE:` mapping and the event-scope delta, then supersede this doc with a render-alignment plan. `legacy_small_v2` + `lumia_live_fixed` banks remain on the results mount for that inspection.
+
+## Resume block
+
+```
+Resume ▸ vista_eval_vlm   → re-plan on the Mac (class-3 deviation)
+  REPO   vista_eval_vlm
+  BRANCH feat/lumia-live-ehr-adapter
+  DOC    docs/vm-status/2026-07-18-phase1-demographics-fix-rerun.md
+  SHA    afeed41 (readback ⚠ UNPUSHED until /commit-review)
+  SYNC   git fetch origin && git checkout feat/lumia-live-ehr-adapter && git pull --ff-only   # run FIRST; verify: git rev-parse --short HEAD → (readback sha)
+```

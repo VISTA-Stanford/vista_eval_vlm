@@ -48,9 +48,13 @@ Side-by-side layout deferred (single-column first cut).
   synthesizes demographics from `<person>` + fixes `type`→`table`; `diff_golden.py` adds
   `--exclude-line-patterns` (STANFORD_OBS, unconditional) and `--exclude-if-legacy-missing`
   (demographics, per-row conditional — Phil's resolution to the 7/20 gap: verify wherever legacy
-  has a baseline, exclude only where it doesn't). VM smoke pending:
+  has a baseline, exclude only where it doesn't). **VM Phase 1 BLOCKED (2026-07-18, class-3):**
   [docs/vm-status/2026-07-18-phase1-demographics-fix-rerun.md](vm-status/2026-07-18-phase1-demographics-fix-rerun.md)
-  — Phase 1's decision gate (does `timeline` need `code_filter`?) re-run with the fix in place.
+  — strict gate FAILED all 20 rows/both fields even with the fix + both exclusions. Residual is a
+  whole-timeline render mismatch, NOT STANFORD_OBS/demographics: live renders lab values as
+  `NOTE:` where legacy uses `VALUE:`, and emits ~2.36× the events (7.8% line overlap). Supersedes
+  the demographics root-cause. `code_filter` ruled out (non-STANFORD dominant). NEXT(Mac)=re-plan
+  the live-adapter render alignment in `ehr.py`.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
