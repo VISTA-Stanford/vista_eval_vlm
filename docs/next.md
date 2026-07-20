@@ -38,10 +38,12 @@ Side-by-side layout deferred (single-column first cut).
   Phil-approved via `/explain-plan` (2026-07-20):
   [plans/vlm-step5-lumia-render-alignment-replan.md](plans/vlm-step5-lumia-render-alignment-replan.md).
   Mac landed the two `ehr.py` fixes (VALUE:/NOTE: mismatch, `start|end` token leak) at `7ed0248`.
-  VM smoke pending: [docs/vm-status/2026-07-20-7ed0248.md](vm-status/2026-07-20-7ed0248.md) — Phase 1
-  masked characterization of the event-count divergence (does the split-interval signature explain
-  live's ~2.36× volume?). Phase 2 (re-run Phase 1's decision gate with the fixes landed) follows once
-  Phase 1 resolves.
+  VM Phase 1 **BLOCKED (class-3)** — see [docs/vm-status/2026-07-20-7ed0248.md](vm-status/2026-07-20-7ed0248.md#vm-run-results--readback-on-phil-sllm-01-2026-07-20--repo-vista_eval_vlm--branch-featlumia-live-ehr-adapter--c3306eb-pushed-to-originfeatlumia-live-ehr-adapter):
+  the split-interval signature explains only **4.0%** of the excess (321/7,990 lines; `<50%` STOP band),
+  so a second, unidentified cause drives live's volume gap. NEXT(Mac) = re-enter plan mode on the ~96%
+  unattributed excess (also reconcile this script's exclusion set vs the prior 5,841 legacy-line figure;
+  under these exclusions the ratio is 1.93×, not 2.36×). Phase 2 (re-run the decision gate with fixes
+  landed) stays deferred until the root cause is re-planned.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
