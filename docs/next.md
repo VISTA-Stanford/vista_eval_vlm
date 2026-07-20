@@ -32,18 +32,14 @@ Side-by-side layout deferred (single-column first cut).
 
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2.
-- **Step 5 — LUMIA-live EHR adapter** — implemented on `feat/lumia-live-ehr-adapter`; two rounds of
-  class-3 render-alignment deviations on the Phase 1 byte-diff gate, both root-caused + re-planned (see
-  [plans/README.md](plans/README.md) for the full history). Current plan, Codex-reviewed +
-  Phil-approved via `/explain-plan` (2026-07-20):
-  [plans/vlm-step5-lumia-render-alignment-replan.md](plans/vlm-step5-lumia-render-alignment-replan.md).
-  Mac landed the two `ehr.py` fixes (VALUE:/NOTE: mismatch, `start|end` token leak) at `7ed0248`.
-  VM Phase 1 **BLOCKED (class-3)** — see [docs/vm-status/2026-07-20-7ed0248.md](vm-status/2026-07-20-7ed0248.md#vm-run-results--readback-on-phil-sllm-01-2026-07-20--repo-vista_eval_vlm--branch-featlumia-live-ehr-adapter--c3306eb-pushed-to-originfeatlumia-live-ehr-adapter):
-  the split-interval signature explains only **4.0%** of the excess (321/7,990 lines; `<50%` STOP band),
-  so a second, unidentified cause drives live's volume gap. NEXT(Mac) = re-enter plan mode on the ~96%
-  unattributed excess (also reconcile this script's exclusion set vs the prior 5,841 legacy-line figure;
-  under these exclusions the ratio is 1.93×, not 2.36×). Phase 2 (re-run the decision gate with fixes
-  landed) stays deferred until the root cause is re-planned.
+- **Step 5 — LUMIA-live EHR adapter** — on `feat/lumia-live-ehr-adapter`; three rounds of class-3
+  render-alignment deviations, each root-caused + re-planned (see [plans/README.md](plans/README.md)
+  for the full history). The render-alignment plan's interval-split hypothesis was VM-refuted
+  (4.0% attribution, `<50%` STOP — [docs/vm-status/2026-07-20-7ed0248.md](vm-status/2026-07-20-7ed0248.md)).
+  Real cause + fix (config-driven 24mo window crop, matching legacy's actual scope) now in
+  [plans/vlm-step5-lumia-window-scope-replan.md](plans/vlm-step5-lumia-window-scope-replan.md),
+  Codex-reviewed + Phil-approved via `/explain-plan` (2026-07-20). NEXT(Mac) = implement
+  Approach #1-4, then VM Phase 1 re-verify.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
