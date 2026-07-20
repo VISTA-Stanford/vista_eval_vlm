@@ -37,8 +37,11 @@ Side-by-side layout deferred (single-column first cut).
   [plans/README.md](plans/README.md) for the full history). Current plan, Codex-reviewed +
   Phil-approved via `/explain-plan` (2026-07-20):
   [plans/vlm-step5-lumia-render-alignment-replan.md](plans/vlm-step5-lumia-render-alignment-replan.md).
-  NEXT(Mac) = land the two `ehr.py` fixes (VALUE:/NOTE: mismatch, `start|end` token leak); NEXT(VM) =
-  Phase 1 characterization script for the event-count divergence.
+  Mac landed the two `ehr.py` fixes (VALUE:/NOTE: mismatch, `start|end` token leak) at `7ed0248`.
+  VM smoke pending: [docs/vm-status/2026-07-20-7ed0248.md](vm-status/2026-07-20-7ed0248.md) — Phase 1
+  masked characterization of the event-count divergence (does the split-interval signature explain
+  live's ~2.36× volume?). Phase 2 (re-run Phase 1's decision gate with the fixes landed) follows once
+  Phase 1 resolves.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
