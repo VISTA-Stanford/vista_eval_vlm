@@ -20,12 +20,15 @@ not yet (see ``presets.py``).
 
 LUMIA field coverage (VM-gated, see ``_lumia_event_to_row``): ``markup.md``
 documents ``<event>`` with only ``type/code/name/note_id/provider_id/care_site_id``
-(element text = a state token). The flat renderer additionally wants
-``numeric_value``, ``unit``, ``text_value`` and a ``description`` distinct from
-``name``. Those are read from ``<event>`` attributes *if the corpus carries them*
-and default to ``None`` otherwise; every fully-absent field is recorded on the
-block metadata (``lumia_missing_fields``) so gate 3 degrades to a declared-delta
-(OQ-K) instead of failing.
+(element text = a state token, *or* the rendered numeric/note value — see below).
+The flat renderer additionally wants ``numeric_value``, ``unit``, ``text_value`` and
+a ``description`` distinct from ``name``. ``unit``/``description`` are read from
+``<event>`` attributes *if the corpus carries them* and default to ``None``
+otherwise; every fully-absent field is recorded on the block metadata
+(``lumia_missing_fields``) so gate 3 degrades to a declared-delta instead of
+failing. ``numeric_value``/``text_value`` are instead reconstructed from element
+text — this resolves the 2026-07-06 field-coverage OQ-K fork ("accept the declared
+delta vs. parse numeric from text") in favor of parsing; see ``_lumia_event_to_row``.
 
 Demographics (VM-gated, see ``_demographic_rows``): ``<person>`` is a sibling of
 ``<events>`` under every ``<encounter>``, not an ``<event>`` itself, so the walk
@@ -57,7 +60,9 @@ from .base import ModalityAdapter
 _RENDERER_EXTRA_FIELDS = ("numeric_value", "unit", "text_value", "description")
 
 # Event <event> element text tokens that are pure state markers (not note bodies).
-_STATE_TOKENS = {"start", "end", "", None}
+# "start|end" is omop_split_interval_events's combined token for near-instantaneous
+# intervals (start ≈ end within 1 minute) — same state-marker, not a note body.
+_STATE_TOKENS = {"start", "end", "start|end", "", None}
 
 # <person>/<demographics> child tags to synthesize as pseudo-event rows, in the fixed order
 # confirmed against the legacy render (13/13 patients, VM Phase 0.5): Ethnicity, Race, Gender.
@@ -82,6 +87,31 @@ def _lumia_event_to_row(entry_ts, event_el, provider_speciality: dict) -> dict:
     THE field-coverage seam (VM-gated). Documented fields map directly; the
     renderer's extra fields are read from attributes if present, else ``None``.
     Keep this the single place to adjust when a real ``.xml`` is inspected.
+
+    ``numeric_value``/``text_value`` resolution (resolves the 2026-07-06 field-coverage
+    OQ-K fork — "accept the declared delta vs. parse numeric from text" — in favor of
+    parsing): LUMIA ``<event>`` attributes never actually carry ``numeric_value``/
+    ``text_value``. Confirmed against meds2text's real generator
+    (``textify.py::event_to_xml`` ~L1248-1340, sibling repo ``../meds2text``): it picks one
+    winning value via ``value = attributes.get("numeric_value") or attributes.get("text_value")
+    or None``, writes it only into element text (``f"{float(value):.2f}"``/bare int for
+    numerics, raw string otherwise), then unconditionally pops both attributes — so no
+    attribute-level signal survives into the ``.xml``. This function instead ``float()``-parses
+    element text to reconstruct ``numeric_value`` when neither attribute is populated.
+    **Cross-repo contract:** if meds2text ever starts emitting explicit ``numeric_value``/
+    ``text_value`` attributes, or changes its formatting, prefer those attributes over this
+    text-parse heuristic and re-run the golden gate.
+
+    Three declared, byte-level residual classes are accepted as permanent divergence (not
+    adapter bugs — structurally forced by ``event_to_xml``'s export design; see
+    ``docs/plans/vlm-step5-lumia-render-alignment-replan.md`` Approach #1):
+      1. Dual-value rows (legacy ``VALUE: D.D | NOTE: D.D`` on one line) collapse to one
+         value — ``event_to_xml`` keeps only the winner; the loser never reaches the ``.xml``.
+      2. Zero-valued numerics: the ``or``-chain above treats a genuine ``0.0`` as falsy, so a
+         zero-valued lab can lose to ``text_value``/``None`` and render with empty text.
+      3. Ontology-override collapse: ``event_to_xml`` overwrites the winning text with an OMOP
+         concept description when the value's string form resolves as a concept code — the
+         number is unrecoverable once that happens.
     """
     attrib = event_el.attrib
     code = attrib.get("code")
@@ -90,30 +120,31 @@ def _lumia_event_to_row(entry_ts, event_el, provider_speciality: dict) -> dict:
     if description is None or description == "":
         description = attrib.get("name")
 
-    # note body: an explicit `text_value` attr, else element text when it is a
-    # real body (notes) rather than a state token like "start".
-    text_value = attrib.get("text_value")
-    if text_value is None:
-        el_text = (event_el.text or "").strip()
-        if el_text and el_text.lower() not in _STATE_TOKENS:
-            text_value = el_text
-
     def _num(v):
         try:
             return float(v) if v is not None and str(v) != "" else None
         except (TypeError, ValueError):
             return None
 
+    # text_value/numeric_value attrs are dead in practice (meds2text never emits them —
+    # see docstring); reconstruct numeric_value by parsing element text when both are absent.
+    text_value = attrib.get("text_value")
+    numeric_value = _num(attrib.get("numeric_value"))
+    if text_value is None and numeric_value is None:
+        el_text = (event_el.text or "").strip()
+        if el_text and el_text.lower() not in _STATE_TOKENS:
+            parsed = _num(el_text)
+            if parsed is not None:
+                numeric_value = parsed
+            else:
+                text_value = el_text
+
     # unit: LUMIA carries it as `unit_source_value` (OMOP source unit), not `unit`.
-    # numeric_value: NOT a discrete LUMIA field — the lab value is embedded in the
-    # event element text (-> text_value). Left as None here; the missing discrete
-    # `VALUE: {num}{unit}` reconstruction is the declared gate-3 delta (OQ-K),
-    # confirmed by the VM field-coverage check (2026-07-07). See the vm-status doc.
     return {
         "time": entry_ts,
         "code": code,
         "description": description,
-        "numeric_value": _num(attrib.get("numeric_value")),
+        "numeric_value": numeric_value,
         "unit": attrib.get("unit") or attrib.get("unit_source_value"),
         "text_value": text_value,
         # non-renderer fields, used by filters:
