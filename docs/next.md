@@ -72,8 +72,10 @@ Side-by-side layout deferred (single-column first cut).
   informational re-run; Step 3's readback stands as the final byte-diff report for this branch.
   Phase 2's human visual-QA render is now Step 5's **whole landing gate**, un-gated from Phase 1
   (Phase 2 was specified back in round 3 but never run — Phase 1 kept re-opening across rounds
-  2-4). **NEXT:** Phil runs Phase 2 on `phil-sllm-01` (`python -m results.context_viewer ...`,
-  command unchanged from round 3) and reads the HTML himself → `/land`.
+  2-4). **VM smoke pending** @ `828e570`:
+  [docs/vm-status/2026-07-20-828e570.md](vm-status/2026-07-20-828e570.md) — renders the 3
+  mandatory Phase 2 experiments (`no_image`/`no_report`/`axial_all_image`) on `phil-sllm-01`.
+  **NEXT:** run the handoff doc, then Phil reads the 3 HTML files himself → `/land`.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
