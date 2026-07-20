@@ -59,10 +59,12 @@ Side-by-side layout deferred (single-column first cut).
   a dead end without material infra investment — declares the LOINC residual (2724/2779 excess
   lines) a **permanent data-provenance divergence** (same treatment as `STANFORD_OBS`) and **pivots
   Step 5's landing gate to Phase 2 human visual-QA as the primary check**. Ryan-D'Cunha escalation
-  (OQ1b) explicitly NOT pursued now. **NEXT = plan's new Step 3**: re-run the byte-diff gate with
-  `LOINC/` added to the already-existing `--exclude-line-patterns` mechanism (no new code), then
-  Phil opens Phase 2's human-QA HTML render (`context_viewer.py`, never yet completed on this
-  branch) — both together are Step 5's landing gate → `/land`.
+  (OQ1b) explicitly NOT pursued now. **VM smoke pending:**
+  [docs/vm-status/2026-07-20-loinc-closing-verification.md](vm-status/2026-07-20-loinc-closing-verification.md)
+  — re-runs the byte-diff gate with `LOINC/` added to the already-existing
+  `--exclude-line-patterns` mechanism (no new code). Then Phil opens Phase 2's human-QA HTML
+  render (`context_viewer.py`, never yet completed on this branch) — both together are Step 5's
+  landing gate → `/land`.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 

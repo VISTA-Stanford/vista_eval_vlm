@@ -324,8 +324,7 @@ Step 1's findings (metadata present/absent, dates if found). Step 2's five print
 lines. Which decision-gate branch above the result lands in. **Never** person_ids, raw timeline
 text, or dates from individual records.
 
-### Step 3 — closing verification (post-decision, added 2026-07-20; supersedes Steps 1-2 as the
-### thing that actually runs next)
+### Step 3 — closing verification (post-decision, added 2026-07-20; supersedes Steps 1-2 as the thing that actually runs next)
 
 Per the Resolution above: Step 2 is not being pursued further. This step re-runs the byte-diff
 gate with the LOINC divergence declared (not a new investigation) so it reads as intentional. Same
