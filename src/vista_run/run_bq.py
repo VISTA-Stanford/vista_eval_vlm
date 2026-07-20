@@ -750,6 +750,10 @@ class TaskOrchestrator:
                 f"experiment={experiment!r} requires person_id to resolve LUMIA files, but it's missing"
             )
         ehr_block = next(b for b in get_preset(experiment)["blocks"] if b["id"] == "ehr")
+        if ehr_block["config"].get("variant") == "timeline":
+            window_before = self.cfg.get("ehr_timeline_window_before")
+            if window_before:
+                ehr_block["config"]["select"] = [{"fn": "window", "before": window_before, "after": "0d"}]
         adapter = EHRAdapter(config=copy.deepcopy(ehr_block["config"]))
         corpus_dir = self.cfg.get("retrieval", {}).get("corpus_dir")
         if not corpus_dir:

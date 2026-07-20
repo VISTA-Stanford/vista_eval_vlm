@@ -25,7 +25,7 @@ import copy
 # Reusable block fragments -----------------------------------------------------
 def _ehr_block(variant: str = "timeline"):
     """EHR text block. ``variant`` records which timeline source the cohort feeds
-    (``timeline`` = full, ``no_img_report`` = imaging-report-skipped,
+    (``timeline`` = full window, ``no_img_report`` = imaging-report-skipped,
     ``passthrough`` = pre-rendered from parquet/retrieval).
 
     Concrete LUMIA-live ``select`` chains (wired in the Step 5 hot-path pass,
@@ -33,11 +33,23 @@ def _ehr_block(variant: str = "timeline"):
       * ``no_img_report`` -> ``[{fn: window, before: "6mo", after: "0d"},
         {fn: code_filter, exclude_stanford: true}]`` (reproduces the legacy
         ``get_described_events_window`` window + ``exclude_report=True`` STANFORD skip).
-      * ``timeline`` -> ``select=[]`` (full timeline, unfiltered) pending that plan's
-        Verification Phase 1 VM decision gate: whether the full timeline should also
-        drop STANFORD-tagged codes like ``no_img_report`` does. Flip this one line to
-        add ``code_filter(exclude_stanford=True)`` if the gate resolves that way —
-        single edit point, not a second runtime toggle.
+        Stays hardcoded at ``"6mo"`` rather than gaining the same config knob as
+        ``timeline`` below (`docs/plans/vlm-step5-lumia-window-scope-replan.md`,
+        Approach #4/Codex modularity review): it reproduces a *separate* legacy
+        comparator's own contract (``get_described_events_window``'s historical 6mo
+        scope), not the ``patient_string``/24mo one that fix targets. Don't generalize
+        this one until a real request shows up.
+      * ``timeline`` -> ``[{fn: window, before: "24mo", after: "0d"}]``, a resolved
+        default (`docs/plans/vlm-step5-lumia-window-scope-replan.md`): legacy's frozen
+        ``patient_string`` was itself generated with a 24-month lookback from
+        ``embed_time`` (`src/data_tools/csv_helper/subsampled_retrieval_csv.py:180`),
+        so the live render now matches that scope instead of rendering full
+        unrestricted history. Overridable per-run without a code change via the flat
+        config key ``ehr_timeline_window_before`` (read in ``run_bq.py``'s
+        ``_apply_ehr_adapter``) — absent config, this 24mo default applies. The
+        *separate* ``code_filter``/STANFORD-exclusion question for ``timeline`` (should
+        it also drop STANFORD-tagged codes like ``no_img_report`` does?) stays open —
+        a different config axis, unrelated to window scope.
       * ``passthrough`` -> ``select`` key omitted entirely (the adapter auto-passes a
         pre-rendered timeline string through; filters are inapplicable to already-
         rendered text).
@@ -48,7 +60,7 @@ def _ehr_block(variant: str = "timeline"):
             {"fn": "code_filter", "exclude_stanford": True},
         ]
     elif variant == "timeline":
-        select = []  # Verification Phase 1 (see docstring) may flip this to add code_filter
+        select = [{"fn": "window", "before": "24mo", "after": "0d"}]
     else:  # passthrough
         select = None
     config = {"variant": variant, "serialize": {"style": "flat_timeline"}}
