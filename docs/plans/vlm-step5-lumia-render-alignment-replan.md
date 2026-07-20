@@ -7,6 +7,16 @@ Reference: docs/claude_ops.md
 does not replace, that plan (already landed: demographics synthesis + `type`→`table` fix) and the base
 plan `docs/plans/vlm-step5-lumia-live-ehr-adapter.md`.
 
+**2026-07-20 update — Approach #3 (interval-split) refuted, superseded for the volume-gap residual.**
+The VM Phase 1 re-run (`docs/vm-status/2026-07-20-7ed0248.md`) found the `omop_split_interval_events`
+start/end-pair signature explains only **4.0%** of the excess (321/7,990 lines) — a `<50%` STOP,
+refuting it as the primary cause of live's ~2× event-volume gap. The two `ehr.py` render fixes below
+(`VALUE:`/`NOTE:` field-label mismatch, `start|end` token leak) are unaffected and remain landed/valid
+— only the volume-gap hypothesis is refuted. The real cause (a window-scope mismatch: legacy's frozen
+`patient_string` was generated with a 24-month lookback, live's `timeline` variant rendered full
+unrestricted history) is root-caused and fixed in the next re-plan,
+`docs/plans/vlm-step5-lumia-window-scope-replan.md`.
+
 ## Context
 
 Phase 1's decision gate was re-run with the demographics fix + two exclusion mechanisms in place

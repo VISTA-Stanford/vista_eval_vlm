@@ -36,10 +36,12 @@ Side-by-side layout deferred (single-column first cut).
   render-alignment deviations, each root-caused + re-planned (see [plans/README.md](plans/README.md)
   for the full history). The render-alignment plan's interval-split hypothesis was VM-refuted
   (4.0% attribution, `<50%` STOP — [docs/vm-status/2026-07-20-7ed0248.md](vm-status/2026-07-20-7ed0248.md)).
-  Real cause + fix (config-driven 24mo window crop, matching legacy's actual scope) now in
+  Real cause + fix (config-driven 24mo window crop, matching legacy's actual scope) in
   [plans/vlm-step5-lumia-window-scope-replan.md](plans/vlm-step5-lumia-window-scope-replan.md),
-  Codex-reviewed + Phil-approved via `/explain-plan` (2026-07-20). NEXT(Mac) = implement
-  Approach #1-4, then VM Phase 1 re-verify.
+  Codex-reviewed + Phil-approved via `/explain-plan` (2026-07-20). Approach #1-4 implemented
+  Mac-side (2026-07-20, uncommitted — `presets.py`/`run_bq.py`/2 docs/`ehr_filters.py` docstring/
+  render-alignment-replan header note). NEXT(phil-sllm-01) = VM Phase 1 re-verify (byte-diff gate
+  + decision-gate bands), then Phase 2 human visual-QA landing gate.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
