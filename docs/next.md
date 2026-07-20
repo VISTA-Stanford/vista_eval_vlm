@@ -43,9 +43,14 @@ Side-by-side layout deferred (single-column first cut).
   [docs/vm-status/2026-07-20-a58f5f9.md](vm-status/2026-07-20-a58f5f9.md)): 24mo window crop is a
   large partial fix (live/legacy ratio 1.93→1.13, excess 7990→2779) but `total_excess_lines=2779
   > ~2500` → a second cause remains; Phase 2 visual-QA **not run** (gated off). Residual is
-  overwhelmingly **LOINC lab lines** (2724 of the excess). NEXT(Mac) = narrower LOINC-scoped
-  follow-up investigation (not a from-scratch re-plan) into why live still renders ~2.7k excess
-  LOINC lines within the same 24mo window.
+  overwhelmingly **LOINC lab lines** (2724 of the excess). Planner-side git archaeology exhausted
+  the rendering-code explanations (no LOINC-specific code anywhere in the transform stack; live's
+  only relevant transforms are dedup-only) and found a new hypothesis: legacy and live may read
+  from **two different underlying data extractions** (different source paths, no shared ancestry
+  visible from either repo). Round 4 plan:
+  [plans/vlm-step5-lumia-loinc-provenance-replan.md](plans/vlm-step5-lumia-loinc-provenance-replan.md)
+  — a code-bypassing raw LOINC event-count check across the 20 already-banked persons.
+  **VM smoke pending:** [docs/vm-status/2026-07-20-3206e84.md](vm-status/2026-07-20-3206e84.md).
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 

@@ -4,6 +4,13 @@ Reference: docs/claude_ops.md
 
 **Status: Draft** (2026-07-20)
 
+**2026-07-20 update — Approach #1-4 (the window crop) confirmed valid, VM Phase 1 hit band-3
+STOP.** The VM readback (`docs/vm-status/2026-07-20-a58f5f9.md`) confirmed the 24mo window crop
+is a large partial fix (live/legacy ratio 1.93→1.13, excess 7990→2779) but `total_excess_lines`
+still exceeds the band-3 threshold — residual is 98% LOINC. This plan's code fixes remain landed
+and valid; only the residual investigation continues, in
+`docs/plans/vlm-step5-lumia-loinc-provenance-replan.md`.
+
 ## Context
 
 This continues the `feat/lumia-live-ehr-adapter` branch's Step 5 work (replacing the frozen
