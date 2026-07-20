@@ -1,6 +1,6 @@
 # Next steps
 
-_Last updated: 2026-07-17_
+_Last updated: 2026-07-20_
 
 ## ✅ Landed to `main` — modular VLM preprocessing roadmap (2026-07-15)
 
@@ -32,29 +32,13 @@ Side-by-side layout deferred (single-column first cut).
 
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2.
-- **Step 5 — LUMIA-live EHR adapter** — implemented on `feat/lumia-live-ehr-adapter`
-  (`presets.py`/`run_bq.py`/`ehr.py`/docs); VM Phase 1 hit a class-3 deviation
-  ([docs/vm-status/2026-07-17-4989a20.md](vm-status/2026-07-17-4989a20.md)) — live LUMIA render vs.
-  legacy `patient_string` near-disjoint. Root-caused + re-planned (demographics = fixable parser bug,
-  STANFORD_OBS = likely-intentional upstream exclusion); Phil-approved via `/explain-plan` (2026-07-17):
-  [plans/vlm-step5-lumia-demographics-flowsheet-replan.md](plans/vlm-step5-lumia-demographics-flowsheet-replan.md).
-  **VM Phase 0.5 DONE (2026-07-17, `4b5239e`)** — all 3 OQs resolved
-  ([docs/vm-status/2026-07-17-4b5239e.md](vm-status/2026-07-17-4b5239e.md)): `<person>` present 100%
-  (child of every encounter, demographics identical across encounters → dedup trivial); **Race IS in
-  source** (synthesize it, exclude only STANFORD_OBS); legacy render = `MEDS_BIRTH`×2 (bare) +
-  `Ethnicity`/`Race`/`Gender` = xml `code` attr verbatim, no desc, all @ birthdate ts, order
-  `BIRTH,BIRTH,Eth,Race,Gender`. ⚠ NEW: 7/20 legacy rows lack demographics despite full source →
-  Mac must pick the acceptance treatment. **Fix implemented (2026-07-18, uncommitted)**: `ehr.py`
-  synthesizes demographics from `<person>` + fixes `type`→`table`; `diff_golden.py` adds
-  `--exclude-line-patterns` (STANFORD_OBS, unconditional) and `--exclude-if-legacy-missing`
-  (demographics, per-row conditional — Phil's resolution to the 7/20 gap: verify wherever legacy
-  has a baseline, exclude only where it doesn't). **VM Phase 1 BLOCKED (2026-07-18, class-3):**
-  [docs/vm-status/2026-07-18-phase1-demographics-fix-rerun.md](vm-status/2026-07-18-phase1-demographics-fix-rerun.md)
-  — strict gate FAILED all 20 rows/both fields even with the fix + both exclusions. Residual is a
-  whole-timeline render mismatch, NOT STANFORD_OBS/demographics: live renders lab values as
-  `NOTE:` where legacy uses `VALUE:`, and emits ~2.36× the events (7.8% line overlap). Supersedes
-  the demographics root-cause. `code_filter` ruled out (non-STANFORD dominant). NEXT(Mac)=re-plan
-  the live-adapter render alignment in `ehr.py`.
+- **Step 5 — LUMIA-live EHR adapter** — implemented on `feat/lumia-live-ehr-adapter`; two rounds of
+  class-3 render-alignment deviations on the Phase 1 byte-diff gate, both root-caused + re-planned (see
+  [plans/README.md](plans/README.md) for the full history). Current plan, Codex-reviewed +
+  Phil-approved via `/explain-plan` (2026-07-20):
+  [plans/vlm-step5-lumia-render-alignment-replan.md](plans/vlm-step5-lumia-render-alignment-replan.md).
+  NEXT(Mac) = land the two `ehr.py` fixes (VALUE:/NOTE: mismatch, `start|end` token leak); NEXT(VM) =
+  Phase 1 characterization script for the event-count divergence.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
