@@ -50,7 +50,13 @@ Side-by-side layout deferred (single-column first cut).
   visible from either repo). Round 4 plan:
   [plans/vlm-step5-lumia-loinc-provenance-replan.md](plans/vlm-step5-lumia-loinc-provenance-replan.md)
   — a code-bypassing raw LOINC event-count check across the 20 already-banked persons.
-  **VM smoke pending:** [docs/vm-status/2026-07-20-3206e84.md](vm-status/2026-07-20-3206e84.md).
+  **VM BLOCKED (class-3) — see doc:** [docs/vm-status/2026-07-20-3206e84.md](vm-status/2026-07-20-3206e84.md).
+  Step 2's raw-legacy leg is unrunnable on the VM: `thoracic_cohort_meds_femr_db` is not staged on
+  any mount and `meds_reader` isn't a resolvable dep (fails to build under `uv`). Step 1 provenance
+  is *suggestive* (only on-VM stamped extraction is aug-2025; legacy is a Feb-2026 frozen snapshot,
+  absent) but not the LOINC-domain confirmation. Re-plan on the Mac: stage the db + add `meds_reader`,
+  redesign the legacy-raw comparison around an on-VM artifact, or accept the provenance signal and
+  pivot Step 5's gate to Phase-2 human QA (plan OQ1).
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
