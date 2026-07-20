@@ -66,8 +66,14 @@ Side-by-side layout deferred (single-column first cut).
   of each arm's events unmatched at event-identity level; 0 formatting/timestamp explanation), **not**
   a render bug and **not** enumerable-excludable. Confirms the pivot: **retire the strict byte-diff as
   Step 5's landing gate for the LUMIA-live arm**; rely on Phase 2 human visual-QA (`context_viewer.py`).
-  **NEXT (Mac):** re-enter plan mode to formalize retiring/downgrading the gate, then Phil runs the
-  Phase 2 human-QA render → `/land`.
+  **Round 5 re-plan resolved on the Mac 2026-07-20**
+  ([plans/vlm-step5-lumia-gate-retirement-replan.md](plans/vlm-step5-lumia-gate-retirement-replan.md)):
+  **Phil's call — drop the legacy byte-diff comparison entirely**, not even kept as an
+  informational re-run; Step 3's readback stands as the final byte-diff report for this branch.
+  Phase 2's human visual-QA render is now Step 5's **whole landing gate**, un-gated from Phase 1
+  (Phase 2 was specified back in round 3 but never run — Phase 1 kept re-opening across rounds
+  2-4). **NEXT:** Phil runs Phase 2 on `phil-sllm-01` (`python -m results.context_viewer ...`,
+  command unchanged from round 3) and reads the HTML himself → `/land`.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
@@ -80,13 +86,15 @@ Side-by-side layout deferred (single-column first cut).
   Phase 2 human-QA already catches. Not attempted from the Mac (no data access, can't regenerate
   anything); would also need the db itself located/recovered first (not found on any `phil-sllm-01`
   mount — may only exist on Ryan's original machine).
-- **Byte-diff-gate methodology for EHR content (Step 5 OQ3, not blocking)** — the round-4 LOINC
-  investigation confirmed a real vintage mismatch on the one MEDS extraction inspectable on the VM
-  (`vista_aug2025_meds`, 2025-08-18) vs. legacy's described 2026-02-16 frozen snapshot. Worth
-  reconsidering whether full byte parity against a single frozen legacy baseline is the right
-  landing gate for EHR content going forward, vs. leaning more on Phase 2 human-QA by design rather
-  than as a one-off exception. Not resolved; surfaced for a future planning pass, not this branch's
-  landing.
+- **Byte-diff-gate methodology for EHR content (Step 5 OQ3)** — **this-branch instance resolved by
+  round 5** ([plans/vlm-step5-lumia-gate-retirement-replan.md](plans/vlm-step5-lumia-gate-retirement-replan.md)):
+  the closing-verification readback found the divergence spans ~half of every arm's events across
+  all vocabularies (not enumerable-excludable), confirming full byte parity against this legacy
+  baseline is unreachable for data-provenance reasons, not a code defect — the byte-diff gate is
+  retired as blocking for this branch, Phase 2 human-QA is primary. **Still open as a general
+  policy question (not blocking):** should *future* EHR-content branches lean on human-QA by
+  design from the start, rather than defaulting to byte-parity-against-a-frozen-baseline and only
+  demoting it after it fails? Surfaced for a future planning pass.
 - **Model-roster refresh (SOTA survey 2026-07)** — VLM roster frozen since ~mid-Feb 2026; we're already current-gen but running the *small* variants. Several config-only upgrades on existing adapters; all open-weight/local (no BAA exposure). Priority order:
   1. **MedGemma 1.5 27B** (`google/medgemma-1.5-27b-it`, confirm exact HF id) — same `gemma3` adapter, config-only; materially stronger than the enabled 4B on 3D CT + WSI pathology (paper: +47% macro-F1 pathology, +11%/+3% 3D MRI/CT vs MedGemma 1).
   2. **Lingshu** — enable the already-registered `lingshu-medical-mllm/Lingshu-7B`; add **Lingshu-32B** (reportedly beats GPT-4.1 / Claude Sonnet 4 on medical multimodal QA + report-gen; 12+ modalities incl. CT / histopath / PET). ⚠ `src/models/lingshu.py` is HF-transformers, not vLLM → **no constrained-decoding / logprob path** until ported to the vLLM template (copy `octomed.py` / `gemma3.py`).

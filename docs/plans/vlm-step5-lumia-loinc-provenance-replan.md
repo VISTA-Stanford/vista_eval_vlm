@@ -2,10 +2,17 @@ Reference: docs/claude_ops.md
 
 # vista_eval_vlm — Step 5 re-plan #4: LOINC-scoped data-provenance investigation
 
-**Status: Resolved by Phil's decision** (2026-07-20) — Step 2 was blocked on the VM (class-3
+**Status: Superseded by round 5** (2026-07-20) — Step 2 was blocked on the VM (class-3
 deviation, `docs/vm-status/2026-07-20-3206e84.md`); the decision gate below never fired as
 designed. Phil resolved it directly rather than pursuing further confirmation — see
-**## Resolution** below.
+**## Resolution** below. **Step 3's closing verification (added in the Resolution) ran on the VM
+2026-07-20 and did NOT pass**: the byte-diff gate still fails with 40 field mismatches even with
+`LOINC/` excluded (`docs/vm-status/2026-07-20-loinc-closing-verification.md`). Masked readback
+shows the residual is a systemic cross-vocabulary divergence (~52-55% of each arm's events
+unmatched at event-identity level) — not LOINC-specific and not enumerable-excludable by adding
+more patterns. **Superseded by**
+[`vlm-step5-lumia-gate-retirement-replan.md`](./vlm-step5-lumia-gate-retirement-replan.md) — round
+5 retires the byte-diff-to-legacy gate entirely rather than chasing further exclusion classes.
 
 ## Context
 

@@ -11,6 +11,13 @@ still exceeds the band-3 threshold — residual is 98% LOINC. This plan's code f
 and valid; only the residual investigation continues, in
 `docs/plans/vlm-step5-lumia-loinc-provenance-replan.md`.
 
+**2026-07-20 update #2 — Phase 2 (below) is now un-gated.** Round 4's LOINC-declared closing
+verification still failed the byte-diff gate (systemic, non-enumerable divergence, not
+LOINC-specific — see `docs/plans/vlm-step5-lumia-gate-retirement-replan.md`), which retires the
+byte-diff gate as blocking. Phase 2's own text below still says "once Phase 1 above is clean" —
+that precondition is superseded; Phase 2 runs regardless of Phase 1's byte-diff status. No changes
+to Phase 2's command or its Expected/Stop criteria.
+
 ## Context
 
 This continues the `feat/lumia-live-ehr-adapter` branch's Step 5 work (replacing the frozen
