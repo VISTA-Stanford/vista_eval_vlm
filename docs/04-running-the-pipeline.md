@@ -93,7 +93,7 @@ If the chosen loader returned None (e.g. missing file), that experiment is skipp
 
 | Experiment | Data source | Timeline column | Prompt construction | Images (in vqa_dataset) |
 |------------|-------------|-----------------|---------------------|-------------------------|
-| **no_image** | BQ/cache + `_subsampled.csv` | Live LUMIA render (Step 5) | `prompts_map[task]` with `[PATIENT_TIMELINE]` replaced by truncated timeline | None |
+| **no_image** | BQ/cache + `_subsampled.csv` | Live LUMIA render, 24mo-windowed (Step 5) | `prompts_map[task]` with `[PATIENT_TIMELINE]` replaced by truncated timeline | None |
 | **axial_all_image** | Same as no_image | Same | Same (timeline in prompt) | 30 axial CT slices from `nifti_path` |
 | **no_timeline** | BQ/cache + `_subsampled_no_img_report.csv` (no timeline merge) | None | `image_prompts_map` or `prompts_map` (template only, no timeline) | 50 axial CT slices |
 | **no_report** | BQ/cache + `_subsampled_no_img_report.csv` + timeline | Live LUMIA render, windowed + STANFORD-filtered (Step 5) | `prompts_map` with timeline only (no report) | 10 axial CT slices |
@@ -118,7 +118,14 @@ timeline CSV merge (see [00-data-setup.md](00-data-setup.md)) still runs first a
 the task cohort via the `person_id` join — but `_apply_ehr_adapter` (`run_bq.py`) then **overwrites**
 `timeline_col` by parsing each surviving patient's real LUMIA `.xml` (from `retrieval.corpus_dir`),
 running it through the preset's filter chain (`window`/`code_filter`, see `context/presets.py`), and
-rendering via the canonical `get_llm_event_string`/`truncate_timeline`. **Fail-closed:** a patient
+rendering via the canonical `get_llm_event_string`/`truncate_timeline`. The `timeline` variant
+(`no_image`/`axial_all_image`) windows to **24 months before `embed_time`** by default — matching the
+scope the legacy `patient_string` CSV was actually generated with
+(`src/data_tools/csv_helper/subsampled_retrieval_csv.py:180`), not full unrestricted history.
+Override the window via the flat config key `ehr_timeline_window_before` (e.g. in your VM-local
+`configs/all_tasks.vm.yaml` overlay) without a code change; absent that key, the 24mo default applies.
+`no_report`/`timeline_only`/`report` keep their separate, narrower 6-month window (reproducing legacy's
+`get_described_events_window` scope) — a different, intentionally non-configurable contract. **Fail-closed:** a patient
 with no resolvable LUMIA file is dropped from the experiment entirely — there is no fallback to the
 old CSV text — and the dropped-row count is always printed (`[EHR] dropping N/M rows ...`), since it
 now directly shrinks the eval cohort. `all_vb_timeline_only` and `path_full` are untouched

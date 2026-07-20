@@ -13,8 +13,9 @@ by ``get_described_events_window`` (window = 6 months before ``embed_time``) +
 with ``exclude_report=False``) — the ``code_filter`` predicate is the *same*
 substring test the renderer used, so identical rows drop. These filter primitives
 are the *mechanism*; the concrete per-preset chains are wired in the hot-path pass
-(``presets.py`` currently carries a cohort-source ``variant`` marker, not the
-resolved ``select`` chain — see its ``_ehr_block`` note).
+(``presets.py``'s ``_ehr_block`` resolves both the ``no_img_report`` 6mo chain and the
+``timeline`` 24mo chain directly into ``select`` — see its docstring for the per-variant
+rationale and the ``ehr_timeline_window_before`` config-override path).
 
 Event DataFrame columns (produced by the EHR adapter's LUMIA ingest, matching
 ``get_llm_event_string``): ``time`` (datetime), ``code``, ``description``,
