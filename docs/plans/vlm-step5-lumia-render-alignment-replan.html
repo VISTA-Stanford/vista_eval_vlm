@@ -1,0 +1,812 @@
+<meta name="plan-sha256" content="aa23af7e041a51c73e2981ae44e79c12ca0023ad7ab453892a9a1cf5eb2c2a73">
+<title>vista_eval_vlm — Step 5 re-plan #2: render alignment</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --fg: #1a1d23; --muted: #5b6270; --card-bg: #ffffff; --border: #dde1e7;
+    --accent: #0e7490; --accent-fg: #ffffff; --amber: #b45309; --rose: #b91c1c; --green: #047857;
+    --code-bg: #eef1f5; --chip-pending: #0369a1; --chip-blocked: #b91c1c; --chip-shipped: #047857;
+    --chip-partial: #b45309; --link: #0e7490; --recede-opacity: 0.55;
+    --new-chip: #0e7490; --changed-chip: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e6e8eb; --muted: #9aa2af; --card-bg: #1b1e24; --border: #2b2f38;
+      --accent: #22d3ee; --accent-fg: #04222a; --amber: #f59e0b; --rose: #f87171; --green: #34d399;
+      --code-bg: #23262d; --chip-pending: #38bdf8; --chip-blocked: #f87171; --chip-shipped: #34d399;
+      --chip-partial: #f59e0b; --link: #67e8f9;
+      --new-chip: #22d3ee; --changed-chip: #f59e0b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.55 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+         margin: 0; padding: 0 0 80px 0; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 20px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px 0; }
+  h2 { font-size: 1.15rem; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-top: 40px; }
+  h3 { font-size: 1rem; margin-bottom: 6px; }
+  a { color: var(--link); }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+  pre:not(.mermaid) { background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 0.85em; }
+  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+  .chip { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+          border: 1px solid currentColor; margin-left: 6px; vertical-align: middle; }
+  .chip-pending { color: var(--chip-pending); }
+  .chip-blocked { color: var(--chip-blocked); }
+  .chip-shipped { color: var(--chip-shipped); }
+  .chip-partial { color: var(--chip-partial); }
+  .muted { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.02em; }
+  details { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; background: var(--card-bg); }
+  details > summary { padding: 10px 14px; cursor: pointer; font-weight: 600; list-style: none; display: flex;
+                       align-items: center; gap: 8px; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸"; color: var(--muted); transition: transform 0.15s; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  .details-body { padding: 4px 16px 14px 16px; }
+  .diagram-wrap { position: relative; height: 480px; border: 1px solid var(--border); border-radius: 10px;
+                  overflow: hidden; background: var(--card-bg); margin: 10px 0; }
+  .diagram-wrap pre.mermaid { margin: 0; height: 100%; }
+  .diagram-controls { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 5; }
+  .diagram-controls button { font-size: 0.72rem; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);
+                              background: var(--card-bg); color: var(--fg); cursor: pointer; }
+  .diagram-hint { position: absolute; bottom: 6px; left: 10px; font-size: 0.7rem; color: var(--muted); z-index: 5; }
+  .diagram-wrap.fullscreen { position: fixed; inset: 16px; z-index: 100; height: auto; }
+  textarea.section-feedback, textarea.oq-note, textarea#global-feedback {
+    width: 100%; min-height: 54px; margin-top: 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--code-bg); color: var(--fg); font: inherit; font-size: 0.88rem; padding: 8px; resize: vertical;
+  }
+  .fb-label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .oq-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin: 10px 0; background: var(--card-bg); }
+  .oq-card select { margin-left: 8px; font: inherit; font-size: 0.85rem; }
+  footer.feedback-bar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--card-bg);
+                         border-top: 1px solid var(--border); padding: 10px 20px; display: flex; gap: 10px;
+                         align-items: center; z-index: 50; }
+  footer.feedback-bar textarea#global-feedback { flex: 1; min-height: 34px; margin: 0; }
+  footer.feedback-bar button { font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px; border: none;
+                                background: var(--accent); color: var(--accent-fg); cursor: pointer; white-space: nowrap; }
+  .toast { position: fixed; bottom: 70px; right: 20px; background: var(--accent); color: var(--accent-fg);
+           padding: 8px 14px; border-radius: 8px; font-size: 0.85rem; z-index: 60; opacity: 0; transition: opacity 0.2s; }
+  .toast.show { opacity: 1; }
+  .header-card { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.85rem; color: var(--muted); }
+  .header-card b { color: var(--fg); }
+  .changes-banner { border-left: 3px solid var(--changed-chip); }
+  .review-toolbar { position: sticky; top: 0; background: var(--bg); z-index: 40; padding: 8px 0;
+                     display: flex; gap: 10px; align-items: center; font-size: 0.82rem; border-bottom: 1px dashed var(--border); }
+  .review-toolbar button { font: inherit; font-size: 0.78rem; padding: 4px 10px; border-radius: 6px;
+                            border: 1px solid var(--border); background: var(--card-bg); color: var(--fg); cursor: pointer; }
+  .review-toolbar button.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .sec-chip { font-size: 0.68rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; margin-left: 6px; }
+  .sec-chip.new { background: var(--new-chip); color: #04222a; }
+  .sec-chip.changed { background: var(--changed-chip); color: #2a1400; }
+  .change-note { font-size: 0.82rem; color: var(--muted); border-left: 2px solid var(--changed-chip); padding-left: 8px; margin: 6px 0 10px 0; }
+  body.changes-only details:not([data-changed]) { display: none; }
+  .recede { opacity: var(--recede-opacity); }
+  .resp { border-left: 3px solid var(--accent); background: var(--code-bg); border-radius: 0 8px 8px 0;
+          padding: 8px 12px; margin-top: 8px; font-size: 0.85rem; }
+  .resp .resp-label { font-size: 0.68rem; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  ul.tight li { margin: 3px 0; }
+  .knob-name { font-family: ui-monospace, monospace; font-weight: 600; }
+</style>
+
+<main>
+
+<div class="card header-card">
+  <span><b>Plan</b> vista_eval_vlm — Step 5 re-plan #2</span>
+  <span><b>Status</b> Draft (2026-07-19)</span>
+  <span><b>Repo</b> vista_eval_vlm</span>
+  <span><b>Branch</b> feat/lumia-live-ehr-adapter</span>
+  <span><b>Source</b> <code>docs/plans/vlm-step5-lumia-render-alignment-replan.md</code></span>
+  <span><b>SHA-256</b> <code>aa23af7e041a…</code></span>
+  <span><b>Generated</b> 2026-07-20</span>
+</div>
+
+<h1>Close the live-adapter render-alignment gap</h1>
+<p class="muted">TL;DR — Phase 1's byte-diff gate against the legacy timeline render failed a second time:
+live renders every lab/measurement as <code>NOTE:</code> where legacy expects <code>VALUE:</code>, and
+emits ~2.36× the event volume. Two of the three causes trace directly to meds2text's own generator
+source (code-provable, no VM speculation needed) and get fixed now in <code>ehr.py</code>; the third
+(event-count divergence) needs one VM-side characterization script over already-banked data before a
+fix-vs-accept call. Reviewed by Codex via <code>/review-plan</code> before this HTML was generated —
+see the review history table below.</p>
+
+<div class="card changes-banner" id="changes-banner"></div>
+
+<h2 data-section="goal">Goal</h2>
+<div class="card">
+  <p>Fix the two confirmed adapter bugs (<code>VALUE:</code>/<code>NOTE:</code> mismatch, <code>start|end</code>
+  token leak), characterize and resolve the event-count/scope divergence (fix or
+  accept-as-declared-divergence, decided once quantified), and re-run Phase 1's decision gate to get an
+  interpretable residual.</p>
+</div>
+
+<h2 data-section="review-history">Review history</h2>
+<div class="card">
+  <table>
+    <tr><th>Pass</th><th>Reviewer</th><th>Verdict</th><th>Key findings surfaced</th><th>Applied</th></tr>
+    <tr>
+      <td>1 — Design audit</td>
+      <td>Codex (gpt-5.5) via <code>/review-plan</code></td>
+      <td><span class="chip chip-partial">Revise</span></td>
+      <td>Missing complex-handoff phasing schema; zero-valued-numeric residual (event_to_xml's
+          <code>or</code> selection drops falsy <code>0.0</code>); ontology-override collapse risk;
+          unresolved 50-80% decision-gate band; stale line citations; confirmed the legacy-pipeline
+          hypothesis via <code>meds_tools/patient_timeline.py</code></td>
+      <td>Yes — all applied</td>
+    </tr>
+    <tr>
+      <td>2 — Verification &amp; handoff-design audit</td>
+      <td>Codex (gpt-5.5) via <code>/review-plan</code></td>
+      <td><span class="chip chip-partial">Revise</span></td>
+      <td>Undefined denominator for the excess-line %; missing preconditions/STOPs; Step B tolerance
+          undefined; questioned whether the VM round-trip is avoidable (resolved: no — existing
+          histogram is illustrative, not an aggregate)</td>
+      <td>Yes — all applied</td>
+    </tr>
+  </table>
+  <p class="muted" style="margin-bottom:0">Full artifacts: <code>docs/plans/reviews/vlm-step5-lumia-render-alignment-replan-feedback.md</code>
+  and <code>-verification-feedback.md</code>.</p>
+</div>
+
+<h2 data-section="repo-map">Repo map — where this sits</h2>
+<div class="diagram-wrap" id="wrap-repomap">
+  <div class="diagram-controls"><button data-reset="wrap-repomap">Reset</button><button data-fs="wrap-repomap">Fullscreen</button></div>
+  <div class="diagram-hint">scroll to zoom • drag to pan</div>
+  <pre class="mermaid">
+flowchart LR
+    lumiaxml["LUMIA XML corpus<br/>thoracic_cohort_lumia/*.xml"]
+    meds2text["meds2text (sibling repo)<br/>textify.py: event_to_xml,<br/>omop_split_interval_events"]
+    medstools["meds_tools (sibling repo)<br/>patient_timeline.py,<br/>get_described_events_window"]
+    legacyPipeline["legacy patient_string path<br/>direct meds_reader query"]
+    ehrAdapter["ehr.py<br/>_lumia_event_to_row, _STATE_TOKENS"]
+    goldenHarness["golden_harness.py<br/>banks before / after JSONL"]
+    diffGolden["diff_golden.py<br/>strict-mode comparator"]
+    basePlanPhases["Base plan Phase 2, 3<br/>allowlist gate, human QA"]
+
+    meds2text -. generates .-> lumiaxml
+    lumiaxml --> ehrAdapter
+    medstools -. implements .-> legacyPipeline
+    ehrAdapter -->|renders timeline text| goldenHarness
+    legacyPipeline -->|legacy baseline bank| goldenHarness
+    goldenHarness -->|before / after JSONL| diffGolden
+    diffGolden -->|clean gate| basePlanPhases
+
+    classDef thisPR fill:#0e7490,stroke:#22d3ee,color:#fff,stroke-width:2px;
+    classDef ext fill:#374151,stroke:#9ca3af,color:#e5e7eb,stroke-width:1px;
+    classDef untouched fill:#065f46,stroke:#10b981,color:#fff,stroke-width:1px;
+    classDef deferred fill:#1f2937,stroke:#6b7280,color:#9ca3af,stroke-width:1px,stroke-dasharray: 5 5;
+
+    class ehrAdapter,diffGolden thisPR
+    class meds2text,medstools,lumiaxml,legacyPipeline ext
+    class goldenHarness untouched
+    class basePlanPhases deferred
+
+    subgraph legend["Color legend"]
+        legThis["THIS PR modifies (cyan)"]
+        legExt["Sibling repo, untouched (grey)"]
+        legUn["In-repo tooling, untouched (green)"]
+        legDef["Deferred, out of scope here (dashed grey)"]
+    end
+    class legThis thisPR
+    class legExt ext
+    class legUn untouched
+    class legDef deferred
+  </pre>
+</div>
+
+<h2 data-section="blast-radius">Blast radius</h2>
+<div class="diagram-wrap" id="wrap-blast">
+  <div class="diagram-controls"><button data-reset="wrap-blast">Reset</button><button data-fs="wrap-blast">Fullscreen</button></div>
+  <div class="diagram-hint">scroll to zoom • drag to pan</div>
+  <pre class="mermaid">
+flowchart LR
+    ehrRow["_lumia_event_to_row<br/>ehr.py lines 79-127"]
+    stateTokens["_STATE_TOKENS set<br/>ehr.py line 60"]
+    vmScript["VM-local analysis script<br/>Phase 1 characterization (new, one-off)"]
+    diffMechanism["new exclusion mechanism<br/>diff_golden.py (conditional)"]
+    basePlanDoc["base plan doc<br/>vlm-step5-lumia-live-ehr-adapter.md"]
+    vmStatusDoc["new vm-status handoff doc"]
+    legacyBank["legacy_small_v2 / lumia_live_fixed<br/>already-banked golden JSONL"]
+    strictGate["diff_golden strict-mode gate<br/>attributed residual, or STOP"]
+    baseplanPhase2["Base plan Phase 2, 3<br/>allowlist gate, human QA"]
+
+    ehrRow -->|feeds| strictGate
+    stateTokens -->|feeds| strictGate
+    legacyBank -->|banked before / after| strictGate
+    vmScript -->|characterizes excess volume| diffMechanism
+    diffMechanism -.->|only if Phase 1 accepts| strictGate
+    strictGate -->|clean, attributable| baseplanPhase2
+    ehrRow -.->|docstring updated| basePlanDoc
+    vmStatusDoc -.->|records outcome| basePlanDoc
+
+    classDef thisPR fill:#0e7490,stroke:#22d3ee,color:#fff,stroke-width:2px;
+    classDef conditional fill:#374151,stroke:#f59e0b,color:#fde68a,stroke-width:2px,stroke-dasharray: 3 3;
+    classDef untouched fill:#065f46,stroke:#10b981,color:#fff,stroke-width:1px;
+    classDef outcome fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+    classDef deferred fill:#1f2937,stroke:#6b7280,color:#9ca3af,stroke-width:1px,stroke-dasharray: 5 5;
+
+    class ehrRow,stateTokens,vmScript,vmStatusDoc,basePlanDoc thisPR
+    class diffMechanism conditional
+    class legacyBank untouched
+    class strictGate outcome
+    class baseplanPhase2 deferred
+
+    subgraph legend["Color legend"]
+        legThis["THIS PR adds / modifies (cyan)"]
+        legCond["Added only if Phase 1 accepts (dashed amber)"]
+        legUn["Reused, untouched (green)"]
+        legOut["Gate outcome (blue)"]
+        legDef["Deferred, out of scope here (dashed grey)"]
+    end
+    class legThis thisPR
+    class legCond conditional
+    class legUn untouched
+    class legOut outcome
+    class legDef deferred
+  </pre>
+</div>
+
+<h2 data-section="order-of-ops">Order of operations</h2>
+<div class="diagram-wrap" id="wrap-order">
+  <div class="diagram-controls"><button data-reset="wrap-order">Reset</button><button data-fs="wrap-order">Fullscreen</button></div>
+  <div class="diagram-hint">scroll to zoom • drag to pan</div>
+  <pre class="mermaid">
+flowchart TD
+    approved(["Plan approved"])
+    codeFix["Mac lands ehr.py fixes 1 + 2<br/>PENDING"]
+    phase1["Phase 1: VM characterization<br/>PENDING"]
+    gate{"Excess-line %<br/>explained by split-interval<br/>signature"}
+    accept["Accept: add diff_golden mechanism<br/>PENDING, conditional"]
+    stopHigh["STOP: hand back to Phil<br/>50-80% band"]
+    stopLow["STOP: hand back, class-3<br/>below 50%"]
+    phase2["Phase 2: re-run strict gate<br/>BLOCKED until code lands"]
+    outcome{"Zero unattributed<br/>residual"}
+    done["Hand to base plan Phase 2, 3<br/>DEFERRED, out of scope here"]
+    stopPhase2["STOP: hand back<br/>unattributed residual"]
+
+    approved --> codeFix
+    approved --> phase1
+    phase1 --> gate
+    gate -->|at least 80%| accept
+    gate -->|50-80% band| stopHigh
+    gate -->|below 50%| stopLow
+    accept --> phase2
+    codeFix --> phase2
+    phase2 --> outcome
+    outcome -->|yes| done
+    outcome -->|no| stopPhase2
+
+    classDef pending fill:#0e7490,stroke:#22d3ee,color:#fff,stroke-width:2px;
+    classDef blocked fill:#4c0519,stroke:#f87171,color:#fecdd3,stroke-width:2px;
+    classDef decision fill:#78350f,stroke:#f59e0b,color:#fde68a,stroke-width:2px;
+    classDef stopStyle fill:#4c0519,stroke:#f87171,color:#fecdd3,stroke-width:1px,stroke-dasharray: 4 4;
+    classDef deferred fill:#1f2937,stroke:#6b7280,color:#9ca3af,stroke-width:1px,stroke-dasharray: 5 5;
+
+    class approved,codeFix,phase1,accept pending
+    class phase2 blocked
+    class gate,outcome decision
+    class stopHigh,stopLow,stopPhase2 stopStyle
+    class done deferred
+
+    subgraph legend["Color legend"]
+        legPend["PENDING, ready to run (cyan)"]
+        legBlock["BLOCKED on a prior step (red solid)"]
+        legDec["Decision gate (amber diamond)"]
+        legStop["STOP outcome (dashed red)"]
+        legDef2["Hands off, out of scope here (dashed grey)"]
+    end
+    class legPend pending
+    class legBlock blocked
+    class legDec decision
+    class legStop stopStyle
+    class legDef2 deferred
+  </pre>
+</div>
+
+<h2 data-section="knobs">Knobs &amp; contracts</h2>
+<div class="card">
+  <table>
+    <tr><th>Knob</th><th>Type</th><th>Default / value</th><th>Used in</th></tr>
+    <tr>
+      <td class="knob-name">Phase 1 decision-gate threshold</td>
+      <td>fixed threshold (not a runtime flag)</td>
+      <td>≥80% accept · 50-80% band STOP · below 50% STOP</td>
+      <td>Approach #3 / Verification Phase 1 gate</td>
+    </tr>
+    <tr>
+      <td class="knob-name">_STATE_TOKENS</td>
+      <td><code>frozenset[str | None]</code></td>
+      <td><code>{"start", "end", "start|end", "", None}</code></td>
+      <td><code>ehr.py:60</code>, read by <code>_lumia_event_to_row</code></td>
+    </tr>
+    <tr>
+      <td class="knob-name">--collapse-duplicate-pairs (illustrative)</td>
+      <td>new CLI flag, not yet implemented</td>
+      <td>comma-separated code-prefix list, e.g. <code>RxNorm/,NUCC/</code></td>
+      <td><code>diff_golden.py</code> — only added if Phase 1 resolves to accept</td>
+    </tr>
+  </table>
+</div>
+
+<h2 data-section="steps">Approach — steps</h2>
+
+<details data-section="step-1">
+  <summary>Step 1 — reconstruct <code>numeric_value</code> from element text <span class="chip chip-pending">PENDING</span></summary>
+  <div class="details-body">
+    <p><code>_lumia_event_to_row</code> (<code>ehr.py:79-127</code>) currently reads
+    <code>attrib.get("numeric_value")</code> — dead code, since meds2text never emits that attribute.
+    <b>Replace</b> the element-text-to-<code>text_value</code> branch (<code>ehr.py:95-99</code>) and the
+    return dict's dead <code>numeric_value</code> read (<code>ehr.py:116</code>) with a version that
+    attempts <code>float(el_text)</code> before falling back to <code>text_value</code>.</p>
+    <pre>def _num(v):   # already exists at ehr.py:101-105, unchanged — hoist above its first use
+    try:
+        return float(v) if v is not None and str(v) != "" else None
+    except (TypeError, ValueError):
+        return None
+
+text_value = attrib.get("text_value")        # dead in practice
+numeric_value = _num(attrib.get("numeric_value"))  # also dead in practice
+if text_value is None and numeric_value is None:
+    el_text = (event_el.text or "").strip()
+    if el_text and el_text.lower() not in _STATE_TOKENS:
+        parsed = _num(el_text)
+        if parsed is not None:
+            numeric_value = parsed
+        else:
+            text_value = el_text</pre>
+    <p>No renderer change needed — <code>get_llm_event_string</code> (<code>meds_timeline_utils.py:222-236</code>)
+    already branches on whichever field is populated.</p>
+    <p><b>Cross-repo contract note (Codex review):</b> depends on meds2text's current
+    <code>event_to_xml</code> collapse behavior (<code>textify.py:1273-1340</code>) — note the dependency
+    in <code>ehr.py</code>'s docstring so a future meds2text change doesn't silently break this.</p>
+    <p><b>Three accepted, byte-level residual classes</b> (all structurally forced by meds2text's export
+    design, not adapter bugs):</p>
+    <ul class="tight">
+      <li>~460/5,841 legacy lines shaped <code>VALUE: D.D | NOTE: D.D</code> — <code>event_to_xml</code>
+      keeps only one winning value per event; the loser never reaches the <code>.xml</code>.</li>
+      <li><b>Zero-valued numerics (Codex-caught).</b> <code>numeric_value or text_value or None</code>
+      treats <code>0.0</code> as falsy — a genuine zero-valued lab silently loses; live's element text can
+      be empty for a row legacy renders <code>VALUE: 0.0</code>.</li>
+      <li><b>Ontology-override collapse (Codex-caught).</b> After picking a winner, <code>event_to_xml</code>
+      can overwrite numeric element text with an OMOP concept description
+      (<code>textify.py:1335-1338</code>) — the number is then unrecoverable for that row.</li>
+    </ul>
+    <p class="muted">Verification below reports masked counts for the last two so their real prevalence is
+    known, not assumed negligible.</p>
+    <div class="fb-label">Your feedback on this step</div>
+    <textarea class="section-feedback" data-id="step-1" placeholder="Comments on step 1…"></textarea>
+  </div>
+</details>
+
+<details data-section="step-2">
+  <summary>Step 2 — exclude the combined <code>"start|end"</code> state token <span class="chip chip-pending">PENDING</span></summary>
+  <div class="details-body">
+    <p><code>_STATE_TOKENS</code> at <code>ehr.py:60</code> already excludes bare <code>"start"</code>/
+    <code>"end"</code> but not the combined form <code>omop_split_interval_events</code> emits when
+    start≈end within 1 minute:</p>
+    <pre>_STATE_TOKENS = {"start", "end", "start|end", "", None}</pre>
+    <p>One-line fix, directly grounded in that transform's combined-token branch
+    (<code>textify.py:458-493</code>). <b>Confirmed sufficient</b> — the transform emits only
+    <code>"start"</code>, <code>"end"</code>, or <code>"start|end"</code>; no other combined shape
+    exists.</p>
+    <div class="fb-label">Your feedback on this step</div>
+    <textarea class="section-feedback" data-id="step-2" placeholder="Comments on step 2…"></textarea>
+  </div>
+</details>
+
+<details data-section="step-3">
+  <summary>Step 3 — event-count/scope divergence: characterize, then fix-or-accept <span class="chip chip-pending">PENDING</span></summary>
+  <div class="details-body">
+    <p>This is <b>Phase 1</b> of Verification &amp; VM handoff below. Reuse the already-banked
+    <code>legacy_small_v2</code>/<code>lumia_live_fixed</code> golden files (no new banking run) for a
+    masked, PHI-safe structural check: of the excess live lines (13,774 live vs. 5,841 legacy
+    non-excluded, per the 2026-07-18 readback), what fraction correspond to
+    <code>(code, description)</code> pairs appearing twice per patient at two distinct timestamps — the
+    <code>omop_split_interval_events</code> start/end-pair signature — vs. any other pattern.</p>
+    <p><b>Decision gate, fully resolved:</b></p>
+    <ul class="tight">
+      <li><b>≥80%</b> of excess explained → accept as a permanent declared divergence (same category as
+      the already-accepted STANFORD_OBS/demographics gaps) → add a <code>diff_golden.py</code> exclusion
+      mechanism scoped to interval-table codes. Illustrative shape: a
+      <code>--collapse-duplicate-pairs &lt;code-prefix&gt;[,...]</code> flag collapsing same-pair
+      duplicates at distinct timestamps into one counted occurrence, scoped to declared prefixes like
+      <code>RxNorm/</code>/<code>NUCC/</code> only — never a broad substring exclusion.</li>
+      <li><b>Below 50%</b> → STOP, class-3 — a second, unidentified cause is present; hand back.</li>
+      <li><b>50-80% band</b> → STOP and hand back to Phil explicitly, same as below 50% — not an
+      auto-resolve. This workstream has twice found the residual bigger than expected; not worth a third
+      guessed threshold.</li>
+    </ul>
+    <div class="fb-label">Your feedback on this step</div>
+    <textarea class="section-feedback" data-id="step-3" placeholder="Comments on step 3…"></textarea>
+  </div>
+</details>
+
+<details data-section="step-4">
+  <summary>Step 4 — re-run the base plan's Phase 1 decision gate <span class="chip chip-blocked">BLOCKED</span></summary>
+  <div class="details-body">
+    <p>Re-run with fixes 1+2 landed and, if Step 3 resolved to accept, its new exclusion mechanism added.
+    Same mechanism as before: worktree at <code>6ded1e6</code> for "before", this branch for "after",
+    <code>diff_golden --mode strict</code> with the existing exclusion flags plus whatever Step 3 adds.</p>
+    <div class="fb-label">Your feedback on this step</div>
+    <textarea class="section-feedback" data-id="step-4" placeholder="Comments on step 4…"></textarea>
+  </div>
+</details>
+
+<h2 data-section="files">Files to modify</h2>
+<div class="card">
+  <ul class="tight">
+    <li><code>src/context/adapters/ehr.py</code> — <code>_lumia_event_to_row</code>'s numeric-vs-text
+    branch (replacing <code>ehr.py:95-99</code> and <code>ehr.py:116</code>); <code>_STATE_TOKENS</code> at
+    <code>ehr.py:60</code>; docstrings updated to record the resolved 2026-07-06 OQ-K fork, the meds2text
+    contract note, and the three accepted residual classes.</li>
+    <li><code>src/vista_run/diff_golden.py</code> — new exclusion mechanism, <b>only if</b> Phase 1's VM
+    check confirms accept-as-declared.</li>
+    <li><i>(new, review-added)</i> a small <b>VM-local analysis script</b> for Phase 1's aggregate
+    characterization — one-off, not committed to the repo unless it proves reusable.</li>
+    <li><code>docs/plans/vlm-step5-lumia-live-ehr-adapter.md</code> — record this second deviation +
+    resolution once Phase 2 re-resolves.</li>
+    <li><code>docs/vm-status/&lt;date&gt;-&lt;sha&gt;.md</code> (new) — VM handoff doc, both phases.</li>
+  </ul>
+</div>
+
+<h2 data-section="gotchas">Gotchas</h2>
+
+<details data-section="gotcha-1">
+  <summary>Three residual classes are permanent, not bugs to chase</summary>
+  <div class="details-body">
+    <p>The dual-value gap, zero-valued-numeric loss, and ontology-override collapse are all structurally
+    forced by meds2text's export design (it keeps only one winning value per MEDS event). Don't chase
+    these further on the Mac — Verification expects them as declared residual, with masked counts to
+    confirm they stay a small tail.</p>
+  </div>
+</details>
+
+<details data-section="gotcha-2">
+  <summary>This is the second class-3 deviation on this exact Phase 1 gate</summary>
+  <div class="details-body">
+    <p>The first replan (demographics/flowsheet) also under-predicted its residual. Verification Phase 2's
+    Stop/deviation routing is deliberately strict — "close enough" is not a pass — because guessing the
+    residual's scale has already been wrong twice in this workstream.</p>
+  </div>
+</details>
+
+<details data-section="gotcha-3">
+  <summary>PHI discipline — never paste raw timeline text or previews</summary>
+  <div class="details-body">
+    <p><code>diff_golden</code> prints raw BEFORE/AFTER text previews on failure. Report counts, field
+    names, exit codes, and decision-gate outcomes only into the handoff doc — never raw timeline text,
+    person_ids, or the printed previews.</p>
+  </div>
+</details>
+
+<h2 data-section="oqs">Open questions</h2>
+<div id="oq-container">
+  <div class="oq-card" id="oq-1" data-changed>
+    <b>OQ1 — The 50-80% decision-gate band</b>
+    <span class="sec-chip changed">deferred</span>
+    <select class="oq-status" data-id="1">
+      <option>Pending</option><option>Resolved</option><option selected>Deferred</option>
+    </select>
+    <p class="muted" style="margin:6px 0 0 0">Default: STOP, hand back to Phil. <b>Phil (2026-07-20):
+    "defer"</b> — keep the default rather than pre-authorizing an override now; revisit once the real
+    number is in.</p>
+    <textarea class="oq-note" data-id="1" placeholder="Notes…"></textarea>
+  </div>
+  <div class="oq-card" id="oq-2" data-changed>
+    <b>OQ2 — Do the zero-valued-numeric / ontology-override residuals block Phase 2's gate?</b>
+    <span class="sec-chip new">resolved</span>
+    <select class="oq-status" data-id="2">
+      <option>Pending</option><option selected>Resolved</option><option>Deferred</option>
+    </select>
+    <p class="muted" style="margin:6px 0 0 0">Default: accepted, same treatment as the dual-value gap,
+    provided masked counts show them as a small tail — unexpectedly large is a Phase 2 STOP. <b>Phil
+    (2026-07-20): "agree."</b></p>
+    <textarea class="oq-note" data-id="2" placeholder="Notes…"></textarea>
+  </div>
+  <div class="oq-card" id="oq-3" data-changed>
+    <b>OQ3 — Should the new diff_golden.py mechanism generalize beyond this one case?</b>
+    <span class="sec-chip new">resolved</span>
+    <select class="oq-status" data-id="3">
+      <option>Pending</option><option selected>Resolved</option><option>Deferred</option>
+    </select>
+    <p class="muted" style="margin:6px 0 0 0">Default: stay scoped to Phase 1's specific evidence (YAGNI)
+    — generalize later only if a similar case recurs. <b>Phil (2026-07-20): "YAGNI"</b> — agreed.</p>
+    <textarea class="oq-note" data-id="3" placeholder="Notes…"></textarea>
+  </div>
+</div>
+
+<h2 data-section="verification">Verification &amp; VM handoff</h2>
+<div class="card">
+  <p><b>Machine:</b> Claude-Code CPU <code>phil-sllm-01</code>, same posture as every step on this branch.
+  <b>Complex-tier handoff</b> (class-2 decision gate + more than one phase + depends on prior-banked
+  artifacts) — phased per the canonical schema. <b>PHI discipline:</b> report counts, field names, exit
+  codes, and decision-gate outcomes only — never raw timeline text, person_ids, or <code>diff_golden</code>'s
+  printed previews.</p>
+</div>
+
+<details data-section="verification-phase-1">
+  <summary>Phase 1 — masked structural characterization <span class="chip chip-pending">PENDING</span></summary>
+  <div class="details-body">
+    <table>
+      <tr><td><b>Purpose</b></td><td>Resolve Step 3's decision gate — does the split-interval signature
+      explain the volume gap, and how much?</td></tr>
+      <tr><td><b>Machine</b></td><td>Claude-Code CPU <code>phil-sllm-01</code>. Read-only; no code
+      dependency, so runs independently of the Mac landing fixes 1-2.</td></tr>
+      <tr><td><b>Banked-from-prior</b></td><td><code>legacy_small_v2</code>/<code>lumia_live_fixed</code>
+      JSONLs from the 2026-07-18 readback @ <code>afeed41</code>. Precondition: verify both exist and
+      their <code>.meta.json</code> provenance matches before use.</td></tr>
+      <tr><td><b>What runs</b></td><td>A small analysis script over the already-banked JSONLs (no new
+      <code>golden_harness</code> run) — per-patient legacy/live non-excluded line counts, excess, and
+      split-interval-signature fraction by domain/table. Raw <code>.xml</code> re-parsing only as a
+      fallback, scoped to confirming an already-selected signature, counts only.</td></tr>
+      <tr><td><b>Expected</b></td><td>Exact units: total legacy/live non-excluded lines, excess count,
+      count/% attributed to split-interval signature, domain/table breakdown, plus masked counts for the
+      zero-valued-numeric and ontology-override classes.</td></tr>
+      <tr><td><b>Gates</b></td><td>Step 3's decision gate, resolved inline here — no round-trip for the
+      threshold itself.</td></tr>
+      <tr><td><b>Destructive</b></td><td>No — read-only script over already-banked artifacts.</td></tr>
+      <tr><td><b>Stop/deviation routing</b></td><td>Precondition failure or gate STOP → append readback,
+      return to Mac plan mode — do not proceed to Phase 2.</td></tr>
+      <tr><td><b>Next-doc trigger</b></td><td>≥80% → Mac lands fixes 1-2 + the diff_golden mechanism →
+      same doc's Phase 2 at the new SHA. STOP outcomes end this handoff.</td></tr>
+    </table>
+    <div class="fb-label">Your feedback</div>
+    <textarea class="section-feedback" data-id="verification-phase-1" placeholder="Comments on Phase 1…"></textarea>
+  </div>
+</details>
+
+<details data-section="verification-phase-2">
+  <summary>Phase 2 — Mac lands code, re-run the base plan's decision gate <span class="chip chip-blocked">BLOCKED</span></summary>
+  <div class="details-body">
+    <table>
+      <tr><td><b>Purpose</b></td><td>Confirm the code fixes (+ exclusion mechanism, if triggered) produce a
+      fully attributable residual.</td></tr>
+      <tr><td><b>Machine</b></td><td>Claude-Code CPU <code>phil-sllm-01</code>.</td></tr>
+      <tr><td><b>Banked-from-prior</b></td><td>None reused — fresh bank (worktree at <code>6ded1e6</code>
+      for "before", branch HEAD for "after").</td></tr>
+      <tr><td><b>What runs</b></td><td>First, a cheap sanity check: hand-built XML <code>&lt;event&gt;</code>
+      snippets (numeric, non-numeric, empty, zero-value text, start/end/start|end) through
+      <code>_lumia_event_to_row</code>, confirming expected routing. Then the real re-run: bank both sides,
+      <code>diff_golden --mode strict</code> with accumulated exclusion flags.</td></tr>
+      <tr><td><b>Expected</b></td><td>Zero unattributed residual — every mismatch falls into STANFORD_OBS,
+      demographic-vintage-gap, dual-value gap, zero-valued-numeric residual, ontology-override residual, or
+      (if triggered) the interval-divergence exclusion, each as count/%, interval count checked against
+      Phase 1's predicted scale.</td></tr>
+      <tr><td><b>Destructive</b></td><td>No — local golden-bank writes + throwaway worktree.</td></tr>
+      <tr><td><b>Stop/deviation routing</b></td><td>Any unattributed residual, index-set mismatch,
+      empty/zero-byte output, or a materially-off interval count → STOP, append readback, return to Mac plan
+      mode.</td></tr>
+      <tr><td><b>Next-doc trigger</b></td><td>Clean attributable result → hand back to the base plan's Phase
+      2 (allowlist gate) and Phase 3 (human visual-QA), unchanged.</td></tr>
+    </table>
+    <div class="fb-label">Your feedback</div>
+    <textarea class="section-feedback" data-id="verification-phase-2" placeholder="Comments on Phase 2…"></textarea>
+  </div>
+</details>
+
+<h2 data-section="landing">Landing &amp; cleanup</h2>
+<div class="card">
+  <p>Unchanged from the base plan: single branch <code>feat/lumia-live-ehr-adapter</code> off
+  <code>main</code>, <code>/land</code> at the end once Phases 1-3 are all green including Phil's Phase-3
+  human read of the rendered HTML (not yet reached — this plan only unblocks Phase 1). No new branch, no
+  new worktree beyond the existing throwaway <code>../vista_eval_vlm-prewiring</code> pattern.</p>
+</div>
+
+</main>
+
+<footer class="feedback-bar">
+  <textarea id="global-feedback" placeholder="Overall feedback…"></textarea>
+  <button id="copy-feedback-btn">Copy feedback (0 pending)</button>
+</footer>
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<script>
+const PLAN_STEM = "vlm-step5-lumia-render-alignment-replan";
+const PLAN_SHA = "aa23af7e041a51c73e2981ae44e79c12ca0023ad7ab453892a9a1cf5eb2c2a73";
+const PLAN_PATH = "docs/plans/vlm-step5-lumia-render-alignment-replan.md";
+const BRANCH = "feat/lumia-live-ehr-adapter";
+
+const CHANGES = {
+  round: "diff",
+  baseline: "Prior HTML @ 7945760b1d1c (Phil's first OQ feedback round, 2026-07-20) — only the Open " +
+            "Questions section changed this round; every other section is unchanged from that version.",
+  sections: {},
+  oqs: { 1: { s: "changed", note: "Phil: \"defer\" — kept the default (STOP, hand back) rather than pre-authorizing an override." },
+         2: { s: "resolved", note: "Phil: \"agree\" — confirmed the default (accepted, same as the dual-value gap)." },
+         3: { s: "resolved", note: "Phil: \"YAGNI\" — confirmed the default (stay scoped, no generalization)." } }
+};
+
+function renderChangesBanner() {
+  const banner = document.getElementById("changes-banner");
+  if (CHANGES.round === "first") {
+    banner.innerHTML = "<b>First review.</b> " + (CHANGES.firstPassNote || "No prior version to diff against — this layer activates on the next regeneration.");
+    return;
+  }
+  const nSec = Object.keys(CHANGES.sections).length;
+  const nOq = Object.keys(CHANGES.oqs).length;
+  banner.innerHTML = `<b>Changed since last review</b> (${CHANGES.round === "review-reconstructed" ? "reconstructed from review artifacts" : "diffed"}) — `
+    + `${nSec} sections touched, ${nOq} open questions surfaced. <span class="muted">${CHANGES.baseline}</span>`
+    + `<div class="review-toolbar" style="margin-top:8px">`
+    + `<span>${nSec} changed</span>`
+    + `<button id="toggle-changes-only">Show changed only</button>`
+    + `<button id="prev-change">◂ Prev</button><button id="next-change">Next ▸</button>`
+    + `</div>`;
+}
+
+function applyChangeChipsAndRecede() {
+  document.querySelectorAll("[data-section]").forEach(el => {
+    const id = el.getAttribute("data-section");
+    const entry = CHANGES.sections[id];
+    const isDetails = el.tagName === "DETAILS";
+    const target = isDetails ? el : el;
+    if (entry) {
+      target.setAttribute("data-changed", "1");
+    } else if (isDetails) {
+      target.classList.add("recede");
+    }
+  });
+}
+
+let changeOrder = [];
+function wireChangeToolbar() {
+  changeOrder = Array.from(document.querySelectorAll("[data-changed]"));
+  const toggleBtn = document.getElementById("toggle-changes-only");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      document.body.classList.toggle("changes-only");
+      toggleBtn.classList.toggle("active");
+    });
+  }
+  let idx = -1;
+  const jump = (dir) => {
+    if (!changeOrder.length) return;
+    idx = (idx + dir + changeOrder.length) % changeOrder.length;
+    const el = changeOrder[idx];
+    if (el.tagName === "DETAILS") el.open = true;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+  const prevBtn = document.getElementById("prev-change");
+  const nextBtn = document.getElementById("next-change");
+  if (prevBtn) prevBtn.addEventListener("click", () => jump(-1));
+  if (nextBtn) nextBtn.addEventListener("click", () => jump(1));
+}
+
+// ---- localStorage feedback persistence ----
+const SHA_KEY = PLAN_STEM + "::sha";
+function resetStorageIfShaChanged() {
+  const stored = localStorage.getItem(SHA_KEY);
+  if (stored !== PLAN_SHA) {
+    Object.keys(localStorage).filter(k => k.startsWith(PLAN_STEM + "::fb::") || k.startsWith(PLAN_STEM + "::oq::"))
+      .forEach(k => localStorage.removeItem(k));
+    localStorage.setItem(SHA_KEY, PLAN_SHA);
+  }
+}
+function fbKey(id) { return PLAN_STEM + "::fb::" + id; }
+function oqKey(id, field) { return PLAN_STEM + "::oq::" + id + "::" + field; }
+
+function restoreFeedback() {
+  document.querySelectorAll("textarea.section-feedback").forEach(ta => {
+    const v = localStorage.getItem(fbKey(ta.dataset.id));
+    if (v) ta.value = v;
+  });
+  const g = localStorage.getItem(fbKey("global"));
+  if (g) document.getElementById("global-feedback").value = g;
+  document.querySelectorAll(".oq-status").forEach(sel => {
+    const v = localStorage.getItem(oqKey(sel.dataset.id, "status"));
+    if (v) sel.value = v;
+  });
+  document.querySelectorAll("textarea.oq-note").forEach(ta => {
+    const v = localStorage.getItem(oqKey(ta.dataset.id, "note"));
+    if (v) ta.value = v;
+  });
+  updatePendingBadge();
+}
+
+function updatePendingBadge() {
+  let n = 0;
+  document.querySelectorAll("textarea.section-feedback, textarea.oq-note").forEach(ta => { if (ta.value.trim()) n++; });
+  if (document.getElementById("global-feedback").value.trim()) n++;
+  document.getElementById("copy-feedback-btn").textContent = `Copy feedback (${n} pending)`;
+}
+
+function wireInputPersistence() {
+  document.querySelectorAll("textarea.section-feedback").forEach(ta => {
+    ta.addEventListener("input", () => { localStorage.setItem(fbKey(ta.dataset.id), ta.value); updatePendingBadge(); });
+  });
+  document.getElementById("global-feedback").addEventListener("input", (e) => {
+    localStorage.setItem(fbKey("global"), e.target.value); updatePendingBadge();
+  });
+  document.querySelectorAll(".oq-status").forEach(sel => {
+    sel.addEventListener("change", () => localStorage.setItem(oqKey(sel.dataset.id, "status"), sel.value));
+  });
+  document.querySelectorAll("textarea.oq-note").forEach(ta => {
+    ta.addEventListener("input", () => { localStorage.setItem(oqKey(ta.dataset.id, "note"), ta.value); updatePendingBadge(); });
+  });
+}
+
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+function buildFeedbackMarkdown() {
+  let out = `# Resume: apply explain-plan feedback\n`;
+  out += `Plan: ${PLAN_PATH} · branch: ${BRANCH} · plan-sha: ${PLAN_SHA.slice(0,12)}\n`;
+  out += `→ If you're picking this up in a fresh session, read the plan doc above (plus any related docs / memory it points to) first. Then apply the feedback below.\n\n`;
+  out += `# Feedback on ${PLAN_STEM}\n\n`;
+  document.querySelectorAll("textarea.section-feedback").forEach(ta => {
+    if (ta.value.trim()) out += `## ${ta.dataset.id}\n${ta.value.trim()}\n\n`;
+  });
+  document.querySelectorAll(".oq-card").forEach(card => {
+    const id = card.querySelector(".oq-status").dataset.id;
+    const status = card.querySelector(".oq-status").value;
+    const note = card.querySelector("textarea.oq-note").value.trim();
+    if (status !== "Pending" || note) {
+      out += `## OQ${id}\nStatus: ${status}\n${note}\n\n`;
+    }
+  });
+  const global = document.getElementById("global-feedback").value.trim();
+  if (global) out += `## Overall\n${global}\n\n`;
+  return out;
+}
+
+document.getElementById("copy-feedback-btn").addEventListener("click", async () => {
+  const md = buildFeedbackMarkdown();
+  try {
+    await navigator.clipboard.writeText(md);
+    showToast("Feedback copied — paste into Claude");
+  } catch (e) {
+    showToast("Could not access clipboard — select and copy manually");
+  }
+});
+
+// ---- Mermaid + pan/zoom ----
+mermaid.initialize({ startOnLoad: false, flowchart: { useMaxWidth: false },
+  theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default" });
+
+function setupDiagram(wrapId) {
+  const wrap = document.getElementById(wrapId);
+  const svg = wrap.querySelector("svg");
+  if (!svg) return;
+  svg.removeAttribute("style");
+  svg.style.width = "100%"; svg.style.height = "100%";
+  const inst = svgPanZoom(svg, { minZoom: 0.3, maxZoom: 8, fit: true, center: true, zoomScaleSensitivity: 0.4 });
+  wrap._panzoom = inst;
+  const resetBtn = document.querySelector(`button[data-reset="${wrapId}"]`);
+  if (resetBtn) resetBtn.addEventListener("click", () => { inst.resetZoom(); inst.center(); });
+  const fsBtn = document.querySelector(`button[data-fs="${wrapId}"]`);
+  if (fsBtn) fsBtn.addEventListener("click", () => {
+    wrap.classList.toggle("fullscreen");
+    setTimeout(() => { inst.resize(); inst.fit(); inst.center(); }, 60);
+  });
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") document.querySelectorAll(".diagram-wrap.fullscreen").forEach(w => {
+    w.classList.remove("fullscreen");
+    if (w._panzoom) setTimeout(() => { w._panzoom.resize(); w._panzoom.fit(); w._panzoom.center(); }, 60);
+  });
+});
+window.addEventListener("resize", () => {
+  document.querySelectorAll(".diagram-wrap").forEach(w => {
+    if (w._panzoom) { w._panzoom.resize(); w._panzoom.fit(); w._panzoom.center(); }
+  });
+});
+
+async function init() {
+  resetStorageIfShaChanged();
+  renderChangesBanner();
+  applyChangeChipsAndRecede();
+  wireChangeToolbar();
+  restoreFeedback();
+  wireInputPersistence();
+  await mermaid.run({ querySelector: "pre.mermaid" });
+  ["wrap-repomap", "wrap-blast", "wrap-order"].forEach(setupDiagram);
+}
+init();
+</script>
