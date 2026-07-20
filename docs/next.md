@@ -54,14 +54,34 @@ Side-by-side layout deferred (single-column first cut).
   Step 2's raw-legacy leg is unrunnable on the VM: `thoracic_cohort_meds_femr_db` is not staged on
   any mount and `meds_reader` isn't a resolvable dep (fails to build under `uv`). Step 1 provenance
   is *suggestive* (only on-VM stamped extraction is aug-2025; legacy is a Feb-2026 frozen snapshot,
-  absent) but not the LOINC-domain confirmation. Re-plan on the Mac: stage the db + add `meds_reader`,
-  redesign the legacy-raw comparison around an on-VM artifact, or accept the provenance signal and
-  pivot Step 5's gate to Phase-2 human QA (plan OQ1).
+  absent) but not the LOINC-domain confirmation. **Re-planned + resolved on the Mac 2026-07-20**
+  (plan's new `## Resolution` section): Phil accepted Step 1's suggestive evidence given Step 2 is
+  a dead end without material infra investment — declares the LOINC residual (2724/2779 excess
+  lines) a **permanent data-provenance divergence** (same treatment as `STANFORD_OBS`) and **pivots
+  Step 5's landing gate to Phase 2 human visual-QA as the primary check**. Ryan-D'Cunha escalation
+  (OQ1b) explicitly NOT pursued now. **NEXT = plan's new Step 3**: re-run the byte-diff gate with
+  `LOINC/` added to the already-existing `--exclude-line-patterns` mechanism (no new code), then
+  Phil opens Phase 2's human-QA HTML render (`context_viewer.py`, never yet completed on this
+  branch) — both together are Step 5's landing gate → `/land`.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
 ## Backlog
 
+- **LUMIA/legacy MEDS extraction reconciliation (Step 5 OQ1b, not blocking)** — escalate to Ryan
+  D'Cunha whether the live `thoracic_cohort_lumia` LUMIA corpus can be regenerated from / reconciled
+  with the same extraction as legacy's frozen `thoracic_cohort_meds_femr_db` snapshot. Only worth
+  pursuing if the accepted LOINC divergence (see Step 5 above) turns out to matter beyond what
+  Phase 2 human-QA already catches. Not attempted from the Mac (no data access, can't regenerate
+  anything); would also need the db itself located/recovered first (not found on any `phil-sllm-01`
+  mount — may only exist on Ryan's original machine).
+- **Byte-diff-gate methodology for EHR content (Step 5 OQ3, not blocking)** — the round-4 LOINC
+  investigation confirmed a real vintage mismatch on the one MEDS extraction inspectable on the VM
+  (`vista_aug2025_meds`, 2025-08-18) vs. legacy's described 2026-02-16 frozen snapshot. Worth
+  reconsidering whether full byte parity against a single frozen legacy baseline is the right
+  landing gate for EHR content going forward, vs. leaning more on Phase 2 human-QA by design rather
+  than as a one-off exception. Not resolved; surfaced for a future planning pass, not this branch's
+  landing.
 - **Model-roster refresh (SOTA survey 2026-07)** — VLM roster frozen since ~mid-Feb 2026; we're already current-gen but running the *small* variants. Several config-only upgrades on existing adapters; all open-weight/local (no BAA exposure). Priority order:
   1. **MedGemma 1.5 27B** (`google/medgemma-1.5-27b-it`, confirm exact HF id) — same `gemma3` adapter, config-only; materially stronger than the enabled 4B on 3D CT + WSI pathology (paper: +47% macro-F1 pathology, +11%/+3% 3D MRI/CT vs MedGemma 1).
   2. **Lingshu** — enable the already-registered `lingshu-medical-mllm/Lingshu-7B`; add **Lingshu-32B** (reportedly beats GPT-4.1 / Claude Sonnet 4 on medical multimodal QA + report-gen; 12+ modalities incl. CT / histopath / PET). ⚠ `src/models/lingshu.py` is HF-transformers, not vLLM → **no constrained-decoding / logprob path** until ported to the vLLM template (copy `octomed.py` / `gemma3.py`).

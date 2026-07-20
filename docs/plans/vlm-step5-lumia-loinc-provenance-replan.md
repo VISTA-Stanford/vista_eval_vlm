@@ -2,7 +2,10 @@ Reference: docs/claude_ops.md
 
 # vista_eval_vlm — Step 5 re-plan #4: LOINC-scoped data-provenance investigation
 
-**Status: Draft** (2026-07-20)
+**Status: Resolved by Phil's decision** (2026-07-20) — Step 2 was blocked on the VM (class-3
+deviation, `docs/vm-status/2026-07-20-3206e84.md`); the decision gate below never fired as
+designed. Phil resolved it directly rather than pursuing further confirmation — see
+**## Resolution** below.
 
 ## Context
 
@@ -141,6 +144,51 @@ person_ids and `parse_lumia` is cheap), but still not a rigorous statistical tes
 numbers plainly; Phil makes the final call on the disposition given the actual figures rather than
 this doc pre-committing to a rigid numeric threshold on N=20.
 
+## Resolution (2026-07-20)
+
+Step 2 could not run on `phil-sllm-01` as designed: neither the hardcoded legacy path nor the
+hardcoded live-corpus path from this doc/plan exist on that VM (both are the planner's Mac-side
+git-archaeology paths, not VM paths). The VM's actual legacy source is pre-rendered
+`patient_string` CSVs (`configs/all_tasks.viewer.vm.yaml:9` `base_dir`) — the raw MEDS db those
+CSVs were built from (`thoracic_cohort_meds_femr_db`) is not staged on any mount searched
+(`su-vista-hot`, `su-vista-uscentral1`), and `meds_reader` is not a resolvable project dependency
+(absent from `pyproject.toml`, fails to build under `uv run` — numpy 2.2.6 conflict). The only
+other MEDS db present on the VM (`vista_aug2025_meds_db`) is a *different* extraction and using it
+as a substitute would be methodologically invalid — exactly the confound Step 2 exists to isolate.
+Re-staging the real db (and fixing `meds_reader`) is open-ended infra work with no confirmed
+recovery path (the db may only ever have existed on Ryan D'Cunha's original machine). Full
+readback: `docs/vm-status/2026-07-20-3206e84.md`.
+
+Step 1 (the provenance metadata scan) did run and found the only stamped MEDS extraction anywhere
+on the VM is `vista_aug2025_meds` (`dataset_version 2025-08-18`) — a materially different vintage
+from legacy's described 2026-02-16 frozen snapshot. This is *suggestive* of the data-source/vintage
+divergence hypothesis but not the LOINC-domain-specific confirmation Step 2 was designed to provide
+(none of the three decision-gate bullets above cleanly fires: Step 2 didn't run, and Step 1's
+signal is suggestive, not the "conclusive, explicit provenance mismatch" the third bullet requires).
+
+**Phil's call (2026-07-20, given the AskUserQuestion fork above):** accept Step 1's suggestive
+evidence as sufficient, given Step 2 is a genuine dead end without material infra investment.
+Resolves **Open Question 1 as (a)**: declare the LOINC residual (2724/2779 excess lines, 98%) a
+**permanent, declared data-source/vintage divergence** — same treatment as the already-accepted
+`STANFORD_OBS/Flowsheet` divergence — and **pivot Step 5's landing gate to rely on Phase 2's human
+visual-QA read** (`context_viewer.py`, already built, not yet completed on this branch) as the
+primary correctness check for EHR content, rather than continuing to chase full byte parity against
+a legacy baseline that may not represent the same underlying data pull. Open Question 1(b)
+(escalating to Ryan D'Cunha to ask about regenerating/reconciling the LUMIA corpus against the same
+extraction as the legacy MEDS db) is **not being pursued now** — carried to `docs/next.md` as a
+non-blocking backlog item, per this plan's own Landing & cleanup guidance. Open Question 3 (whether
+the byte-diff-gate methodology itself needs reconsidering for EHR content, given legacy's baseline
+is a single frozen snapshot that may not represent the same data as the live corpus) is also carried
+to the backlog, unresolved — this round's finding (a real vintage mismatch on the one extraction we
+could inspect) makes it more concrete but doesn't resolve it. Open Question 2 (decision-gate wording
+review) is moot — the gate never fired; Phil decided directly instead.
+
+**Concrete next action** (closing verification, no new investigation round): the `LOINC/`-declared-
+divergence exclusion uses the **already-existing** `strip_excluded_lines`/`--exclude-line-patterns`
+mechanism in `diff_golden.py` (built for `STANFORD_OBS/Flowsheet` in round 2) — no new code. Add
+`LOINC/` alongside the existing exclusion patterns the next time the byte-diff gate runs for Step 5,
+so it reads as an intentional declared divergence rather than a failure. See the added Step 3 below.
+
 ## Files to Modify
 
 - `docs/vm-status/<date>-<sha>.md` (new) — single-phase VM handoff doc (Steps 1+2 above); no code
@@ -276,16 +324,50 @@ Step 1's findings (metadata present/absent, dates if found). Step 2's five print
 lines. Which decision-gate branch above the result lands in. **Never** person_ids, raw timeline
 text, or dates from individual records.
 
+### Step 3 — closing verification (post-decision, added 2026-07-20; supersedes Steps 1-2 as the
+### thing that actually runs next)
+
+Per the Resolution above: Step 2 is not being pursued further. This step re-runs the byte-diff
+gate with the LOINC divergence declared (not a new investigation) so it reads as intentional. Same
+invocation pattern as round 3's Phase 1d (`docs/vm-status/2026-07-20-a58f5f9.md`), with `LOINC/`
+added to the exclusion list.
+
+```bash
+cd <repo-root>/vista_eval_vlm
+git fetch origin && git checkout feat/lumia-live-ehr-adapter && git pull --ff-only
+
+LEGACY=<results_dir>/golden/.../progression_recurrence_free_survival_1_yr_no_image_legacy_small_v2_golden.jsonl
+LIVE=<results_dir>/golden/.../progression_recurrence_free_survival_1_yr_no_image_lumia_live_windowed_golden.jsonl
+
+cd src
+python -m vista_run.diff_golden "$LEGACY" "$LIVE" --mode strict \
+  --exclude-line-patterns STANFORD_OBS/Flowsheet LOINC/ \
+  --exclude-if-legacy-missing MEDS_BIRTH Ethnicity/ Race/ Gender/
+cd ..
+```
+
+**Expected:** structural gates PASS as always; with `LOINC/` now declared-excluded alongside
+`STANFORD_OBS/Flowsheet`, the text gate should read as fully attributable (clean, or only
+already-declared residual classes remain — no unattributed residual).
+**Stop:** an unattributed residual remains even with all declared classes excluded — a real,
+still-undiscovered render/adapter bug would remain; hand back to the Mac, don't declare a new class
+to make the gate pass.
+**Destructive:** no — read-only diff over existing golden JSONLs, no writes.
+
+**Also required before Step 5 lands (not a VM step):** Phil opens and reads Phase 2's human-QA HTML
+render (`context_viewer.py`) — this is now the *primary* correctness check for EHR content, per the
+Resolution above; the byte-diff gate above is confirmatory/secondary, not sufficient alone.
+
 ## Landing & cleanup
 
 - **Branch:** `feat/lumia-live-ehr-adapter` (continuing, no new branch — this handoff makes no
-  code changes to land).
-- **Landing gate:** unchanged from round 3 — Step 5 lands once the byte-diff gate reads as fully
-  attributable (either clean, or every residual class explicitly declared) **and** Phil has
-  actually opened and read Phase 2's human-QA HTML render. This plan's outcome determines *which*
-  path gets Step 5 there (byte-diff-clean vs. declared-divergence-plus-human-QA).
+  code changes to land; Step 3 above is a CLI-flag-only re-run of an already-existing mechanism).
+- **Landing gate (resolved path — declared-divergence-plus-human-QA):** Step 5 lands once (a) the
+  Step 3 byte-diff re-run reads as fully attributable (LOINC + prior declared classes excluded,
+  no unattributed residual) **and** (b) Phil has actually opened and read Phase 2's human-QA HTML
+  render, which is now the *primary* correctness check per the Resolution above.
 - **Merge sequence:** single branch, `/land` at the end once the landing gate above is met.
 - **Cleanup on land:** mark this plan and the window-scope-replan plan `Status: Completed`; update
-  `docs/next.md` and `docs/plans/README.md`; carry any remaining Open Question (e.g., OQ1's
-  Ryan-D'Cunha escalation, if the data-provenance branch is confirmed and Phil wants it pursued)
-  into `docs/next.md` as a backlog item rather than blocking this branch's landing on it.
+  `docs/next.md` and `docs/plans/README.md`; carry OQ1(b)'s Ryan-D'Cunha escalation and OQ3's
+  byte-diff-gate-methodology question into `docs/next.md` as non-blocking backlog items (both
+  already added there in this update, not deferred to land time).
