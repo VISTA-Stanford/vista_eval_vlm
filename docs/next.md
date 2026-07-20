@@ -39,10 +39,13 @@ Side-by-side layout deferred (single-column first cut).
   Real cause + fix (config-driven 24mo window crop, matching legacy's actual scope) in
   [plans/vlm-step5-lumia-window-scope-replan.md](plans/vlm-step5-lumia-window-scope-replan.md),
   Codex-reviewed + Phil-approved via `/explain-plan` (2026-07-20). Approach #1-4 implemented +
-  landed Mac-side (`a58f5f9`). VM smoke pending:
-  [docs/vm-status/2026-07-20-a58f5f9.md](vm-status/2026-07-20-a58f5f9.md) — NEXT(phil-sllm-01) =
-  Phase 1 re-verify (byte-diff gate + decision-gate bands), then Phase 2 human visual-QA landing
-  gate.
+  landed Mac-side (`a58f5f9`). VM Phase-1 re-verify **DONE, band-3 STOP** (`b88947b`,
+  [docs/vm-status/2026-07-20-a58f5f9.md](vm-status/2026-07-20-a58f5f9.md)): 24mo window crop is a
+  large partial fix (live/legacy ratio 1.93→1.13, excess 7990→2779) but `total_excess_lines=2779
+  > ~2500` → a second cause remains; Phase 2 visual-QA **not run** (gated off). Residual is
+  overwhelmingly **LOINC lab lines** (2724 of the excess). NEXT(Mac) = narrower LOINC-scoped
+  follow-up investigation (not a from-scratch re-plan) into why live still renders ~2.7k excess
+  LOINC lines within the same 24mo window.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
