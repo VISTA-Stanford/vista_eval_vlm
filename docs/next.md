@@ -59,12 +59,15 @@ Side-by-side layout deferred (single-column first cut).
   a dead end without material infra investment — declares the LOINC residual (2724/2779 excess
   lines) a **permanent data-provenance divergence** (same treatment as `STANFORD_OBS`) and **pivots
   Step 5's landing gate to Phase 2 human visual-QA as the primary check**. Ryan-D'Cunha escalation
-  (OQ1b) explicitly NOT pursued now. **VM smoke pending:**
+  (OQ1b) explicitly NOT pursued now. **VM smoke BLOCKED (class-3 deviation) @ `9814abd`:**
   [docs/vm-status/2026-07-20-loinc-closing-verification.md](vm-status/2026-07-20-loinc-closing-verification.md)
-  — re-runs the byte-diff gate with `LOINC/` added to the already-existing
-  `--exclude-line-patterns` mechanism (no new code). Then Phil opens Phase 2's human-QA HTML
-  render (`context_viewer.py`, never yet completed on this branch) — both together are Step 5's
-  landing gate → `/land`.
+  — byte-diff gate FAILS even with `LOINC/` excluded (40 field mismatches / 20 rows). Masked
+  readback shows the residual is **systemic cross-vocabulary event-set vintage divergence** (~52–55%
+  of each arm's events unmatched at event-identity level; 0 formatting/timestamp explanation), **not**
+  a render bug and **not** enumerable-excludable. Confirms the pivot: **retire the strict byte-diff as
+  Step 5's landing gate for the LUMIA-live arm**; rely on Phase 2 human visual-QA (`context_viewer.py`).
+  **NEXT (Mac):** re-enter plan mode to formalize retiring/downgrading the gate, then Phil runs the
+  Phase 2 human-QA render → `/land`.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 

@@ -88,6 +88,25 @@ gate also requires Phil to have opened and read Phase 2's human-QA HTML render
 (`context_viewer.py`) — that is a Mac/Phil action, not something to run here. **Never** person_ids,
 raw timeline text, or dates from individual records.
 
-## VM run results
+## VM run results — readback on `phil-sllm-01`, 2026-07-20 · REPO `vista_eval_vlm` · BRANCH `feat/lumia-live-ehr-adapter` @ `9814abd` (pushed to `origin/feat/lumia-live-ehr-adapter`)
 
-_(left empty by the planner; the executor fills this in readback mode)_
+Read-only diff over the round-3 golden JSONLs (`legacy_small_v2` × `lumia_live_windowed`).
+No new `golden_harness` bank, no writes. All characterization done with **masked scripts
+(counts/format-skeletons only — no person_ids, timestamps, values, or line text)**.
+
+- **Step 0:** ✅ checked out `9814abd`; this doc present at branch tip.
+- **Step 1 — byte-diff gate (`diff_golden --mode strict`, `--exclude-line-patterns STANFORD_OBS/Flowsheet LOINC/`):** ❌ **GATE FAILURE (exit 1).**
+  - **Precondition (`.meta.json`):** ✅ matched on `task`/`experiment`/`model_type`/`model_name`/`limit` (both `limit=20`); `tag` differs by design (`legacy_small_v2` vs `lumia_live_windowed`). Not a Stop (a).
+  - **Structure gate:** ✅ PASS — `image_hashes` / `selected_indices` / counts / `assembly_mode` byte-identical.
+  - **Text gate:** ❌ FAIL — **40 field mismatches** (20 shared rows × 2 fields: `dynamic_prompt`, `adapter_prompt_string`). This is **Stop (b)**: an unattributed residual remains even with `LOINC/` + `STANFORD_OBS/Flowsheet` declared-excluded.
+
+- **⚠️ DEVIATION (class 3) — the residual is NOT a render/adapter bug, and NOT enumerable-excludable; it is systemic data-vintage divergence.**
+  PHI-safe characterization of the residual (masked, counts only):
+  - **Confirmed fully stripped:** 0 residual lines contain `LOINC/` or `STANFORD_OBS/Flowsheet` — the declared exclusions work; the residual is genuinely *other* content.
+  - **Not formatting:** whitespace/case-normalization collapses the diff by **0** (6638→6638 legacy-only, 6188→6188 live-only). Character-class line-skeletons are **identical in shape on both sides** (`[<ts>] | <vocab/code (desc)> | <unit: value>`) — both arms render the same way.
+  - **Not timestamp/value drift:** stripping the leading `[timestamp]` drops the per-side diff only ~30% (6638→4622 / 6188→4172); stripping timestamp **and** trailing value (→ bare event identity: vocab/code/desc) still leaves **4168 / 3718** unmatched. Of 7596 legacy / 7146 live non-excluded lines, **~55% of legacy events and ~52% of live events have no counterpart in the other arm at the event-identity level.**
+  - **Diagnosis:** the same data-provenance vintage divergence already *declared* for LOINC (live = aug-2025 MEDS extraction; legacy = 2026-02-16 frozen snapshot — see `## Resolution` and prior handoff `2026-07-20-3206e84.md`) **generalizes to the entire remaining timeline across all vocabularies**. LOINC was merely the single largest class. A strict per-line byte-diff therefore **cannot be salvaged by declaring more excluded classes** — the divergence spans ~half of every arm's events, not an enumerable set of domains.
+  - **Per Stop (b): did NOT declare a new exclusion class to force the gate to pass.** Handing back to the Mac.
+
+- **Net:** ❌ **BLOCKED — back to planner (Mac).** Step 1's byte-diff gate cannot pass and cannot be made to pass by exclusion; this is the class-3 finding that confirms the plan's own pivot — **retire the strict byte-diff as Step 5's landing gate for the LUMIA-live arm; rely on Phase 2's human visual-QA read (`context_viewer.py`) as the primary correctness check** (a Mac/Phil action, not run here). The Mac re-enters plan mode to formalize retiring/downgrading the gate for this arm.
+
