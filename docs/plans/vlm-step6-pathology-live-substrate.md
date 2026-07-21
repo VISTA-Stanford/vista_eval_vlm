@@ -44,6 +44,12 @@ this doesn't silently break CT/EHR/text, which are pinned to v1_5-derived golden
 (including Step 5's just-landed live-EHR-adapter work). Cheap-before-expensive: a schema-diff
 first, a scoped byte-diff re-bank second.
 
+**Status (2026-07-21):** dataset bump committed (`ac1561a`). Step 0a (schema-diff) ran on the VM
+and passed. Step 0b's original byte-diff vehicle turned out to be unrunnable (a pre-existing
+`vista_bench` registry issue, not a bump problem) and was retargeted — see the Verification & VM
+handoff section below for the corrected vehicle and full detail
+(`docs/vm-status/2026-07-21-ac1561a.md`).
+
 **Phase 1 — Reuse the existing task-scoped BQ loader for pathology + coverage/tiling-gap
 characterization**
 **Revised per Phil's feedback:** no new BQ query function needed. Every other modality resolves
@@ -152,9 +158,26 @@ large — sized from Phase 1's count (decision gate below); if small, stays on C
   columns — pathology columns are additive/new, fine to differ.
   **Stop:** a breaking schema change on a column CT/EHR/text actually reads — report back, do not
   proceed to 0b.
+  **Status (2026-07-21):** already run + confirmed clean on the VM
+  (`docs/vm-status/2026-07-21-ac1561a.md`) — of the 4 distinct `task_source_csv` tables the 49
+  registry tasks reference, only 1 exists in BQ at all, and it changed purely additively (32→38
+  cols). Not re-run; this verdict stands. Caveat for any future re-run: a table **absent from
+  both** dataset versions also reports `removed/renamed: none` (two empty column sets look
+  "clean") — treat an absent-in-both table as `ABSENT (not compared)`, not a pass.
 - Step 0b (moderate, only if 0a clean): re-run `diff_golden.py --mode strict` against a small
   representative re-bank sourced from v1_6 (not the full cohort — scope per `vm-smoke-scope-limit`
   convention), banked to a **new** path (not overwriting the existing v1_5 golden bank in place).
+  **Verification vehicle: `progression_recurrence_free_survival_1_yr`, `no_image` +
+  `axial_all_image`** — already the exact task `configs/all_tasks.rung0.yaml` declares, with both
+  experiments enabled, so it needs no new config. **(Re-plan 2026-07-21):** the original vehicle,
+  `has_recurrence_1_yr`, was found on the VM to have a `task_source_csv` registry entry
+  (`..._5yr_v1_1`) absent from **both** `vista_bench_v1_5` and `vista_bench_v1_6` — a pre-existing
+  `vista_bench` task-registry↔BQ naming mismatch (48 of the 49 registry tasks reference nonexistent
+  `_v1_*`-suffixed table names in both dataset versions; tracked as a backlog item in
+  `docs/next.md`, out of scope to fix here). `progression_recurrence_free_survival_1_yr` is the one
+  task whose non-suffixed source table (`progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr`)
+  actually resolves in both dataset versions — see `docs/vm-status/2026-07-21-ac1561a.md` for the
+  full finding.
   **Expected:** byte-identity holds for CT/EHR/text content.
   **Stop:** unexpected divergence in CT/EHR/text content — report back, do not proceed to Phase 1.
 - **Decision gate:** Phase 0 clean → proceed to Phase 1. Phase 0 red → STOP, re-plan; pathology

@@ -53,12 +53,15 @@ pruned (local + remote).
   Phil's explain-plan feedback) → [plans/vlm-step6-pathology-live-substrate.md](plans/vlm-step6-pathology-live-substrate.md) ·
   companion [`.html`](plans/vlm-step6-pathology-live-substrate.html), Reviewed: Yes (in-sync
   `905d034c0a58`). Phase 0 (dataset bump `query_utils.py:257` v1_5→v1_6) committed on
-  `feat/vlm-step6-pathology-live-substrate` @ `ac1561a`. **VM smoke BLOCKED (class-3 deviation):**
-  [docs/vm-status/2026-07-21-ac1561a.md](vm-status/2026-07-21-ac1561a.md) — schema-diff shows the
-  bump is additive/non-breaking on the one real non-pathology table, but Step 0b's golden byte-diff
-  is unrunnable: `has_recurrence_1_yr`'s registry table `…_5yr_v1_1` is absent in **both** v1_5 and
-  v1_6 (48/49 tasks point at non-existent `_v1_*` names; only the non-suffixed table resolves).
-  Predates the bump → re-plan on the Mac (see the doc's DEVIATION block for the 3 fix options).
+  `feat/vlm-step6-pathology-live-substrate` @ `ac1561a`. Step 0a (schema-diff) passed on the VM.
+  Step 0b's golden byte-diff was **BLOCKED (class-3 deviation)** —
+  [docs/vm-status/2026-07-21-ac1561a.md](vm-status/2026-07-21-ac1561a.md): `has_recurrence_1_yr`'s
+  registry table `…_5yr_v1_1` is absent in **both** v1_5 and v1_6, predating the bump. **Re-planned
+  on the Mac (2026-07-21):** Step 0b retargeted at `progression_recurrence_free_survival_1_yr` —
+  the one task whose non-suffixed source table actually resolves in both dataset versions, and
+  already the exact task `configs/all_tasks.rung0.yaml` declares (see the plan's Phase 0
+  Verification & VM handoff section). NEXT: `/vm-handoff` re-run of Step 0b with the corrected
+  vehicle → Phase 1.
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2. Phil flagged wanting this "soon," once Step 6 lands.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
@@ -66,6 +69,17 @@ pruned (local + remote).
 
 ## Backlog
 
+- **`vista_bench` task-registry↔BQ table-name mismatch (found during Step 6 Phase 0, not
+  blocking)** — 48 of the 49 tasks in `valid_tasks.json` declare a `_v1_*`-suffixed
+  `task_source_csv` (e.g. `progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr_v1_1`) that doesn't
+  exist as a BQ table under that name in **either** `vista_bench_v1_5` or `vista_bench_v1_6` — only
+  the non-suffixed table name resolves, and only 1 of the 4 distinct tables the registry references
+  exists at all. Predates the Step 6 dataset bump (present on both sides), so it's orthogonal to
+  that work, but it means most registry tasks are currently unrunnable end-to-end regardless of
+  dataset version. Escalate to Ryan D'Cunha (owns `valid_tasks.json`/the vista_bench registry) to
+  confirm whether the `_v1_*` suffix is a stale naming convention that should be dropped from the
+  registry, or whether those tables need re-materializing. Full finding:
+  [docs/vm-status/2026-07-21-ac1561a.md](vm-status/2026-07-21-ac1561a.md).
 - **LUMIA/legacy MEDS extraction reconciliation (Step 5 OQ1b, not blocking)** — escalate to Ryan
   D'Cunha whether the live `thoracic_cohort_lumia` LUMIA corpus can be regenerated from / reconciled
   with the same extraction as legacy's frozen `thoracic_cohort_meds_femr_db` snapshot. Only worth
