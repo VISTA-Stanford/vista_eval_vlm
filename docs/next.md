@@ -60,9 +60,18 @@ pruned (local + remote).
   on the Mac (2026-07-21):** Step 0b retargeted at `progression_recurrence_free_survival_1_yr` —
   the one task whose non-suffixed source table actually resolves in both dataset versions, and
   already the exact task `configs/all_tasks.rung0.yaml` declares (see the plan's Phase 0
-  Verification & VM handoff section). **VM smoke pending:**
-  [docs/vm-status/2026-07-21-c3351ef.md](vm-status/2026-07-21-c3351ef.md) — Step 0b re-run with the
-  corrected vehicle → Phase 1.
+  Verification & VM handoff section). **VM Step 0b BLOCKED — class-3 deviation (2026-07-21,
+  `phil-sllm-01`):**
+  [docs/vm-status/2026-07-21-c3351ef.md](vm-status/2026-07-21-c3351ef.md) — banking ran clean (5
+  rows × 2 experiments, both v1_5 & v1_6) and the bump is a **proven content no-op** (CT/EHR/text
+  byte-identical for all 5 shared patients, both experiments, via a person_id-keyed re-comparison).
+  BUT the prescribed `diff_golden --mode strict` gate returns `GATE FAILURE`: it hard-joins on the
+  `index` field, which is unstable across a row-count-changing dataset bump, so `--limit 5` yields
+  **0 shared indices** and the content gates compare an empty set. **Mac decision needed** on the
+  vehicle fix (recommended: teach `diff_golden` to join on `person_id` / add `--join-key`), then
+  supersede this doc → Phase 1. In-lane fix applied: banked via the proven VM-local
+  `all_tasks.rung0.vm.yaml` overlay (tracked `all_tasks.rung0.yaml` has no `retrieval:` block →
+  EHR adapter aborts).
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2. Phil flagged wanting this "soon," once Step 6 lands.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
