@@ -73,11 +73,14 @@ pruned (local + remote).
   again (2026-07-21):** fixed `diff_golden.py`'s **default** join key from `index` to `person_id`
   (every golden record already carries it; task tables are one-row-per-person, so it's the actual
   identity key) — no new `--join-key` flag, per "fix defaults, not call sites"; the Step 0b command
-  is unchanged. Committed `b7f858d` (code) + `fc6afbc` (plan doc), pushed. **VM handoff renewed:**
-  [docs/vm-status/2026-07-21-fc6afbc.md](vm-status/2026-07-21-fc6afbc.md) — re-run Step 0b (cheap
-  path: re-diff the already-banked golden files from the c3351ef run with the fixed tool; fallback:
-  full re-bank if those files are gone), expect `ALL GATES PASS` this time → then supersede this
-  entry with the readback and proceed to Phase 1.
+  is unchanged. Committed `b7f858d` (code) + `fc6afbc` (plan doc), pushed. **VM Step 0b GREEN —
+  Phase 0 complete (2026-07-21, `phil-sllm-01`):**
+  [docs/vm-status/2026-07-21-fc6afbc.md](vm-status/2026-07-21-fc6afbc.md) readback @ `2235b0a` — the
+  cheap-path banked files were gone, so the **fallback full re-bank** ran (5 rows × 2 experiments,
+  v1_5 @ `483554e` vs v1_6 @ `be379ab`); the fixed `diff_golden --mode strict` (person_id join)
+  returned **`ALL GATES PASS`** for both `no_image` and `axial_all_image` (`shared person_ids: 5`,
+  no duplicate-key error) → v1_5→v1_6 bump confirmed a content no-op natively. **Next: Phase 1**
+  (route pathology through the task-scoped `diagnostic_tasks` BQ loader — plan's Phase 1 section).
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2. Phil flagged wanting this "soon," once Step 6 lands.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
