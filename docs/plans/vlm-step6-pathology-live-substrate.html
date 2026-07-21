@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="plan-sha256" content="c012663a9f0f94e91257d83530eadb7988ade7e3b1f19706f271c653be248ccc">
+<title>Step 6 — pathology live substrate</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<style>
+  :root {
+    --bg: #fafafa; --panel: #ffffff; --text: #1a1a1a; --muted: #6b6b6b;
+    --border: rgba(0,0,0,.12); --accent: #0b6e99; --accent2: #0f7a4a;
+    --chip-bg: rgba(0,0,0,.06); --recede: .45;
+    --add: #0aa5c4; --mod: #b8860b; --unt: #9a9a9a; --ext: #6a4fbf; --defer: #999;
+    --resp-bg: #eef6fb; --resp-border: #0b6e99;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1c1f24; --text: #e8e8e8; --muted: #9a9a9a;
+      --border: rgba(255,255,255,.14); --accent: #57c2ea; --accent2: #4fd18a;
+      --chip-bg: rgba(255,255,255,.08);
+      --add: #29c4e0; --mod: #e0b84a; --unt: #808080; --ext: #a98af0; --defer: #777;
+      --resp-bg: #16232b; --resp-border: #57c2ea;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1.6rem 1.8rem 6rem; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.5; }
+  a { color: var(--accent); }
+  h1 { font-size: 1.5rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.15rem; margin: 2.2rem 0 .8rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.2rem; margin: .8rem 0; }
+  .header-card .meta-row { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; font-size: .85rem; color: var(--muted); margin-top: .5rem; }
+  .header-card .meta-row code { background: var(--chip-bg); padding: .1rem .4rem; border-radius: 4px; }
+  .chip { display: inline-block; font-size: .72rem; font-weight: 600; padding: .15rem .55rem; border-radius: 10px; background: var(--chip-bg); margin-right: .3rem; }
+  .chip.draft { color: var(--mod); }
+  .tldr { font-size: 1.02rem; }
+  .diagram-wrap { position: relative; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; height: 520px; background: var(--panel); }
+  .diagram-wrap pre.mermaid { margin: 0; height: 100%; }
+  .diagram-hint { position: absolute; bottom: 6px; left: 10px; font-size: .72rem; color: var(--muted); background: var(--bg); padding: 1px 6px; border-radius: 4px; opacity: .85; }
+  .diagram-controls { position: absolute; top: 8px; right: 8px; display: flex; gap: .4rem; }
+  .diagram-controls button { font-size: .72rem; padding: .25rem .55rem; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+  .diagram-wrap.fullscreen { position: fixed; inset: 0; z-index: 999; height: 100vh; border-radius: 0; }
+  details.step { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin: .6rem 0; padding: 0; }
+  details.step[open] { border-color: var(--accent); }
+  details.step summary { cursor: pointer; padding: .7rem 1rem; font-weight: 600; list-style: none; display: flex; align-items: center; gap: .6rem; }
+  details.step summary::-webkit-details-marker { display: none; }
+  details.step summary .arrow { transition: transform .15s; opacity: .6; }
+  details.step[open] summary .arrow { transform: rotate(90deg); }
+  .step-body { padding: 0 1.1rem 1rem; font-size: .92rem; }
+  .step-body .files { font-size: .82rem; color: var(--muted); margin: .4rem 0; }
+  .status { font-size: .78rem; padding: .1rem .5rem; border-radius: 8px; background: var(--chip-bg); }
+  .status.pending { color: var(--mod); }
+  .status.stop { color: #c0392b; }
+  textarea.section-feedback { width: 100%; min-height: 3.2rem; margin-top: .5rem; font-family: inherit; font-size: .85rem;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: .5rem; resize: vertical; }
+  .oq-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: .8rem 1rem; margin: .6rem 0; }
+  .oq-card .oq-head { display: flex; justify-content: space-between; align-items: center; gap: .8rem; flex-wrap: wrap; }
+  .oq-card select { font-size: .82rem; padding: .2rem .4rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  .oq-card textarea { width: 100%; min-height: 2.6rem; margin-top: .5rem; font-family: inherit; font-size: .85rem;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: .5rem; resize: vertical; }
+  .knobs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .8rem; }
+  .knob-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: .8rem 1rem; }
+  .knob-card h4 { margin: 0 0 .3rem; font-size: .92rem; }
+  .knob-card code.block { display: block; background: var(--chip-bg); padding: .4rem .6rem; border-radius: 6px; font-size: .8rem; margin-top: .4rem; white-space: pre-wrap; }
+  .legend-note { font-size: .78rem; color: var(--muted); margin-top: .3rem; }
+  .first-pass-banner { background: var(--chip-bg); border-left: 3px solid var(--accent); padding: .6rem .9rem; border-radius: 6px; font-size: .85rem; color: var(--muted); margin-bottom: .8rem; }
+  footer.feedback-bar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); border-top: 1px solid var(--border);
+    padding: .7rem 1.2rem; display: flex; align-items: center; gap: .8rem; z-index: 500; }
+  footer.feedback-bar textarea { flex: 1; min-height: 2.2rem; font-family: inherit; font-size: .85rem; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: .4rem .6rem; resize: vertical; }
+  footer.feedback-bar button { font-size: .82rem; padding: .5rem .9rem; border-radius: 8px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-weight: 600; white-space: nowrap; }
+  .resp { background: var(--resp-bg); border-left: 3px solid var(--resp-border); border-radius: 6px; padding: .5rem .7rem; margin-top: .5rem; font-size: .84rem; }
+  .resp .resp-label { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--resp-border); margin-bottom: .2rem; }
+  .toast { position: fixed; bottom: 4.2rem; right: 1.2rem; background: var(--accent2); color: #fff; padding: .5rem .9rem; border-radius: 8px; font-size: .82rem; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 600; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div class="card header-card">
+  <h1>vista_eval_vlm — Step 6: modernize pathology to live <code>vista_bench_v1_6</code> substrate</h1>
+  <div class="meta-row">
+    <span class="chip draft">Status: Draft (2026-07-21)</span>
+    <span>Owner: Phil</span>
+    <span>Branch (planned): <code>feat/vlm-step6-pathology-live-substrate</code></span>
+    <span>Source: <a href="vlm-step6-pathology-live-substrate.md">vlm-step6-pathology-live-substrate.md</a></span>
+    <span>SHA-256: <code id="sha-display">c012663a9f0f</code>&hellip;</span>
+    <span>Generated: 2026-07-21 02:40 UTC</span>
+  </div>
+</div>
+
+<div class="first-pass-banner" id="first-pass-banner">
+  First review — the change-since-last-review layer activates on the next regeneration, once this
+  plan has a prior reviewed version to diff against.
+</div>
+
+<h2 data-section="tldr">TL;DR</h2>
+<div class="card tldr">
+  Pathology inference has been reading a frozen, hand-generated CSV two dataset versions behind
+  the rest of the repo, produced by a one-shot script hardcoded to one engineer's local VM cache —
+  while `vista_bench`'s real pathology substrate (slide-linking, stain classification, LLM-extracted
+  labels) only landed in <code>vista_bench_v1_6</code>. This plan bumps the shared
+  <code>VISTA_BENCH_DATASET</code> constant to v1_6 (Phil's explicit call — whole-repo, not a
+  pathology-only knob), re-verifies CT/EHR/text aren't broken by that bump as a gated prerequisite,
+  then adds the first-ever live BQ query for pathology and re-tiles whatever slide delta surfaces.
+  No legacy baseline exists to byte-diff pathology against, so the landing gate is a human-QA render
+  via the existing config-context viewer — the same mechanism Step 5 converged on.
+</div>
+
+<h2 data-section="repo-map">Repo Map</h2>
+<div class="diagram-wrap" id="dw-repomap">
+  <div class="diagram-controls">
+    <button onclick="resetZoom('repomap')">Reset zoom</button>
+    <button onclick="toggleFullscreen('dw-repomap')">Fullscreen</button>
+  </div>
+  <pre class="mermaid" id="mm-repomap">
+flowchart LR
+  subgraph vb["vista_bench, sibling repo, BQ"]
+    v15["vista_bench_v1_5 dataset"]
+    v16["vista_bench_v1_6 dataset<br/>pathology substrate landed here"]
+  end
+  subgraph cq["vista_eval_vlm config and query layer"]
+    cfg["configs/all_tasks.yaml"]
+    qu["query_utils.py"]
+    tdu["task_data_utils.py"]
+  end
+  subgraph tl["vista_eval_vlm - task loader"]
+    rb["run_bq.py<br/>TaskOrchestrator"]
+  end
+  subgraph tt["vista_eval_vlm - tiling tools"]
+    dl["download_path_subsampled.py"]
+    tw["tile_wsi.py"]
+  end
+  subgraph ad["vista_eval_vlm - adapters, untouched"]
+    pa["PathologyAdapter"]
+    ca["CTAdapter"]
+    ea["EHRAdapter"]
+  end
+  subgraph qa["QA and inference"]
+    viewer["config-context viewer"]
+    vlm["VLM inference, gemma3 etc"]
+  end
+  v15 -. superseded after Phase 0 .-> qu
+  v16 -->|drives, this PR| qu
+  qu --> rb
+  tdu --> rb
+  cfg --> rb
+  rb --> pa
+  rb --> ca
+  rb --> ea
+  dl --> tw
+  tw -->|writes tiles for| pa
+  pa --> viewer
+  ca --> viewer
+  ea --> viewer
+  viewer --> vlm
+
+  subgraph legend["Color legend"]
+    lg1["modified this PR, amber"]
+    lg2["untouched, grey dashed"]
+    lg3["external data source, purple"]
+  end
+  class v16,v15 ext
+  class cfg,qu,tdu,rb,dl mod
+  class tw,pa,ca,ea,viewer,vlm unt
+  class lg1 mod
+  class lg2 unt
+  class lg3 ext
+  classDef add fill:#0aa5c4,stroke:#066,color:#fff,stroke-width:2px;
+  classDef mod fill:#f0d27a,stroke:#8a6d1a,color:#3a2c00;
+  classDef unt fill:#e6e6e6,stroke:#9a9a9a,color:#555,stroke-dasharray: 4 3;
+  classDef ext fill:#c9b8f5,stroke:#6a4fbf,color:#2a1a55;
+  </pre>
+  <div class="diagram-hint">scroll to zoom &bull; drag to pan</div>
+</div>
+
+<h2 data-section="blast-radius">Blast Radius</h2>
+<div class="diagram-wrap" id="dw-blast">
+  <div class="diagram-controls">
+    <button onclick="resetZoom('blast')">Reset zoom</button>
+    <button onclick="toggleFullscreen('dw-blast')">Fullscreen</button>
+  </div>
+  <pre class="mermaid" id="mm-blast">
+flowchart LR
+  subgraph knobs["Knobs, this PR"]
+    k1["VISTA_BENCH_DATASET<br/>v1_5 to v1_6"]
+    k2["new: pathology manifest query fn"]
+    k3["new: pathology cache-path resolver"]
+  end
+  subgraph files["Files touched"]
+    f1["query_utils.py"]
+    f2["task_data_utils.py"]
+    f3["run_bq.py<br/>_load_path_task_data"]
+    f4["download_path_subsampled.py"]
+    f5["configs/all_tasks.yaml"]
+    f6["3 pathology docs"]
+  end
+  subgraph outputs["Outputs"]
+    o1["diagnostic_wsi_slides_for_embedding<br/>manifest table"]
+    o2["local BQ cache, pathology"]
+    o3["test_patch tile folders, delta slides"]
+  end
+  subgraph consumers["Downstream consumers"]
+    c1["PathologyAdapter"]
+    c2["path_full preset, active"]
+    c3["path / path_image_and_report<br/>Phase 3 decision"]
+  end
+  k1 --> f1
+  k2 --> f1
+  k3 --> f2
+  f5 --> f3
+  f1 --> f3
+  f2 --> f3
+  o1 -->|queried by| f1
+  f3 --> o2
+  f4 --> o3
+  f3 --> f6
+  f3 --> c1
+  o3 --> c1
+  c1 --> c2
+  c1 -.->|optional, deferred| c3
+
+  subgraph legend["Color legend"]
+    lg1["added, this PR, cyan"]
+    lg2["modified, this PR, amber"]
+    lg3["existing table, purple"]
+    lg4["untouched consumer, grey dashed"]
+    lg5["deferred, Phase 3 decision, muted"]
+  end
+  class k1,k2,k3,o2,o3 add
+  class f1,f2,f3,f4,f5,f6 mod
+  class o1 ext
+  class c1,c2 unt
+  class c3 defer
+  class lg1 add
+  class lg2 mod
+  class lg3 ext
+  class lg4 unt
+  class lg5 defer
+  classDef add fill:#0aa5c4,stroke:#066,color:#fff,stroke-width:2px;
+  classDef mod fill:#f0d27a,stroke:#8a6d1a,color:#3a2c00;
+  classDef unt fill:#e6e6e6,stroke:#9a9a9a,color:#555,stroke-dasharray: 4 3;
+  classDef ext fill:#c9b8f5,stroke:#6a4fbf,color:#2a1a55;
+  classDef defer fill:#e8e8e8,stroke:#aaaaaa,color:#777,stroke-dasharray: 2 2;
+  </pre>
+  <div class="diagram-hint">scroll to zoom &bull; drag to pan</div>
+</div>
+
+<h2 data-section="order-of-ops">Order of Operations</h2>
+<div class="diagram-wrap" id="dw-order">
+  <div class="diagram-controls">
+    <button onclick="resetZoom('order')">Reset zoom</button>
+    <button onclick="toggleFullscreen('dw-order')">Fullscreen</button>
+  </div>
+  <pre class="mermaid" id="mm-order">
+flowchart TD
+  p0a["Step 0a: BQ schema diff<br/>v1_5 vs v1_6, cheap PENDING ⏳"]
+  p0b["Step 0b: byte-diff re-bank<br/>on v1_6 subset PENDING ⏳"]
+  gate0{"Phase 0 clean?"}
+  stop0["STOP: re-plan<br/>do not proceed 🛑"]
+  p1["Phase 1: live pathology manifest<br/>plus coverage report PENDING ⏳"]
+  gate1{"Tile gap size?"}
+  p2a["Phase 2: quick top-up retile<br/>small delta PENDING ⏳"]
+  p2b["Phase 2: bulk retile on hcpu<br/>large delta PENDING ⏳"]
+  p3["Phase 3: wire, human QA, docs<br/>landing gate PENDING ⏳"]
+
+  p0a --> p0b --> gate0
+  gate0 -->|clean| p1
+  gate0 -->|red| stop0
+  p1 --> gate1
+  gate1 -->|small, under 10 pct| p2a
+  gate1 -->|large, most new| p2b
+  p2a --> p3
+  p2b --> p3
+  </pre>
+  <div class="diagram-hint">scroll to zoom &bull; drag to pan</div>
+</div>
+
+<h2 data-section="knobs-card">Knobs / Contracts</h2>
+<div class="knobs-grid">
+  <div class="knob-card">
+    <h4>VISTA_BENCH_DATASET</h4>
+    <div>Type: module-level string constant &bull; File: <code>query_utils.py:257</code></div>
+    <code class="block">VISTA_BENCH_DATASET = "vista_bench_v1_5"  # today
+VISTA_BENCH_DATASET = "vista_bench_v1_6"  # this PR</code>
+    <div class="legend-note">Used by every live BQ query across CT / EHR / text / (new) pathology cohort loading &mdash; whole-repo bump, per Phil's explicit call.</div>
+  </div>
+  <div class="knob-card">
+    <h4>New: pathology manifest source</h4>
+    <div>Table: <code>{VISTA_BENCH_DATASET}.diagnostic_wsi_slides_for_embedding</code></div>
+    <code class="block">columns: path_image_path, path_wsi_primary_key,
+path_accession_number, path_specimen, path_block, path_slide</code>
+    <div class="legend-note">Deduped, one row per slide &mdash; chosen over the long-format <code>diagnostic_tasks</code> table to avoid in-repo dedup logic.</div>
+  </div>
+  <div class="knob-card">
+    <h4>paths.path_tile_base (existing)</h4>
+    <div>File: <code>configs/all_tasks.yaml:10</code></div>
+    <code class="block">path_tile_base: "/data/fries/datasets/vista_bench_ryan/download_path"</code>
+    <div class="legend-note">Local tile cache root, must contain <code>test_patch/&lt;folder&gt;/</code>. Confirmed/updated in Phase 2 if delta-slide tiles land elsewhere.</div>
+  </div>
+</div>
+
+<h2 data-section="steps">Steps</h2>
+
+<details class="step" data-section="phase-0" open>
+  <summary><span class="arrow">&#9656;</span> Phase 0 &mdash; Dataset bump + re-verify existing modalities <span class="status pending">PENDING</span></summary>
+  <div class="step-body">
+    <p>Bump <code>VISTA_BENCH_DATASET</code> v1_5&rarr;v1_6. Before touching pathology, confirm this
+    doesn't silently break CT/EHR/text, which are pinned to v1_5-derived golden fixtures (including
+    Step 5's just-landed live-EHR-adapter work). Cheap-before-expensive: a schema-diff first, a
+    scoped byte-diff re-bank second.</p>
+    <div class="files">Files: <code>query_utils.py:257</code></div>
+    <p><strong>Verify (Step 0a, cheap):</strong> BQ schema-diff comparing v1_5 vs v1_6 column lists
+    for tables CT/EHR/text loaders actually read. Expected: no non-additive changes among
+    CT/EHR/text-relevant columns. Stop: a breaking schema change &mdash; report back, don't proceed
+    to 0b.</p>
+    <p><strong>Verify (Step 0b, moderate, only if 0a clean):</strong> re-run <code>diff_golden.py
+    --mode strict</code> against a small representative re-bank sourced from v1_6, banked to a new
+    path. Expected: byte-identity holds for CT/EHR/text content. Stop: unexpected divergence &mdash;
+    report back, don't proceed to Phase 1.</p>
+    <p><strong>Decision gate:</strong> Phase 0 clean &rarr; Phase 1. Phase 0 red &rarr; STOP, re-plan.</p>
+    <textarea class="section-feedback" data-section="phase-0" placeholder="Feedback on Phase 0..."></textarea>
+  </div>
+</details>
+
+<details class="step" data-section="phase-1">
+  <summary><span class="arrow">&#9656;</span> Phase 1 &mdash; Live pathology manifest + coverage/tiling-gap characterization <span class="status pending">PENDING</span></summary>
+  <div class="step-body">
+    <p>Add the first BQ query path for pathology &mdash; there isn't one today
+    (<code>subsample_v1_3_path.py</code> never queries BQ at all). Targets
+    <code>vista_bench_v1_6.diagnostic_wsi_slides_for_embedding</code>. Rewrite
+    <code>_load_path_task_data</code> (<code>run_bq.py:477</code>) to mirror
+    <code>_load_task_data</code>'s local-cache-first, else-live-BQ pattern
+    (<code>run_bq.py:250-343</code>). Characterize the gap: old-CSV persons vs new-manifest
+    persons, and how many resolved <code>path_image_path</code> values have no existing tile
+    folder under <code>test_patch/</code>.</p>
+    <div class="files">Files: <code>query_utils.py</code> (new fn), <code>task_data_utils.py</code> (new cache resolver), <code>run_bq.py</code> (~477-548)</div>
+    <p><strong>Verify:</strong> loader succeeds for one pathology task (non-empty df,
+    <code>path_image_path</code> populated) + coverage report with concrete numbers. Stop: BQ
+    access/credential failure on the PHI-scoped project.</p>
+    <p><strong>Decision gate (pre-encoded):</strong> no-local-tile count small (under ~10%) &rarr;
+    Phase 2 is a quick top-up, stays on Claude-Code CPU. Large (most slides new) &rarr; Phase 2 is a
+    real bulk job, routes to <code>phil-hcpu</code>, readback on <code>phil-sllm-01</code>.</p>
+    <textarea class="section-feedback" data-section="phase-1" placeholder="Feedback on Phase 1..."></textarea>
+  </div>
+</details>
+
+<details class="step" data-section="phase-2">
+  <summary><span class="arrow">&#9656;</span> Phase 2 &mdash; VM-side re-tiling for the delta, gated on Phase 1 <span class="status pending">PENDING</span></summary>
+  <div class="step-body">
+    <p>Reuse existing tooling unchanged: <code>download_path_subsampled.py</code> (already a
+    repeatable CLI, point it at an exported manifest CSV for the delta slides) &rarr;
+    <code>tile_wsi.py</code> (already resumable, MedGemma-spec correct &mdash; "canonical and good"
+    per the roadmap plan, no changes needed).</p>
+    <div class="files">Files: <code>download_path_subsampled.py</code> (minor default/doc tweak)</div>
+    <p><strong>Verify:</strong> new tile folders appear under <code>test_patch/&lt;folder&gt;/</code>
+    for delta slides; no errors. Stop: systemic (not isolated-row) GCS/OpenSlide failures.</p>
+    <p>Destructive: no &mdash; additive only, no deletion of existing tiles.</p>
+    <textarea class="section-feedback" data-section="phase-2" placeholder="Feedback on Phase 2..."></textarea>
+  </div>
+</details>
+
+<details class="step" data-section="phase-3">
+  <summary><span class="arrow">&#9656;</span> Phase 3 &mdash; Wire + human-QA + docs <span class="status pending">PENDING</span></summary>
+  <div class="step-body">
+    <p>Confirm the presets render correctly via the existing config-context viewer &mdash; same
+    weight-free QA mechanism Step 5 used. This is the landing gate: there's no legacy pathology
+    baseline to byte-diff against. Update the three stale docs to describe the live-pull flow
+    instead of the v1_3 CSV flow.</p>
+    <div class="files">Files: <code>configs/all_tasks.yaml</code>, <code>docs/01-pathology-and-path-tools.md</code>, <code>docs/00-data-setup.md</code>, <code>docs/03-vista-bench-data-cohort.md</code></div>
+    <p><strong>Verify:</strong> HTML renders for <code>path_full</code> (+ <code>path</code> if
+    re-enabled) on a small N &mdash; clean, self-contained, non-empty tiles/prompt per card, no
+    STOP/traceback. Report file paths / existence / card counts / exit codes only &mdash; never
+    rendered content (same PHI-crossing discipline as Step 5). <strong>Phil reads the HTML
+    himself</strong> &mdash; that's the landing gate.</p>
+    <textarea class="section-feedback" data-section="phase-3" placeholder="Feedback on Phase 3..."></textarea>
+  </div>
+</details>
+
+<h2 data-section="landing">Landing &amp; Cleanup</h2>
+<div class="card" data-section="landing">
+  <p><strong>Branch:</strong> <code>feat/vlm-step6-pathology-live-substrate</code> &mdash; feature
+  branch, touches shared cohort infra + PHI-scoped query code, not a doc-only/minor fix.</p>
+  <p><strong>Landing gate:</strong> Phases 0&ndash;3 all VM-green + Phil's manual QA read of the
+  pathology viewer HTML.</p>
+  <p><strong>Merge sequence:</strong> single-branch plan &rarr; <code>/land</code> at the end (no
+  sibling branches currently touch these files, per the Step-5 <code>/land</code> sibling scan).</p>
+  <p><strong>Cleanup on land:</strong> prune branch + worktree; mark this plan Completed; update
+  <code>docs/plans/README.md</code> + <code>docs/next.md</code>; the three doc updates land in the
+  same branch, not as a follow-up.</p>
+</div>
+
+<h2 data-section="oqs">Open Questions</h2>
+<div id="oq-container"></div>
+
+<footer class="feedback-bar">
+  <textarea id="global-feedback" placeholder="Overall feedback on this plan..."></textarea>
+  <button id="copy-feedback-btn" onclick="copyFeedback()">Copy feedback (0 pending)</button>
+</footer>
+<div class="toast" id="toast"></div>
+
+<script>
+const planSha = "c012663a9f0f94e91257d83530eadb7988ade7e3b1f19706f271c653be248ccc";
+const planPath = "docs/plans/vlm-step6-pathology-live-substrate.md";
+const planBranch = "main (plan not yet branched)";
+
+mermaid.initialize({ startOnLoad: false, theme: 'neutral', flowchart: { useMaxWidth: false } });
+
+const OQS = [
+  {
+    id: 1,
+    title: "Per-slide table choice",
+    body: "Defaulting to diagnostic_wsi_slides_for_embedding (clean, deduped) over diagnostic_tasks (long-format, would need dedup logic here). Flag, not fully locked — cheap to revisit at VM time if the manifest table is missing a needed column."
+  },
+  {
+    id: 2,
+    title: "Preset scope",
+    body: "Only path_full is actually enabled in configs/all_tasks.yaml today (path / path_image_and_report are commented out, :86-87). The loader fix is automatic for all three (shared code path); Phase 3's QA render covers path_full at minimum. Re-enabling the other two in config is optional, decide after Phase 3's QA looks clean."
+  },
+  {
+    id: 3,
+    title: "Known vista_bench-side caveats this plan inherits, doesn't fix",
+    body: "Worth naming in the updated docs so this isn't rediscovered later: WSI coverage only from ~2022+ (~770/~9,350 persons); stain classifier only ~2/3 coverage (unknown-stain fallback, graceful); the leak-safe removal-gated window is dormant by default — production pathology is a leakage-tolerant [dx−180, dx+180] window by design, not something to second-guess here; readmission task has zero pathology linkage; radiation task's pathology columns are all-NULL (predates 2022 WSI); is_metastatic_llm is registered but not materialized — won't appear in diagnostic_tasks; only ~2,748 of ~747,603 pathology-titled notes are WSI-linked, so path_note_text coverage is a small fraction of total pathology report volume."
+  },
+  {
+    id: 4,
+    title: "PHI project boundary",
+    body: "All pathology sourcing reads OMOP_CDM_ROOT_PHI (som-rit-phi-oncology-prod); no de-identified WSI source exists yet (a separate, unmerged vista_bench probe confirmed the de-id release's WSI table is a non-bridging 50-row stub). The old frozen CSV's data originally came from this same PHI-scoped source via a one-off hand export, so credential access should already exist — confirmed as a VM Step 0 precondition, not assumed."
+  }
+];
+
+function renderOQs() {
+  const c = document.getElementById('oq-container');
+  c.innerHTML = OQS.map(oq => `
+    <div class="oq-card" data-oq="${oq.id}">
+      <div class="oq-head">
+        <strong>OQ${oq.id}: ${oq.title}</strong>
+        <select data-oq-status="${oq.id}">
+          <option value="pending">Pending</option>
+          <option value="resolved">Resolved</option>
+          <option value="deferred">Deferred</option>
+        </select>
+      </div>
+      <p style="font-size:.86rem; margin:.5rem 0 0;">${oq.body}</p>
+      <textarea data-oq-notes="${oq.id}" placeholder="Notes on OQ${oq.id}..."></textarea>
+    </div>
+  `).join('');
+}
+renderOQs();
+
+// ---- localStorage persistence ----
+const LS_PREFIX = `explain-plan::vlm-step6-pathology::${planSha.slice(0,16)}::`;
+
+function restoreState() {
+  document.querySelectorAll('textarea.section-feedback').forEach(t => {
+    const v = localStorage.getItem(LS_PREFIX + 'section::' + t.dataset.section);
+    if (v) t.value = v;
+    t.addEventListener('input', () => { localStorage.setItem(LS_PREFIX + 'section::' + t.dataset.section, t.value); updateBadge(); });
+  });
+  document.querySelectorAll('[data-oq-status]').forEach(sel => {
+    const v = localStorage.getItem(LS_PREFIX + 'oq-status::' + sel.dataset.oqStatus);
+    if (v) sel.value = v;
+    sel.addEventListener('change', () => { localStorage.setItem(LS_PREFIX + 'oq-status::' + sel.dataset.oqStatus, sel.value); updateBadge(); });
+  });
+  document.querySelectorAll('[data-oq-notes]').forEach(t => {
+    const v = localStorage.getItem(LS_PREFIX + 'oq-notes::' + t.dataset.oqNotes);
+    if (v) t.value = v;
+    t.addEventListener('input', () => { localStorage.setItem(LS_PREFIX + 'oq-notes::' + t.dataset.oqNotes, t.value); updateBadge(); });
+  });
+  const gf = document.getElementById('global-feedback');
+  const gv = localStorage.getItem(LS_PREFIX + 'global');
+  if (gv) gf.value = gv;
+  gf.addEventListener('input', () => { localStorage.setItem(LS_PREFIX + 'global', gf.value); updateBadge(); });
+  updateBadge();
+}
+
+function updateBadge() {
+  let n = 0;
+  document.querySelectorAll('textarea.section-feedback').forEach(t => { if (t.value.trim()) n++; });
+  document.querySelectorAll('[data-oq-notes]').forEach(t => { if (t.value.trim()) n++; });
+  const gf = document.getElementById('global-feedback');
+  if (gf.value.trim()) n++;
+  document.getElementById('copy-feedback-btn').textContent = `Copy feedback (${n} pending)`;
+}
+
+function copyFeedback() {
+  let out = `# Resume: apply explain-plan feedback\nPlan: ${planPath} · branch: ${planBranch} · plan-sha: ${planSha.slice(0,12)}\n`;
+  out += `→ If you're picking this up in a fresh session, read the plan doc above (plus any related docs / memory it points to) first. Then apply the feedback below.\n\n`;
+  out += `# Feedback on vlm-step6-pathology-live-substrate\n\n`;
+  document.querySelectorAll('textarea.section-feedback').forEach(t => {
+    if (t.value.trim()) out += `## ${t.dataset.section}\n${t.value.trim()}\n\n`;
+  });
+  OQS.forEach(oq => {
+    const status = document.querySelector(`[data-oq-status="${oq.id}"]`).value;
+    const notes = document.querySelector(`[data-oq-notes="${oq.id}"]`).value.trim();
+    if (notes || status !== 'pending') {
+      out += `## OQ${oq.id}\nStatus: ${status.charAt(0).toUpperCase() + status.slice(1)}\n${notes}\n\n`;
+    }
+  });
+  const gf = document.getElementById('global-feedback').value.trim();
+  if (gf) out += `## Overall\n${gf}\n\n`;
+  navigator.clipboard.writeText(out).then(() => showToast('Feedback copied to clipboard'));
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// ---- diagram pan/zoom ----
+const panZoomInstances = {};
+function resetZoom(key) {
+  const inst = panZoomInstances[key];
+  if (inst) { inst.resetZoom(); inst.center(); }
+}
+function toggleFullscreen(wrapId) {
+  const el = document.getElementById(wrapId);
+  el.classList.toggle('fullscreen');
+  const key = wrapId.replace('dw-', '');
+  setTimeout(() => { const inst = panZoomInstances[key]; if (inst) { inst.resize(); inst.fit(); inst.center(); } }, 60);
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.diagram-wrap.fullscreen').forEach(el => el.classList.remove('fullscreen'));
+  }
+});
+
+async function initDiagrams() {
+  await mermaid.run({ querySelector: 'pre.mermaid' });
+  [['repomap','mm-repomap'], ['blast','mm-blast'], ['order','mm-order']].forEach(([key, id]) => {
+    const svg = document.querySelector('#' + id + ' svg');
+    if (!svg) return;
+    svg.removeAttribute('style');
+    svg.style.maxWidth = 'none';
+    panZoomInstances[key] = svgPanZoom(svg, { minZoom: 0.3, maxZoom: 8, fit: true, center: true, controlIconsEnabled: false });
+  });
+  window.addEventListener('resize', () => {
+    Object.values(panZoomInstances).forEach(inst => { inst.resize(); inst.fit(); inst.center(); });
+  });
+}
+
+initDiagrams();
+restoreState();
+</script>
+</body>
+</html>

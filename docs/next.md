@@ -46,8 +46,13 @@ pruned (local + remote).
 
 ## Live follow-ups (roadmap not-yet-built)
 
+- **Step 6 — pathology substrate modernization (Draft, not yet implemented)** — pathology still
+  reads a frozen, hand-generated `v1_3` CSV (2 dataset versions behind); this bumps the whole repo
+  to `vista_bench_v1_6` (re-verifying CT/EHR/text first) and adds the first live BQ pathology query
+  → [plans/vlm-step6-pathology-live-substrate.md](plans/vlm-step6-pathology-live-substrate.md) ·
+  companion [`.html`](plans/vlm-step6-pathology-live-substrate.html), Reviewed: No.
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
-  assembly path is deferred behind Phase 2.
+  assembly path is deferred behind Phase 2. Phil flagged wanting this "soon," once Step 6 lands.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
