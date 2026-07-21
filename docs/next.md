@@ -60,8 +60,9 @@ pruned (local + remote).
   on the Mac (2026-07-21):** Step 0b retargeted at `progression_recurrence_free_survival_1_yr` —
   the one task whose non-suffixed source table actually resolves in both dataset versions, and
   already the exact task `configs/all_tasks.rung0.yaml` declares (see the plan's Phase 0
-  Verification & VM handoff section). NEXT: `/vm-handoff` re-run of Step 0b with the corrected
-  vehicle → Phase 1.
+  Verification & VM handoff section). **VM smoke pending:**
+  [docs/vm-status/2026-07-21-c3351ef.md](vm-status/2026-07-21-c3351ef.md) — Step 0b re-run with the
+  corrected vehicle → Phase 1.
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2. Phil flagged wanting this "soon," once Step 6 lands.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
