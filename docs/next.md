@@ -28,56 +28,26 @@ Landed `main` `166e7f9` (ff-only, branch `feat/phase2-config-context-viewer` pru
 [plans/vlm-phase2-config-context-viewer.md](plans/vlm-phase2-config-context-viewer.md).
 Side-by-side layout deferred (single-column first cut).
 
+## ✅ Landed to `main` — Step 5 LUMIA-live EHR adapter (2026-07-21)
+
+Live LUMIA `.xml` render replaces frozen `patient_string` CSV substitution, wired into the
+`no_image`/`no_report`/`axial_all_image` presets. Five rounds of class-3 deviations on the
+byte-diff-to-legacy gate (demographics/flowsheet parser bugs, render-alignment field-label +
+interval-split issues, a 24mo window-scope mismatch, a LOINC/cross-vocabulary provenance
+divergence) — see [plans/README.md](plans/README.md) for the full round-by-round history. Round 5
+retired the byte-diff-to-legacy comparison entirely as structurally unpassable (systemic
+data-provenance divergence between legacy's frozen snapshot and the live LUMIA corpus, not a
+render bug) and made **Phase 2's human visual-QA render the whole landing gate**
+([plans/vlm-step5-lumia-gate-retirement-replan.md](plans/vlm-step5-lumia-gate-retirement-replan.md)).
+VM smoke PASS on `phil-sllm-01` (all 3 mandatory experiments clean, correct card/image counts, no
+STOP/traceback — [docs/vm-status/2026-07-20-828e570.md](vm-status/2026-07-20-828e570.md)); Phil
+read all three HTML files himself. Landed `main` `df0723d`, branch `feat/lumia-live-ehr-adapter`
+pruned (local + remote).
+
 ## Live follow-ups (roadmap not-yet-built)
 
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2.
-- **Step 5 — LUMIA-live EHR adapter** — on `feat/lumia-live-ehr-adapter`; three rounds of class-3
-  render-alignment deviations, each root-caused + re-planned (see [plans/README.md](plans/README.md)
-  for the full history). The render-alignment plan's interval-split hypothesis was VM-refuted
-  (4.0% attribution, `<50%` STOP — [docs/vm-status/2026-07-20-7ed0248.md](vm-status/2026-07-20-7ed0248.md)).
-  Real cause + fix (config-driven 24mo window crop, matching legacy's actual scope) in
-  [plans/vlm-step5-lumia-window-scope-replan.md](plans/vlm-step5-lumia-window-scope-replan.md),
-  Codex-reviewed + Phil-approved via `/explain-plan` (2026-07-20). Approach #1-4 implemented +
-  landed Mac-side (`a58f5f9`). VM Phase-1 re-verify **DONE, band-3 STOP** (`b88947b`,
-  [docs/vm-status/2026-07-20-a58f5f9.md](vm-status/2026-07-20-a58f5f9.md)): 24mo window crop is a
-  large partial fix (live/legacy ratio 1.93→1.13, excess 7990→2779) but `total_excess_lines=2779
-  > ~2500` → a second cause remains; Phase 2 visual-QA **not run** (gated off). Residual is
-  overwhelmingly **LOINC lab lines** (2724 of the excess). Planner-side git archaeology exhausted
-  the rendering-code explanations (no LOINC-specific code anywhere in the transform stack; live's
-  only relevant transforms are dedup-only) and found a new hypothesis: legacy and live may read
-  from **two different underlying data extractions** (different source paths, no shared ancestry
-  visible from either repo). Round 4 plan:
-  [plans/vlm-step5-lumia-loinc-provenance-replan.md](plans/vlm-step5-lumia-loinc-provenance-replan.md)
-  — a code-bypassing raw LOINC event-count check across the 20 already-banked persons.
-  **VM BLOCKED (class-3) — see doc:** [docs/vm-status/2026-07-20-3206e84.md](vm-status/2026-07-20-3206e84.md).
-  Step 2's raw-legacy leg is unrunnable on the VM: `thoracic_cohort_meds_femr_db` is not staged on
-  any mount and `meds_reader` isn't a resolvable dep (fails to build under `uv`). Step 1 provenance
-  is *suggestive* (only on-VM stamped extraction is aug-2025; legacy is a Feb-2026 frozen snapshot,
-  absent) but not the LOINC-domain confirmation. **Re-planned + resolved on the Mac 2026-07-20**
-  (plan's new `## Resolution` section): Phil accepted Step 1's suggestive evidence given Step 2 is
-  a dead end without material infra investment — declares the LOINC residual (2724/2779 excess
-  lines) a **permanent data-provenance divergence** (same treatment as `STANFORD_OBS`) and **pivots
-  Step 5's landing gate to Phase 2 human visual-QA as the primary check**. Ryan-D'Cunha escalation
-  (OQ1b) explicitly NOT pursued now. **VM smoke BLOCKED (class-3 deviation) @ `9814abd`:**
-  [docs/vm-status/2026-07-20-loinc-closing-verification.md](vm-status/2026-07-20-loinc-closing-verification.md)
-  — byte-diff gate FAILS even with `LOINC/` excluded (40 field mismatches / 20 rows). Masked
-  readback shows the residual is **systemic cross-vocabulary event-set vintage divergence** (~52–55%
-  of each arm's events unmatched at event-identity level; 0 formatting/timestamp explanation), **not**
-  a render bug and **not** enumerable-excludable. Confirms the pivot: **retire the strict byte-diff as
-  Step 5's landing gate for the LUMIA-live arm**; rely on Phase 2 human visual-QA (`context_viewer.py`).
-  **Round 5 re-plan resolved on the Mac 2026-07-20**
-  ([plans/vlm-step5-lumia-gate-retirement-replan.md](plans/vlm-step5-lumia-gate-retirement-replan.md)):
-  **Phil's call — drop the legacy byte-diff comparison entirely**, not even kept as an
-  informational re-run; Step 3's readback stands as the final byte-diff report for this branch.
-  Phase 2's human visual-QA render is now Step 5's **whole landing gate**, un-gated from Phase 1
-  (Phase 2 was specified back in round 3 but never run — Phase 1 kept re-opening across rounds
-  2-4). **VM smoke PASS** @ `9a17450`:
-  [docs/vm-status/2026-07-20-828e570.md](vm-status/2026-07-20-828e570.md) — all 3 mandatory Phase 2
-  experiments (`no_image`/`no_report`/`axial_all_image`) rendered clean on `phil-sllm-01`, first
-  time run: exit 0, 5 cards each, populated token bars, self-contained (`data:` URIs only),
-  `axial_all_image` exactly 30 slices/card, no `STOP:`/traceback (1 of 5 patients legitimately
-  imageless). **NEXT:** Phil reads the 3 HTML files himself (the sole remaining landing gate) → `/land`.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 

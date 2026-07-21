@@ -2,7 +2,10 @@ Reference: docs/claude_ops.md
 
 # vista_eval_vlm — Step 5 re-plan #5: retire byte-diff-to-legacy as the landing gate
 
-**Status: Resolved by Phil's decision** (2026-07-20) — see **## Open Questions** below.
+**Status: Completed** (2026-07-21) — landed to `main` `df0723d`. Resolved by Phil's decision
+(2026-07-20) — see **## Open Questions** below; Phase 2 human visual-QA render ran clean on
+`phil-sllm-01` (`docs/vm-status/2026-07-20-828e570.md`) and Phil read all three HTML files
+himself, satisfying the landing gate this plan defines.
 
 ## Context
 
