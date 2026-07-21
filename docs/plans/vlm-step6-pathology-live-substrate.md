@@ -30,10 +30,11 @@ converged on.
 
 ## Goal
 
-Replace the frozen v1_3 pathology CSV with a live BigQuery-sourced pathology slide manifest
-(mirroring the CT adapter's live-BQ-with-local-cache pattern), on the current `vista_bench_v1_6`
-substrate, so pathology inference reflects real, current slide-linking + labels instead of a
-2-versions-stale, one-off hand export — and re-tile whatever slide delta that surfaces.
+Replace the frozen v1_3 pathology CSV with pathology cohort rows pulled the **same way CT/EHR/text
+already are** — live BQ, task-scoped, via the existing `_load_task_data`/`fetch_task_data_from_bq`
+machinery — sourced from the current `vista_bench_v1_6.diagnostic_tasks` table, so pathology
+inference reflects real, current slide-linking + labels instead of a 2-versions-stale, one-off hand
+export. Re-tile whatever slide delta that surfaces.
 
 ## Approach — 4 phases, each gating the next
 
@@ -43,16 +44,26 @@ this doesn't silently break CT/EHR/text, which are pinned to v1_5-derived golden
 (including Step 5's just-landed live-EHR-adapter work). Cheap-before-expensive: a schema-diff
 first, a scoped byte-diff re-bank second.
 
-**Phase 1 — Live pathology manifest query + coverage/tiling-gap characterization**
-Add a new BQ query path for pathology (there isn't one today — `subsample_v1_3_path.py` never
-queries BQ at all) targeting `vista_bench_v1_6.diagnostic_wsi_slides_for_embedding` — the deduped,
-one-row-per-slide manifest (`path_image_path` + `(accession, specimen, block, slide)` identity),
-not the long-format `diagnostic_tasks` (would need in-repo dedup). Rewrite
-`_load_path_task_data` (`run_bq.py:477`) to mirror `_load_task_data`'s pattern: local-cache-first,
-else live BQ (`run_bq.py:250-343`, `fetch_task_data_from_bq`). Characterize the gap this surfaces:
-how the new manifest's person/slide set compares to the old v1_3 CSV, and — critically — how many
-resolved `path_image_path` values have **no existing tile folder** under `test_patch/` (the old
-tiles were only ever generated for v1_3-selected slides).
+**Phase 1 — Reuse the existing task-scoped BQ loader for pathology + coverage/tiling-gap
+characterization**
+**Revised per Phil's feedback:** no new BQ query function needed. Every other modality resolves
+its BQ table purely from `task_source_csv` in `valid_tasks.json` (`WHERE task = @task_name`,
+`docs/00-data-setup.md:21`) — pathology should mirror this instead of introducing a separate
+deduped manifest table. Since `vista_bench`'s pathology-tagged `diagnostic`-group tasks (`stage`,
+`histologic_type` + subtypes, `pdl1_expression`, metastases, the `_llm` suite) are already
+materialized into `vista_bench_v1_6.diagnostic_tasks`, pathology tasks' `task_source_csv` almost
+certainly already resolves to `diagnostic_tasks` — **VM Step 0 of this phase confirms this against
+the live `valid_tasks.json`** (not assumed; that file lives on the VM, not this repo). If
+confirmed, `_load_path_task_data` (`run_bq.py:477`) can call `_load_task_data`
+(`run_bq.py:250-343`) directly — the exact function CT/EHR/text already use, local-cache-first,
+else live BQ — with **no bespoke pathology query code at all**. The task-filtered rows are already
+one-per-person-per-task (same as every other modality), so the dedup concern that originally
+motivated a separate manifest table doesn't apply once rows are pulled this way. After the live
+rows come back, apply the existing `PathologyAdapter.materialize(...)` post-processing (tile-folder
+resolution + seeded sampling) unchanged. Characterize the gap this surfaces: how the new
+`diagnostic_tasks`-sourced person/slide set compares to the old v1_3 CSV, and — critically — how
+many resolved `path_image_path` values have **no existing tile folder** under `test_patch/` (the
+old tiles were only ever generated for v1_3-selected slides).
 
 **Phase 2 — VM-side re-tiling for the delta (gated on Phase 1's coverage numbers)**
 Reuse existing tooling unchanged: `download_path_subsampled.py` (already a repeatable CLI, just
@@ -60,22 +71,27 @@ point it at an exported manifest CSV for the delta slides) → `tile_wsi.py` (al
 MedGemma-spec correct — the roadmap plan calls this "canonical and good", no changes needed).
 Machine class depends on delta size, decided from Phase 1's count (see Verification section).
 
-**Phase 3 — Wire + human-QA + docs**
-Confirm the presets render correctly via the existing config-context viewer (same weight-free QA
-mechanism Step 5 used) — this is the landing gate, since there's no legacy pathology baseline to
-byte-diff against. Update the three stale docs to describe the live-pull flow instead of the v1_3
-CSV flow.
+**Phase 3 — Wire one preset, QA all three + docs**
+**Per Phil's feedback:** start with `path_full` as the one actively wired/enabled preset in
+`configs/all_tasks.yaml` (matching today's production config), but QA-render **all three** —
+`path`, `path_image_and_report`, `path_full` — via the existing config-context viewer (same
+weight-free QA mechanism Step 5 used), since the loader fix is shared code and all three should be
+confirmed working even if only one ships enabled. This is the landing gate, since there's no legacy
+pathology baseline to byte-diff against. Update the three stale docs to describe the live-pull flow
+instead of the v1_3 CSV flow.
 
 ## Files to Modify
 
-- `src/data_tools/utils/query_utils.py` — bump `VISTA_BENCH_DATASET` (line 257) v1_5→v1_6; add a
-  new `fetch_pathology_manifest_from_bq(...)` mirroring `fetch_task_data_from_bq`, querying
-  `{VISTA_BENCH_DATASET}.diagnostic_wsi_slides_for_embedding`.
-- `src/data_tools/utils/task_data_utils.py` — add a cache-path resolver for the pathology manifest
-  (mirrors `resolve_local_bq_cache_path`, `:12-14`), replacing `resolve_path_subsampled_csv_path`'s
-  hardcoded `v1_3` path as the sole source.
-- `src/vista_run/run_bq.py` — rewrite `_load_path_task_data` (~477-548) to the cache-then-live
-  pattern; `_load_path_full_task_data` (~550) needs no change, it wraps the above.
+- `src/data_tools/utils/query_utils.py` — bump `VISTA_BENCH_DATASET` (line 257) v1_5→v1_6. **No new
+  query function** (revised — see Phase 1): pathology reuses `fetch_task_data_from_bq` as-is.
+- `src/data_tools/utils/task_data_utils.py` — **no change expected** (revised — see Phase 1):
+  pathology reuses the existing `resolve_local_bq_cache_path` (`:12-14`), same cache path CT/EHR/
+  text already use, once `_load_path_task_data` routes through `_load_task_data`. Only touch this
+  file if VM Step 0 finds pathology's `task_source_csv` does NOT already resolve to
+  `diagnostic_tasks` and a fallback path is needed.
+- `src/vista_run/run_bq.py` — rewrite `_load_path_task_data` (~477-548) to call `_load_task_data`
+  directly (mirroring CT/EHR/text), then apply the existing `PathologyAdapter.materialize(...)` on
+  the returned rows; `_load_path_full_task_data` (~550) needs no change, it wraps the above.
 - `src/data_tools/path_tools/download_path_subsampled.py` — minor: point its manifest-CSV input at
   the new BQ-exported manifest (already has `--v1-3-base`/`--download-dir`/`--dry-run` args,
   `:226-258` — likely just a default/doc change, not new code).
@@ -89,27 +105,39 @@ CSV flow.
 
 ## Open Questions
 
-- **Per-slide table choice** — defaulting to `diagnostic_wsi_slides_for_embedding` (clean,
-  deduped) over `diagnostic_tasks` (long-format, would need dedup logic here). Flag, not fully
-  locked — cheap to revisit at VM time if the manifest table is missing a needed column.
-- **Preset scope** — only `path_full` is actually enabled in `configs/all_tasks.yaml` today (`path`
-  / `path_image_and_report` are commented out, `:86-87`). The loader fix is automatic for all
-  three (shared code path); Phase 3's QA render covers `path_full` at minimum. Re-enabling the
-  other two in config is optional, decide after Phase 3's QA looks clean.
-- **Known vista_bench-side caveats this plan inherits, doesn't fix** (worth naming in the updated
-  docs so this isn't rediscovered later): WSI coverage only from ~2022+ (~770/~9,350 persons);
-  stain classifier only ~2/3 coverage (unknown-stain fallback, graceful); the leak-safe
-  removal-gated window is dormant by default — production pathology is a leakage-tolerant
-  `[dx−180, dx+180]` window by design, not something to second-guess here; readmission task has
-  zero pathology linkage; radiation task's pathology columns are all-NULL (predates 2022 WSI);
-  `is_metastatic_llm` is registered but **not materialized** — won't appear in `diagnostic_tasks`,
-  don't expect it in the pathology-fed presets; only ~2,748 of ~747,603 pathology-titled notes are
-  WSI-linked, so `path_note_text` coverage is a small fraction of total pathology report volume.
-- **PHI project boundary** — all pathology sourcing reads `OMOP_CDM_ROOT_PHI`
-  (`som-rit-phi-oncology-prod`); no de-identified WSI source exists yet (a separate, unmerged
-  `vista_bench` probe confirmed the de-id release's WSI table is a non-bridging 50-row stub). The
-  old frozen CSV's data originally came from this same PHI-scoped source via a one-off hand export,
-  so credential access should already exist — confirmed as a VM Step 0 precondition, not assumed.
+- **Per-slide table choice — RESOLVED (Phil, 2026-07-21): use `diagnostic_tasks`.** "Already linked
+  to tasks; should mirror what the radiology is doing... shared logic here almost certainly." This
+  is the bigger decision it looks like — see the rewritten Phase 1 / Files to Modify above:
+  pathology reuses the existing `_load_task_data`/`fetch_task_data_from_bq` machinery with **zero
+  new BQ query code**, sourced from `diagnostic_tasks` (task-filtered rows are already
+  one-per-person-per-task, so the dedup concern that motivated the original manifest-table default
+  doesn't apply). VM Step 0 of Phase 1 confirms pathology's `task_source_csv` registry entry
+  actually resolves to `diagnostic_tasks` before relying on it.
+- **Preset scope — RESOLVED (Phil): "let's start with one but test all."** `path_full` stays the
+  one actively wired/enabled preset in `configs/all_tasks.yaml` (matching today's production
+  config); Phase 3's QA render explicitly covers all three presets (`path`,
+  `path_image_and_report`, `path_full`) even though only one ships enabled.
+- **Known vista_bench-side caveats this plan inherits, doesn't fix — ACKNOWLEDGED (Phil:
+  "understood").** Naming in the updated docs so this isn't rediscovered later: WSI coverage only
+  from ~2022+ (~770/~9,350 persons); stain classifier only ~2/3 coverage (unknown-stain fallback,
+  graceful); the leak-safe removal-gated window is dormant by default — production pathology is a
+  leakage-tolerant `[dx−180, dx+180]` window by design, not something to second-guess here;
+  readmission task has zero pathology linkage; radiation task's pathology columns are all-NULL
+  (predates 2022 WSI); `is_metastatic_llm` is registered but **not materialized** — won't appear in
+  `diagnostic_tasks`, don't expect it in the pathology-fed presets; only ~2,748 of ~747,603
+  pathology-titled notes are WSI-linked, so `path_note_text` coverage is a small fraction of total
+  pathology report volume.
+- **PHI project boundary — CORRECTED (Phil, 2026-07-21): "approved. note this table IS deid
+  though."** The original framing overstated the PHI exposure here. `vista_bench_v1_6.diagnostic_tasks`
+  (like `vista_bench_v1_5`/`v1_6` generally) lives in the **already-de-identified**
+  `som-nero-plevriti-deidbdf` project — the same project + credential scope CT/EHR/text already
+  query today. The raw-PHI sourcing (`OMOP_CDM_ROOT_PHI`/`som-rit-phi-oncology-prod`,
+  `_whole_slide_imaging_alpha`) happens **upstream, inside `vista_bench`'s own producer pipeline**,
+  materializing into the de-identified table — that's out of scope for this plan entirely. This
+  plan's live query touches no new PHI boundary and needs no new credential access beyond what
+  already works for CT/EHR/text. (Downstream WSI-tile *pixel* storage/access via `path_image_path`
+  is unchanged from the existing pipeline either way — not a new consideration this plan
+  introduces.)
 
 ## Verification & VM handoff
 
@@ -132,13 +160,20 @@ large — sized from Phase 1's count (decision gate below); if small, stays on C
 - **Decision gate:** Phase 0 clean → proceed to Phase 1. Phase 0 red → STOP, re-plan; pathology
   work does not proceed on top of an unverified dataset bump.
 
-**Phase 1 — live manifest + coverage characterization**
-- Exercise the new loader for one pathology task (structural: non-empty df, `path_image_path`
-  populated) + a coverage report: old-CSV persons vs new-manifest persons (added/dropped), and a
-  count of resolved `path_image_path` values with no existing tile folder under `test_patch/`.
-  **Expected:** loader succeeds; report produced with concrete numbers.
-  **Stop:** BQ access/credential failure on the PHI-scoped project — surfaces the Open Questions
-  precondition; report back.
+**Phase 1 — reuse existing loader + coverage characterization**
+- Step 1a (cheap, structural): confirm a pathology task's `task_source_csv` entry in the live
+  `valid_tasks.json` resolves to `diagnostic_tasks`.
+  **Expected:** confirmed as assumed.
+  **Stop:** it resolves to something else — do not silently adapt; report back with the actual
+  value so the Files-to-Modify list (a fallback cache-path resolver) can be revisited.
+- Step 1b: exercise `_load_task_data` for one pathology task through the now-rewritten
+  `_load_path_task_data` (structural: non-empty df, `path_image_path` populated) + a coverage
+  report: old-CSV persons vs new `diagnostic_tasks`-sourced persons (added/dropped), and a count of
+  resolved `path_image_path` values with no existing tile folder under `test_patch/`.
+  **Expected:** loader succeeds (same de-identified project/credentials CT/EHR/text already use —
+  see the corrected PHI Open Question); report produced with concrete numbers.
+  **Stop:** BQ access failure — unexpected, since this reuses an already-working credential path;
+  report back if it happens.
 - **Decision gate (pre-encoded, resolves inline — no round-trip needed):** if the no-local-tile
   count is small (<~10% of resolved slides) → Phase 2 is a quick top-up, stays on Claude-Code CPU.
   If large (most slides are new) → Phase 2 is a real bulk job, route to `phil-hcpu`, readback on
@@ -149,19 +184,22 @@ large — sized from Phase 1's count (decision gate below); if small, stays on C
   **Expected:** new tile folders appear under `test_patch/<folder>/` for delta slides; no errors.
   **Stop:** systemic (not isolated-row) GCS/OpenSlide failures.
 
-**Phase 3 — wire + human-QA (landing gate)**
-- Config-context viewer render for `path_full` (+ `path` if re-enabled) on a small N — same
-  mechanism and PHI-crossing discipline as Step 5's Phase 2: report file paths / existence / card
-  counts / exit codes only, never rendered content. **Phil reads the HTML himself** — that's the
-  landing gate, same as Step 5.
-  **Expected:** HTML renders clean, self-contained, non-empty tiles/prompt per card, no
+**Phase 3 — wire one, QA all three (landing gate)**
+- Config-context viewer render for **all three** presets (`path`, `path_image_and_report`,
+  `path_full`) on a small N — same mechanism and PHI-crossing discipline as Step 5's Phase 2:
+  report file paths / existence / card counts / exit codes only, never rendered content.
+  `path`/`path_image_and_report` may need a temporary config declaration to render (the viewer
+  validates `--experiment` against the config's declared list) even though only `path_full` ships
+  enabled in the landed config. **Phil reads all three HTML files himself** — that's the landing
+  gate, same as Step 5.
+  **Expected:** all three HTMLs render clean, self-contained, non-empty tiles/prompt per card, no
   STOP/traceback.
-  **Stop:** same criteria pattern as Step 5's Phase 2.
+  **Stop:** same criteria pattern as Step 5's Phase 2, for any of the three.
 
 ## Landing & cleanup
 
 - **Branch:** `feat/vlm-step6-pathology-live-substrate` (feature branch — touches shared cohort
-  infra + PHI-scoped query code, not a doc-only/minor fix).
+  infra, not a doc-only/minor fix).
 - **Landing gate:** Phases 0–3 all VM-green + Phil's manual QA read of the pathology viewer HTML.
 - **Merge sequence:** single-branch plan → `/land` at the end (no sibling branches currently touch
   these files, per the earlier Step-5 `/land` sibling scan).
