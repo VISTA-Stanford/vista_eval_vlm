@@ -48,7 +48,12 @@ first, a scoped byte-diff re-bank second.
 and passed. Step 0b's original byte-diff vehicle turned out to be unrunnable (a pre-existing
 `vista_bench` registry issue, not a bump problem) and was retargeted — see the Verification & VM
 handoff section below for the corrected vehicle and full detail
-(`docs/vm-status/2026-07-21-ac1561a.md`).
+(`docs/vm-status/2026-07-21-ac1561a.md`). The retargeted vehicle then hit a second class-3
+deviation: `diff_golden --mode strict` failed on an index-set mismatch even though a person_id-keyed
+inline re-comparison proved the bump is a content no-op — `diff_golden` hard-joined on the
+positional `index` field, which shifts across a row-count-changing dataset bump. Fixed at the tool's
+default (`diff_golden.py` now joins on `person_id`, no new CLI flag) — see the Verification & VM
+handoff section below and `docs/vm-status/2026-07-21-c3351ef.md`.
 
 **Phase 1 — Reuse the existing task-scoped BQ loader for pathology + coverage/tiling-gap
 characterization**
@@ -178,8 +183,26 @@ large — sized from Phase 1's count (decision gate below); if small, stays on C
   task whose non-suffixed source table (`progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr`)
   actually resolves in both dataset versions — see `docs/vm-status/2026-07-21-ac1561a.md` for the
   full finding.
-  **Expected:** byte-identity holds for CT/EHR/text content.
-  **Stop:** unexpected divergence in CT/EHR/text content — report back, do not proceed to Phase 1.
+  **(Re-plan 2026-07-21, second correction):** running that command on the VM, banking succeeded
+  (5 rows × 2 experiments, both dataset versions) and a person_id-keyed inline re-comparison proved
+  CT/EHR/text content byte-identical for all 5 shared patients — but the prescribed
+  `diff_golden --mode strict` gate itself returned `GATE FAILURE`: it hard-joins BEFORE/AFTER on the
+  `index` field, which is a positional BQ row enumeration (`df['index'] = df.index` in
+  `run_bq.py`), not a stable identity key — a row-count-changing bump (the source table's 32→38
+  columns shifted row order) moves every `index` even for unchanged patients, so the `--limit 5`
+  smoke saw a 0-row intersection. See `docs/vm-status/2026-07-21-c3351ef.md` for the full finding
+  and the VM's recommendation. **Fix (this re-plan):** `diff_golden.py` now joins on `person_id`
+  (every golden record already carries it; task tables are one-row-per-person, so it's the actual
+  identity key) instead of `index` — fixed as the tool's default per "fix defaults, not call
+  sites," not a new `--join-key` flag every caller would need to remember. No command-line change:
+  the exact command below is unchanged and is now expected to pass. `_load` still errors loudly on
+  a duplicate `person_id` within one file, so this can't silently mask a violation of the
+  one-row-per-person invariant.
+  **Expected:** byte-identity holds for CT/EHR/text content — `diff_golden --mode strict` prints
+  `RESULT: ALL GATES PASS` for both experiments.
+  **Stop:** unexpected divergence in CT/EHR/text content, or a `duplicate person_id` error (would
+  mean the one-row-per-person invariant doesn't hold for this task) — report back, do not proceed
+  to Phase 1.
 - **Decision gate:** Phase 0 clean → proceed to Phase 1. Phase 0 red → STOP, re-plan; pathology
   work does not proceed on top of an unverified dataset bump.
 
