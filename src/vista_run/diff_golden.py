@@ -2,7 +2,7 @@
 
 Consumes two JSONL files produced by ``golden_harness.py`` (a BEFORE / legacy
 baseline and an AFTER / post-3b capture) for the *same* (task, experiment, model),
-joins them on ``index``, and applies the plan's verification gates:
+joins them on ``person_id``, and applies the plan's verification gates:
 
 - **Structure (hard, always):** ``image_hashes``, ``selected_indices``,
   ``image_count``, ``path_tile_count``, ``assembly_mode`` must be byte-identical.
@@ -53,6 +53,19 @@ verifies it byte-for-byte. Added for the demographics fix (``MEDS_BIRTH``/``Ethn
 legacy-vintage omission, not a bug), so those rows can't prove a byte match for a class
 that was never captured in the baseline — but rows where legacy *does* carry it still get
 verified.
+
+The join key is ``person_id``, not ``index``. ``index`` (``golden_harness``'s ``ex.index``)
+is a positional BQ row enumeration (``df['index'] = df.index`` in ``run_bq.py``) — stable
+only when BEFORE/AFTER share the exact same query row count and order. A dataset-version
+bump that adds/reorders source rows shifts every downstream ``index`` even for patients
+whose content is unchanged, so an index join across such a bump yields a spuriously empty
+intersection (found the hard way diffing the v1_5→v1_6 bump, Step 6 Phase 0 Step 0b:
+content was proven byte-identical, but the index join produced 0 shared rows). Every task
+table is one-row-per-person (``vista_bench``'s task-registry invariant — see
+``docs/plans/vlm-step6-pathology-live-substrate.md``), so ``person_id`` is the actual
+identity key and is stable regardless of row-count/order changes upstream; ``_load`` still
+errors loudly on a duplicate ``person_id`` within one file, so this doesn't silently paper
+over a real violation of that invariant.
 """
 
 import argparse
@@ -117,7 +130,7 @@ def strip_if_legacy_missing(bv, av, patterns):
 
 
 def _load(path):
-    """Load a golden JSONL into {index: record}; error on duplicate indices."""
+    """Load a golden JSONL into {person_id: record}; error on duplicate person_ids."""
     rows = {}
     with open(path) as f:
         for line_no, line in enumerate(f, 1):
@@ -125,10 +138,10 @@ def _load(path):
             if not line:
                 continue
             rec = json.loads(line)
-            idx = rec.get("index")
-            if idx in rows:
-                raise SystemExit(f"{path}:{line_no}: duplicate index {idx!r} — golden must be unique per index")
-            rows[idx] = rec
+            pid = rec.get("person_id")
+            if pid in rows:
+                raise SystemExit(f"{path}:{line_no}: duplicate person_id {pid!r} — golden must be one row per person")
+            rows[pid] = rec
     return rows
 
 
@@ -151,8 +164,8 @@ def _constant_field(rows, field, path):
 def _check_compatible(before_rows, after_rows, before_path, after_path):
     """Refuse to diff two dumps that are not the same task / experiment / model.
 
-    The join is on `index` alone, so an accidental cross-experiment (or cross-model) pair would
-    otherwise produce a confidently-wrong gate report. Fail fast instead.
+    The join is on `person_id` alone, so an accidental cross-experiment (or cross-model) pair
+    would otherwise produce a confidently-wrong gate report. Fail fast instead.
     """
     for field in ("task", "experiment", "model_type"):
         b = _constant_field(before_rows, field, before_path)
@@ -179,12 +192,12 @@ def diff(before, after, mode, lenient, max_report, exclude_line_patterns=(), exc
     text_fail = []
     text_declared = []
 
-    for idx in shared:
-        b = before_rows[idx]
-        a = after_rows[idx]
+    for pid in shared:
+        b = before_rows[pid]
+        a = after_rows[pid]
         for field in STRUCTURE_FIELDS:
             if b.get(field) != a.get(field):
-                structure_fail.append((idx, field, b.get(field), a.get(field)))
+                structure_fail.append((pid, field, b.get(field), a.get(field)))
         for field in TEXT_FIELDS:
             bv, av = b.get(field), a.get(field)
             bv = strip_excluded_lines(bv, exclude_line_patterns)
@@ -193,14 +206,14 @@ def diff(before, after, mode, lenient, max_report, exclude_line_patterns=(), exc
             if bv == av:
                 continue
             if mode == "allowlist" and normalize_text(bv) == normalize_text(av):
-                text_declared.append((idx, field))
+                text_declared.append((pid, field))
             else:
-                text_fail.append((idx, field, bv, av))
+                text_fail.append((pid, field, bv, av))
 
     # ---- report ----
     print(f"BEFORE: {before}  ({len(before_rows)} rows)")
     print(f"AFTER : {after}  ({len(after_rows)} rows)")
-    print(f"mode  : {mode}    shared indices: {len(shared)}")
+    print(f"mode  : {mode}    shared person_ids: {len(shared)}")
     if exclude_line_patterns:
         print(f"exclude-line-patterns (declared-excluded, stripped from both sides): {list(exclude_line_patterns)}")
     if exclude_if_legacy_missing:
@@ -211,17 +224,17 @@ def diff(before, after, mode, lenient, max_report, exclude_line_patterns=(), exc
 
     if missing or extra:
         ok = False
-        print(f"[FAIL] index-set mismatch: {len(missing)} only-in-BEFORE, {len(extra)} only-in-AFTER")
-        for idx in list(sorted(missing, key=str))[:max_report]:
-            print(f"       only in BEFORE: index={idx!r}")
-        for idx in list(sorted(extra, key=str))[:max_report]:
-            print(f"       only in AFTER : index={idx!r}")
+        print(f"[FAIL] person_id-set mismatch: {len(missing)} only-in-BEFORE, {len(extra)} only-in-AFTER")
+        for pid in list(sorted(missing, key=str))[:max_report]:
+            print(f"       only in BEFORE: person_id={pid!r}")
+        for pid in list(sorted(extra, key=str))[:max_report]:
+            print(f"       only in AFTER : person_id={pid!r}")
 
     if structure_fail:
         ok = False
         print(f"[FAIL] structure drift (Gate 1/2, hard): {len(structure_fail)} field mismatches")
-        for idx, field, bv, av in structure_fail[:max_report]:
-            print(f"       index={idx!r} field={field}")
+        for pid, field, bv, av in structure_fail[:max_report]:
+            print(f"       person_id={pid!r} field={field}")
             print(f"         BEFORE: {_preview(bv)}")
             print(f"         AFTER : {_preview(av)}")
     else:
@@ -236,8 +249,8 @@ def diff(before, after, mode, lenient, max_report, exclude_line_patterns=(), exc
             ok = False
         print(f"[{label}] text drift ({mode}): {len(text_fail)} field mismatches "
               f"({'lenient — not failing' if lenient else 'hard'})")
-        for idx, field, bv, av in text_fail[:max_report]:
-            print(f"       index={idx!r} field={field}")
+        for pid, field, bv, av in text_fail[:max_report]:
+            print(f"       person_id={pid!r} field={field}")
             print(f"         BEFORE: {_preview(bv)}")
             print(f"         AFTER : {_preview(av)}")
     else:
@@ -245,7 +258,7 @@ def diff(before, after, mode, lenient, max_report, exclude_line_patterns=(), exc
 
     if not shared:
         ok = False
-        print("[WARN] no shared indices — nothing was compared; a no-op cannot be proven from an "
+        print("[WARN] no shared person_ids — nothing was compared; a no-op cannot be proven from an "
               "empty intersection (check the BEFORE/AFTER pair and their sort keys)")
 
     print("-" * 72)
