@@ -46,13 +46,16 @@ pruned (local + remote).
 
 ## Live follow-ups (roadmap not-yet-built)
 
-- **Step 6 — pathology substrate modernization (Phil-approved, ready to implement)** — pathology
-  still reads a frozen, hand-generated `v1_3` CSV (2 dataset versions behind); this bumps the whole
-  repo to `vista_bench_v1_6` (re-verifying CT/EHR/text first), then routes pathology through the
-  same task-scoped BQ loader CT/EHR/text already use (`diagnostic_tasks`, zero new query code, per
+- **Step 6 — pathology substrate modernization (Phil-approved, in progress)** — pathology still
+  reads a frozen, hand-generated `v1_3` CSV (2 dataset versions behind); this bumps the whole repo
+  to `vista_bench_v1_6` (re-verifying CT/EHR/text first), then routes pathology through the same
+  task-scoped BQ loader CT/EHR/text already use (`diagnostic_tasks`, zero new query code, per
   Phil's explain-plan feedback) → [plans/vlm-step6-pathology-live-substrate.md](plans/vlm-step6-pathology-live-substrate.md) ·
   companion [`.html`](plans/vlm-step6-pathology-live-substrate.html), Reviewed: Yes (in-sync
-  `905d034c0a58`). **NEXT: branch off + implement Phase 0.**
+  `905d034c0a58`). Phase 0 (dataset bump `query_utils.py:257` v1_5→v1_6) committed on
+  `feat/vlm-step6-pathology-live-substrate` @ `ac1561a`. **VM smoke pending:**
+  [docs/vm-status/2026-07-21-ac1561a.md](vm-status/2026-07-21-ac1561a.md) — BQ schema-diff +
+  golden re-bank byte-diff for CT/EHR/text, gated before Phase 1 (pathology loader) begins.
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2. Phil flagged wanting this "soon," once Step 6 lands.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
