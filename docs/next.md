@@ -53,9 +53,12 @@ pruned (local + remote).
   Phil's explain-plan feedback) → [plans/vlm-step6-pathology-live-substrate.md](plans/vlm-step6-pathology-live-substrate.md) ·
   companion [`.html`](plans/vlm-step6-pathology-live-substrate.html), Reviewed: Yes (in-sync
   `905d034c0a58`). Phase 0 (dataset bump `query_utils.py:257` v1_5→v1_6) committed on
-  `feat/vlm-step6-pathology-live-substrate` @ `ac1561a`. **VM smoke pending:**
-  [docs/vm-status/2026-07-21-ac1561a.md](vm-status/2026-07-21-ac1561a.md) — BQ schema-diff +
-  golden re-bank byte-diff for CT/EHR/text, gated before Phase 1 (pathology loader) begins.
+  `feat/vlm-step6-pathology-live-substrate` @ `ac1561a`. **VM smoke BLOCKED (class-3 deviation):**
+  [docs/vm-status/2026-07-21-ac1561a.md](vm-status/2026-07-21-ac1561a.md) — schema-diff shows the
+  bump is additive/non-breaking on the one real non-pathology table, but Step 0b's golden byte-diff
+  is unrunnable: `has_recurrence_1_yr`'s registry table `…_5yr_v1_1` is absent in **both** v1_5 and
+  v1_6 (48/49 tasks point at non-existent `_v1_*` names; only the non-suffixed table resolves).
+  Predates the bump → re-plan on the Mac (see the doc's DEVIATION block for the 3 fix options).
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2. Phil flagged wanting this "soon," once Step 6 lands.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
