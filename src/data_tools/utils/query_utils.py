@@ -251,10 +251,12 @@ def fetch_person_id_nifti_paths(
 # --- Vista benchmark task data ---
 
 # Single source of truth for the BQ dataset. v1_5 links CTs by (study, series) UID and drops the
-# string nifti_path (now a deprecated INTEGER). Flip here to re-point the whole eval: the runtime
-# consumers (task_data_utils.py, run_bq.py) and the CT-availability helpers below all ride this
-# constant. Kept local (not imported from vista_bench, which exports no usable version constant).
-VISTA_BENCH_DATASET = "vista_bench_v1_5"
+# string nifti_path (now a deprecated INTEGER). v1_6 adds live-sourced pathology
+# (diagnostic_tasks) on top of that same CT/EHR/text substrate. Flip here to re-point the whole
+# eval: the runtime consumers (task_data_utils.py, run_bq.py) and the CT-availability helpers below
+# all ride this constant. Kept local (not imported from vista_bench, which exports no usable
+# version constant).
+VISTA_BENCH_DATASET = "vista_bench_v1_6"
 
 
 def get_vista_task_data_query(full_table_id: str) -> str:
