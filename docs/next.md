@@ -60,18 +60,24 @@ pruned (local + remote).
   on the Mac (2026-07-21):** Step 0b retargeted at `progression_recurrence_free_survival_1_yr` —
   the one task whose non-suffixed source table actually resolves in both dataset versions, and
   already the exact task `configs/all_tasks.rung0.yaml` declares (see the plan's Phase 0
-  Verification & VM handoff section). **VM Step 0b BLOCKED — class-3 deviation (2026-07-21,
-  `phil-sllm-01`):**
-  [docs/vm-status/2026-07-21-c3351ef.md](vm-status/2026-07-21-c3351ef.md) — banking ran clean (5
-  rows × 2 experiments, both v1_5 & v1_6) and the bump is a **proven content no-op** (CT/EHR/text
-  byte-identical for all 5 shared patients, both experiments, via a person_id-keyed re-comparison).
-  BUT the prescribed `diff_golden --mode strict` gate returns `GATE FAILURE`: it hard-joins on the
-  `index` field, which is unstable across a row-count-changing dataset bump, so `--limit 5` yields
-  **0 shared indices** and the content gates compare an empty set. **Mac decision needed** on the
-  vehicle fix (recommended: teach `diff_golden` to join on `person_id` / add `--join-key`), then
-  supersede this doc → Phase 1. In-lane fix applied: banked via the proven VM-local
-  `all_tasks.rung0.vm.yaml` overlay (tracked `all_tasks.rung0.yaml` has no `retrieval:` block →
-  EHR adapter aborts).
+  Verification & VM handoff section). **VM Step 0b BLOCKED again — second class-3 deviation
+  (2026-07-21, `phil-sllm-01`):** [docs/vm-status/2026-07-21-c3351ef.md](vm-status/2026-07-21-c3351ef.md)
+  — banking ran clean (5 rows × 2 experiments, both v1_5 & v1_6) and the bump is a **proven content
+  no-op** (CT/EHR/text byte-identical for all 5 shared patients, both experiments, via a
+  person_id-keyed inline re-comparison). BUT the prescribed `diff_golden --mode strict` gate
+  returned `GATE FAILURE`: it hard-joined on the `index` field (a positional BQ row enumeration,
+  `df['index'] = df.index` in `run_bq.py`), unstable across the row-count-changing dataset bump, so
+  `--limit 5` yielded **0 shared indices** and the content gates compared an empty set. In-lane fix
+  applied during that run: banked via the proven VM-local `all_tasks.rung0.vm.yaml` overlay (tracked
+  `all_tasks.rung0.yaml` has no `retrieval:` block → EHR adapter aborts). **Re-planned on the Mac
+  again (2026-07-21):** fixed `diff_golden.py`'s **default** join key from `index` to `person_id`
+  (every golden record already carries it; task tables are one-row-per-person, so it's the actual
+  identity key) — no new `--join-key` flag, per "fix defaults, not call sites"; the Step 0b command
+  is unchanged. Committed `b7f858d` (code) + `fc6afbc` (plan doc), pushed. **VM handoff renewed:**
+  [docs/vm-status/2026-07-21-fc6afbc.md](vm-status/2026-07-21-fc6afbc.md) — re-run Step 0b (cheap
+  path: re-diff the already-banked golden files from the c3351ef run with the fixed tool; fallback:
+  full re-bank if those files are gone), expect `ALL GATES PASS` this time → then supersede this
+  entry with the readback and proceed to Phase 1.
 - **Phase 1.5 — inline image assembly (deferred)** — the `supports_inline` seam is wired; the inline
   assembly path is deferred behind Phase 2. Phil flagged wanting this "soon," once Step 6 lands.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
