@@ -1,6 +1,6 @@
 # Next steps
 
-_Last updated: 2026-07-20_
+_Last updated: 2026-07-21_
 
 ## ✅ Landed to `main` — modular VLM preprocessing roadmap (2026-07-15)
 
@@ -72,10 +72,12 @@ Side-by-side layout deferred (single-column first cut).
   informational re-run; Step 3's readback stands as the final byte-diff report for this branch.
   Phase 2's human visual-QA render is now Step 5's **whole landing gate**, un-gated from Phase 1
   (Phase 2 was specified back in round 3 but never run — Phase 1 kept re-opening across rounds
-  2-4). **VM smoke pending** @ `828e570`:
-  [docs/vm-status/2026-07-20-828e570.md](vm-status/2026-07-20-828e570.md) — renders the 3
-  mandatory Phase 2 experiments (`no_image`/`no_report`/`axial_all_image`) on `phil-sllm-01`.
-  **NEXT:** run the handoff doc, then Phil reads the 3 HTML files himself → `/land`.
+  2-4). **VM smoke PASS** @ `9a17450`:
+  [docs/vm-status/2026-07-20-828e570.md](vm-status/2026-07-20-828e570.md) — all 3 mandatory Phase 2
+  experiments (`no_image`/`no_report`/`axial_all_image`) rendered clean on `phil-sllm-01`, first
+  time run: exit 0, 5 cards each, populated token bars, self-contained (`data:` URIs only),
+  `axial_all_image` exactly 30 slices/card, no `STOP:`/traceback (1 of 5 patients legitimately
+  imageless). **NEXT:** Phil reads the 3 HTML files himself (the sole remaining landing gate) → `/land`.
 - **Subsumed standup branch** — `docs/vlm-eval-gcp-v1_5-standup-plan` became the roadmap's Phase 0 and
   is inlined; retire the branch (doc-only, superseded).
 
