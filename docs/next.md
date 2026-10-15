@@ -1,6 +1,6 @@
 # Next steps
 
-_Last updated: 2026-10-14_
+_Last updated: 2026-10-15_
 
 ## In progress — tumor-board questions on v1.7 (branch `feat/vlm-tumor-board-questions`)
 
@@ -13,6 +13,7 @@ bootstrap intervals and matched comparisons (`results.final_metrics --tb`), `scr
 without CT, $256) and stage 2 (CT inputs, $179); all six scored (`results_tb_v1_7/tb_scores*.csv` on the
 mount). Next: open models on weill after its hand-off Steps 0-1. Prior CT comes from
 `vista_bench_v1_7.per_ct_prior_ct_link` (vista_bench `src/vistabench/per_ct_prior_link.py`, on main 9a788ea).
+What changed, with the numbers: `plan-explainers/vista_eval_vlm/vlm-tumor-board-questions-v1_6.html` on the mount.
 
 ## ✅ Landed to `main` — modular VLM preprocessing roadmap (2026-07-15)
 

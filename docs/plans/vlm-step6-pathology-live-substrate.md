@@ -44,6 +44,10 @@ this doesn't silently break CT/EHR/text, which are pinned to v1_5-derived golden
 (including Step 5's just-landed live-EHR-adapter work). Cheap-before-expensive: a schema-diff
 first, a scoped byte-diff re-bank second.
 
+**Status (2026-10-15): Phase 0 landed on main; Phases 1-3 (pathology) parked.** Phil deferred
+pathology on 2026-10-14. The v1_6 dataset bump and the fixed `diff_golden` join reached main under
+`feat/vlm-tumor-board-questions`, which was built on this branch.
+
 **Status (2026-07-21):** dataset bump committed (`ac1561a`). Step 0a (schema-diff) ran on the VM
 and passed. Step 0b's original byte-diff vehicle turned out to be unrunnable (a pre-existing
 `vista_bench` registry issue, not a bump problem) and was retargeted — see the Verification & VM
