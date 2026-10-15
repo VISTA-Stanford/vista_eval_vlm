@@ -23,7 +23,7 @@ from __future__ import annotations
 import copy
 
 # Reusable block fragments -----------------------------------------------------
-def _ehr_block(variant: str = "timeline"):
+def _ehr_block(variant: str = "timeline", drop_codes=None, truncation=None):
     """EHR text block. ``variant`` records which timeline source the cohort feeds
     (``timeline`` = full window, ``no_img_report`` = imaging-report-skipped,
     ``passthrough`` = pre-rendered from parquet/retrieval).
@@ -53,6 +53,11 @@ def _ehr_block(variant: str = "timeline"):
       * ``passthrough`` -> ``select`` key omitted entirely (the adapter auto-passes a
         pre-rendered timeline string through; filters are inapplicable to already-
         rendered text).
+
+    ``drop_codes`` appends a ``code_filter(exclude=...)`` step after the window (the
+    tumor-board ``no_notes`` arm drops every ``STANFORD_NOTE`` event this way).
+    ``truncation="off"`` disables the configured ``timeline_truncation`` for this
+    block (the Gemini-only ``no_image_uncut`` arm).
     """
     if variant == "no_img_report":
         select = [
@@ -63,9 +68,13 @@ def _ehr_block(variant: str = "timeline"):
         select = [{"fn": "window", "before": "24mo", "after": "0d"}]
     else:  # passthrough
         select = None
+    if drop_codes:
+        select = list(select or []) + [{"fn": "code_filter", "exclude": list(drop_codes)}]
     config = {"variant": variant, "serialize": {"style": "flat_timeline"}}
     if select is not None:
         config["select"] = select
+    if truncation is not None:
+        config["truncation"] = truncation
     return {"id": "ehr", "modality": "text", "adapter": "ehr", "config": config}
 
 
@@ -138,6 +147,31 @@ PRESETS: dict[str, dict] = {
         "blocks": [_ehr_block("passthrough"), _path_block()],
     },
 }
+
+# Tumor-board arms (docs: planning/vista_eval_vlm/vlm-tumor-board-questions-v1_6.md).
+# `no_notes` and `no_image_uncut` render the same 24-month LUMIA timeline as `no_image`;
+# `summary*` put the board-time LLM summary (`compact_summary`) in place of the timeline.
+PRESETS.update({
+    "no_notes": {
+        "cohort": "normal", "assembly": "ordered", "prompt_style": "timeline",
+        "blocks": [_ehr_block("timeline", drop_codes=["STANFORD_NOTE"])],
+    },
+    "no_image_uncut": {
+        "cohort": "normal", "assembly": "ordered", "prompt_style": "timeline",
+        "blocks": [_ehr_block("timeline", truncation="off")],
+    },
+    "summary": {
+        "cohort": "normal", "assembly": "ordered", "prompt_style": "summary",
+        "blocks": [],
+    },
+    "summary_image": {
+        "cohort": "normal", "assembly": "ordered", "prompt_style": "summary",
+        "blocks": [_ct_block(30)],
+    },
+})
+
+# Arms whose prompt carries the board-time summary instead of the EHR timeline.
+SUMMARY_EXPERIMENTS = frozenset({"summary", "summary_image"})
 
 # Retrieval experiments stay on the legacy retrieval prompt-building path (the
 # cohort/prompt is produced by retrieval.prompt_building, not decomposed into

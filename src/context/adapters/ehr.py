@@ -323,10 +323,13 @@ class EHRAdapter(ModalityAdapter):
                 meta["filters_skipped"] = "select filters ignored on pre-rendered timeline text"
 
         # Truncate (verbatim canonical function), applied at inference.
+        # A block-level ``truncation: "off"`` overrides the run-wide config (uncut arm).
         truncation_cfg = self.truncation_cfg
         if truncation_cfg is None:
             truncation_cfg = ctx.get("timeline_truncation")
-        if truncation_cfg is not None:
+        if truncation_cfg == "off":
+            meta["truncation"] = "off"
+        elif truncation_cfg is not None:
             text = truncate_timeline(text, truncation_cfg)
             meta["truncation"] = truncation_cfg
 

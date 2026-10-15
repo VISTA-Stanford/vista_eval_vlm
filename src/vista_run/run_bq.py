@@ -6,7 +6,7 @@ import yaml
 import torch
 import pandas as pd
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Mapping
 from queue import Queue
 from threading import Thread
@@ -20,7 +20,7 @@ from google.cloud import storage
 
 from vqa_dataset import PromptDataset, prompt_collate
 from models import load_model_adapter
-from context.presets import get_preset
+from context.presets import get_preset, SUMMARY_EXPERIMENTS
 from context.adapters.ehr import EHRAdapter, lumia_path_for
 from data_tools.utils.query_utils import VISTA_BENCH_DATASET, fetch_task_data_from_bq
 from data_tools.utils.meds_timeline_utils import (
@@ -51,12 +51,69 @@ from results.task_mapping import is_binary_yes_no_task
 RETRIEVAL_EXPERIMENTS = RETRIEVAL_SINGLE_TIMELINE | RETRIEVAL_PER_ITERATION
 
 # Columns to drop from raw_row when building result row (heavy or redundant)
-HEAVY_RESULT_COLUMNS = ("note_text", "patient_string", "report", "path_note_text")
+HEAVY_RESULT_COLUMNS = ("note_text", "patient_string", "report", "path_note_text",
+                        "ct_note_text", "progress_note_text", "compact_summary", "rich_summary")
 
 # Experiments wired to the live LUMIA-parsing EHR adapter (Step 5). `passthrough`
 # presets (all_vb_timeline_only, path_full) and retrieval experiments are
 # deliberately excluded — see docs/plans/vlm-step5-lumia-live-ehr-adapter.md.
-_EHR_ADAPTER_EXPERIMENTS = {"no_image", "axial_all_image", "no_report", "timeline_only", "report"}
+_EHR_ADAPTER_EXPERIMENTS = {"no_image", "axial_all_image", "no_report", "timeline_only", "report",
+                            "no_notes", "no_image_uncut"}
+
+# Arms that attach the row's CT. For tasks read straight from a BQ table (registry
+# `"loader": "bq_table"`, the tumor-board tasks) a row without a CT is listed as missing
+# for these arms instead of being sent text-only.
+_CT_EXPERIMENTS = {"axial_all_image", "summary_image"}
+
+
+# Standard prior-scan columns on a task row (filled by `_attach_prior_ct`, read by the CT loader).
+PRIOR_COLUMNS = ("prior_image_study_uid", "prior_image_series_uid", "prior_gap_days", "prior_source")
+PRIOR_IMAGES_LINE = (
+    "IMAGES: the first {k} images are axial slices of the PRIOR CT ({gap} days before the current CT); "
+    "the next {k} are axial slices of the CURRENT CT."
+)
+
+
+def attach_prior_ct(df, link, spec):
+    """Join each row's prior CT from a per-CT prior link -> (with_prior, without_prior).
+
+    ``spec`` is the registry ``prior_ct`` entry: ``row_key`` (the row's current-CT accession
+    column), ``key`` (the link's current-accession column) and the link's column names for the
+    prior ``study`` / ``series`` / ``gap_days`` / ``source``. Output rows carry PRIOR_COLUMNS.
+    A link with two rows for one current accession raises: the prior would be ambiguous.
+    """
+    key, row_key = spec.get("key", "current_accession_number"), spec.get("row_key", "ct_accession_number")
+    cols = {spec.get("study", "prior_image_study_uid"): "prior_image_study_uid",
+            spec.get("series", "prior_image_series_uid"): "prior_image_series_uid",
+            spec.get("gap_days", "prior_gap_days"): "prior_gap_days",
+            spec.get("source", "prior_source"): "prior_source"}
+    link = link[[key] + list(cols)].rename(columns=cols)
+    if link[key].duplicated().any():
+        raise ValueError(f"prior link has more than one row for some current accession ({key})")
+    # Join on private key names so a link whose key column shares a name with a task column
+    # (S4's table uses `ct_accession_number`, like the board table) can't clobber it.
+    link = link.rename(columns={key: "_link_key"}).assign(_link_key=lambda d: d["_link_key"].astype(str))
+    df = df.drop(columns=[c for c in PRIOR_COLUMNS if c in df.columns])
+    merged = df.assign(_k=df[row_key].astype(str)).merge(link, left_on="_k", right_on="_link_key", how="left")
+    merged = merged.drop(columns=["_k", "_link_key"])
+    merged.index = df.index
+    has = merged["prior_image_study_uid"].notna() & merged["prior_image_series_uid"].notna()
+    return merged[has].copy(), merged[~has].copy()
+
+
+def forced_choices_for(task_info, use_constrained=True):
+    """The answer list decoding is forced onto, or None for free decoding.
+
+    A registry `choices` list wins (the 5-way pneumonitis question); otherwise a Yes/No
+    mapping forces ["Yes", "No"], as before.
+    """
+    if not use_constrained:
+        return None
+    if task_info.get("choices"):
+        return [str(c) for c in task_info["choices"]]
+    if is_binary_yes_no_task(task_info.get("mapping", {})):
+        return ["Yes", "No"]
+    return None
 
 
 class TaskOrchestrator:
@@ -119,6 +176,9 @@ class TaskOrchestrator:
             self.cfg['model'].get("device", "auto"),
             self.cfg['runtime']['cache_dir']
         )
+        if hasattr(self.adapter, "configure"):
+            # API adapters (Vertex Gemini) take run settings from the config's `vertex:` block.
+            self.adapter.configure(self.cfg.get("vertex", {}))
         self.model = None
         self.processor = None
 
@@ -246,6 +306,10 @@ class TaskOrchestrator:
         modes = getattr(self, "_decode_modes", {})
         n_constrained = sum(1 for v in modes.values() if v)
         print(f"[DECODE] summary: {n_constrained}/{len(modes)} selected tasks constrained")
+        if hasattr(self.adapter, "api_calls"):
+            print(f"[API] {self.adapter.api_calls} API calls this run")
+        if hasattr(self.adapter, "spent_usd"):
+            print(f"[API] measured spend this run ${self.adapter.spent_usd:.2f}")
 
     def _load_task_data(self, task_info, use_no_report_csv=False, require_timeline=True):
         """
@@ -256,6 +320,8 @@ class TaskOrchestrator:
         When require_timeline=False, we still use the local CSV to restrict to the subsampled cohort
         (via inner join on person_id), but we do NOT require a patient timeline column in the CSV.
         """
+        if task_info.get("loader") == "bq_table":
+            return self._load_bq_table_task_data(task_info)
         task_name = task_info['task_name']
         source_csv = task_info['task_source_csv']
         use_subsampled = self.cfg.get('subsample', False)
@@ -340,6 +406,68 @@ class TaskOrchestrator:
         else:
             df['unique_events'] = float("nan")
         return (df, timeline_col, source_csv)
+
+    def _load_bq_table_task_data(self, task_info):
+        """Load a task straight from its vista_bench table, no local timeline CSV.
+
+        Used by the tumor-board tasks (registry `"loader": "bq_table"`): the EHR timeline is
+        rendered live from LUMIA per arm, so no pre-rendered CSV is needed. Rows whose label
+        is not a scored class in `mapping` (e.g. -1 "Indeterminate/Deferred") are dropped.
+        `index` is set to `person_id` (one row per patient per task), so resume and caching
+        key on the patient rather than on BigQuery's row order.
+
+        Optional config `row_sample: {n, seed, require_ct, require_summary, require_prior}` keeps
+        a fixed random subset per task (the 20-case pilots).
+        """
+        task_name = task_info['task_name']
+        source_csv = task_info['task_source_csv']
+        # Per-task dataset (registry `dataset`), so these tasks can sit on a newer release than
+        # the repo-wide VISTA_BENCH_DATASET the other tasks use.
+        dataset = task_info.get("dataset", VISTA_BENCH_DATASET)
+        full_table_id = f"{self.project_id}.{dataset}.{source_csv}"
+        print(f"\n>>> Loading data for task: {task_name} (BigQuery table {full_table_id}, no CSV)")
+        df = fetch_task_data_from_bq(self.bq_client, full_table_id, task_name)
+        if df is None or df.empty:
+            print(f"!!! No data found for task '{task_name}' in BigQuery.")
+            return None
+        if df['person_id'].duplicated().any():
+            raise ValueError(f"{task_name}: more than one row per person_id; index would not be unique")
+        scored = {int(k) for k, v in task_info.get("mapping", {}).items()
+                  if str(k) not in {str(x) for x in task_info.get("unscored_labels", [-1])}}
+        n_all = len(df)
+        df = df[df['label'].isin(scored)].copy()
+        print(f"    Loaded {n_all} rows; {len(df)} with a scored label {sorted(scored)}.")
+
+        sample = self.cfg.get('row_sample')
+        if sample:
+            pool = df
+            if sample.get('require_ct'):
+                pool = pool[pool['image_series_uid'].notna() & pool['image_study_uid'].notna()]
+            if sample.get('require_summary'):
+                pool = pool[pool['compact_summary'].notna() & (pool['compact_summary'].astype(str).str.strip() != "")]
+            if sample.get('require_prior') and task_info.get('prior_ct'):
+                pool, _ = attach_prior_ct(pool, self._prior_link(task_info['prior_ct']), task_info['prior_ct'])
+            n = min(int(sample['n']), len(pool))
+            df = pool.sort_values('person_id').sample(n=n, random_state=int(sample.get('seed', 0))).copy()
+            print(f"    row_sample: kept {len(df)} of {len(pool)} eligible rows (seed {sample.get('seed', 0)}).")
+
+        df = df.sort_values('person_id').reset_index(drop=True)
+        df['index'] = df['person_id']
+        timeline_col = 'patient_string'
+        df[timeline_col] = None
+        df['unique_events'] = float("nan")
+        return (df, timeline_col, source_csv)
+
+    def _record_missing(self, task_info, experiment, rows, reason):
+        """Remember rows an arm could not be built for (written next to the results)."""
+        if rows is None or len(rows) == 0:
+            return
+        if not hasattr(self, "_missing"):
+            self._missing = defaultdict(list)
+        cols = [c for c in ("index", "person_id", "split", "label") if c in rows.columns]
+        for rec in rows[cols].to_dict("records"):
+            rec["reason"] = reason
+            self._missing[(task_info['task_name'], experiment)].append(rec)
 
     def _load_retrieval_task_data(self, task_info):
         """
@@ -610,6 +738,11 @@ class TaskOrchestrator:
         inference_batches: list of {"indices": [...], "inputs": ...}
         """
         new_items = [item for item in batch if item['raw_row']['index'] not in existing_indices]
+        # A row whose CT (or prior CT) could not be read is listed as an error, not inferred.
+        failed = [item for item in new_items if item.get('load_error')]
+        if failed:
+            self._load_failures.extend(failed)
+            new_items = [item for item in new_items if not item.get('load_error')]
         if not new_items:
             return None
 
@@ -738,7 +871,7 @@ class TaskOrchestrator:
                 print(f"Could not read existing file, starting fresh: {e}")
         return out_file, existing_indices
 
-    def _apply_ehr_adapter(self, df_exp, experiment, timeline_col):
+    def _apply_ehr_adapter(self, df_exp, experiment, timeline_col, task_info=None):
         """Overwrite ``timeline_col`` with the live LUMIA-parsed + filtered + rendered
         timeline for the wired presets (Step 5). Fail-closed: rows with no resolvable
         LUMIA file are dropped from the experiment entirely (Phil's call — no fallback
@@ -753,7 +886,12 @@ class TaskOrchestrator:
         if ehr_block["config"].get("variant") == "timeline":
             window_before = self.cfg.get("ehr_timeline_window_before")
             if window_before:
-                ehr_block["config"]["select"] = [{"fn": "window", "before": window_before, "after": "0d"}]
+                # Replace only the window step, so a preset's later steps (the no_notes
+                # code_filter) survive the override.
+                ehr_block["config"]["select"] = [
+                    {"fn": "window", "before": window_before, "after": "0d"} if f.get("fn") == "window" else f
+                    for f in ehr_block["config"].get("select", [])
+                ]
         adapter = EHRAdapter(config=copy.deepcopy(ehr_block["config"]))
         corpus_dir = self.cfg.get("retrieval", {}).get("corpus_dir")
         if not corpus_dir:
@@ -771,6 +909,8 @@ class TaskOrchestrator:
         n_dropped = int((~mask).sum())
         if n_dropped:
             print(f"[EHR] dropping {n_dropped}/{len(df_exp)} rows with no LUMIA file (experiment={experiment})")
+            if task_info is not None:
+                self._record_missing(task_info, experiment, df_exp[~mask], "no LUMIA file")
         df_exp = df_exp[mask].copy()
 
         def render(row):
@@ -790,7 +930,28 @@ class TaskOrchestrator:
         task_name = task_info['task_name']
         source_csv = task_info['task_source_csv']
         df_exp = df.copy()
-        df_exp = self._apply_ehr_adapter(df_exp, experiment, timeline_col)
+        if task_info.get("loader") == "bq_table" and experiment in _CT_EXPERIMENTS:
+            no_ct = df_exp['image_series_uid'].isna() | df_exp['image_study_uid'].isna()
+            self._record_missing(task_info, experiment, df_exp[no_ct], "no CT on the row")
+            df_exp = df_exp[~no_ct].copy()
+        prior_spec = task_info.get("prior_ct")
+        with_prior = bool(prior_spec) and experiment in prior_spec.get("arms", sorted(_CT_EXPERIMENTS))
+        if with_prior:
+            df_exp, no_prior = attach_prior_ct(df_exp, self._prior_link(prior_spec), prior_spec)
+            self._record_missing(task_info, experiment, no_prior, "no prior CT")
+        if experiment in SUMMARY_EXPERIMENTS:
+            # Board-time LLM summary in place of the EHR timeline. A row without one is
+            # missing for this arm, never filled from the EHR.
+            summ = df_exp['compact_summary'] if 'compact_summary' in df_exp.columns else pd.Series(None, index=df_exp.index)
+            has = summ.notna() & (summ.astype(str).str.strip() != "")
+            self._record_missing(task_info, experiment, df_exp[~has], "no compact_summary")
+            df_exp = df_exp[has].copy()
+            template = self.prompts_map.get(task_name, "[PATIENT_TIMELINE]")
+            df_exp['dynamic_prompt'] = df_exp['compact_summary'].apply(
+                lambda x: template.replace('[PATIENT_TIMELINE]', str(x))
+            )
+            return self._add_prior_images_line(df_exp) if with_prior else df_exp
+        df_exp = self._apply_ehr_adapter(df_exp, experiment, timeline_col, task_info)
 
         if experiment in ('no_timeline', 'all_vb_image_only', 'path'):
             base_prompt_template = self.image_prompts_map.get(task_name, "") or self.prompts_map.get(task_name, "")
@@ -867,18 +1028,46 @@ class TaskOrchestrator:
         df_exp['dynamic_prompt'] = df_exp[timeline_col].apply(
             lambda x: base_prompt_template.replace('[PATIENT_TIMELINE]', str(x))
         )
+        return self._add_prior_images_line(df_exp) if with_prior else df_exp
+
+    def _prior_link(self, spec):
+        """The per-CT prior link named by a registry `prior_ct` entry (BQ `table` or `path`), cached."""
+        if not hasattr(self, "_prior_links"):
+            self._prior_links = {}
+        src = spec.get("table") or spec.get("path")
+        if src not in self._prior_links:
+            if spec.get("table"):
+                self._prior_links[src] = self.bq_client.query(f"SELECT * FROM `{spec['table']}`").to_dataframe()
+            else:
+                self._prior_links[src] = pd.read_parquet(spec["path"])
+            print(f"[PRIOR] loaded {len(self._prior_links[src])} prior links from {src}")
+        return self._prior_links[src]
+
+    @staticmethod
+    def _add_prior_images_line(df_exp, k=30):
+        """Say which images are the prior CT and which the current, just before the record."""
+        def add(row):
+            line = PRIOR_IMAGES_LINE.format(k=k, gap=int(row["prior_gap_days"]))
+            return row["dynamic_prompt"].replace("PATIENT RECORD:", line + "\n\nPATIENT RECORD:", 1)
+        df_exp = df_exp.copy()
+        df_exp["dynamic_prompt"] = df_exp.apply(add, axis=1)
         return df_exp
 
-    def _build_result_row(self, item, out, experiment, timeline_col):
+    def _build_result_row(self, item, out, experiment, timeline_col, extra_drop=()):
         """Build a single result row dict for CSV (drop heavy cols, add model_response, used_image, etc.)."""
         raw = item['raw_row']
-        drop_cols = [c for c in [timeline_col] + list(HEAVY_RESULT_COLUMNS) if c and c in raw.index]
+        drop_cols = [c for c in [timeline_col] + list(HEAVY_RESULT_COLUMNS) + list(extra_drop) if c and c in raw.index]
         res_row = raw.drop(labels=drop_cols, errors='ignore').to_dict()
 
         if isinstance(out, dict):
             res_row['model_response'] = out.get("text", "")
             res_row['cumulative_logprob'] = out.get("cumulative_logprob")
             res_row['log_probs'] = out.get("log_probs")
+            # API adapters (Vertex Gemini) report measured usage per call.
+            for k, v in (out.get("usage") or {}).items():
+                res_row[f"usage_{k}"] = v
+            if "cached" in out:
+                res_row['cached_response'] = out["cached"]
         else:
             res_row['model_response'] = out
             res_row['cumulative_logprob'] = None
@@ -901,9 +1090,34 @@ class TaskOrchestrator:
 
     def _run_inference_loop(
         self, loader, existing_indices, constrained_choices, out_file,
-        task_name, experiment, timeline_col,
+        task_name, experiment, timeline_col, extra_drop=(),
     ):
-        """Producer-consumer inference loop: prepare batches in thread, run inference, build result rows, flush to CSV."""
+        """Producer-consumer inference loop: prepare batches in thread, run inference, build result rows, flush to CSV.
+
+        A row whose call fails (a batch exception, or an adapter returning ``error``) is
+        written to ``<task>_errors_<experiment>.csv`` with the message instead of being
+        dropped silently; it is not written to the results, so a rerun retries it.
+        """
+        errors_file = out_file.with_name(out_file.name.replace("_results_", "_errors_"))
+
+        def _error_row(item, message):
+            raw = item['raw_row']
+            rec = {c: raw.get(c) for c in ("index", "person_id", "split", "label") if c in raw.index}
+            rec["error"] = str(message)[:2000]
+            return rec
+
+        # Filled by the producer thread, drained here (deque append/popleft are thread-safe).
+        self._load_failures = deque()
+
+        def _flush_load_failures():
+            rows = []
+            while self._load_failures:
+                it = self._load_failures.popleft()
+                rows.append(_error_row(it, it['load_error']))
+            if rows:
+                print(f"[ERRORS] {len(rows)} rows whose CT could not be loaded -> {errors_file}")
+                append_to_csv_util(errors_file, rows)
+
         results_buffer = []
         batch_counter = 0
         prefetch_queue = Queue(maxsize=2)
@@ -926,13 +1140,21 @@ class TaskOrchestrator:
 
         while True:
             got = prefetch_queue.get()
+            _flush_load_failures()
             if got is sentinel:
                 break
             new_items, inference_batches, max_input_tokens = got
             try:
                 outputs = self._run_inference_on_batches(inference_batches, constrained_choices)
+                errs = []
                 for item, out in zip(new_items, outputs):
-                    results_buffer.append(self._build_result_row(item, out, experiment, timeline_col))
+                    if isinstance(out, dict) and out.get("error"):
+                        errs.append(_error_row(item, out["error"]))
+                        continue
+                    results_buffer.append(self._build_result_row(item, out, experiment, timeline_col, extra_drop))
+                if errs:
+                    print(f"[ERRORS] {len(errs)} rows failed in batch {batch_counter + 1} -> {errors_file}")
+                    append_to_csv_util(errors_file, errs)
                 batch_counter += 1
                 pbar.update(1)
                 print(f"Batch {batch_counter}: Max input tokens = {max_input_tokens}")
@@ -944,6 +1166,7 @@ class TaskOrchestrator:
             except Exception as e:
                 print(f"Error in batch: {e}")
                 print(f"Max input tokens = {max_input_tokens} (error occurred)")
+                append_to_csv_util(errors_file, [_error_row(item, e) for item in new_items])
 
         pbar.close()
         producer_thread.join(timeout=5)
@@ -978,14 +1201,15 @@ class TaskOrchestrator:
         use_constrained = self.cfg['runtime'].get('use_constrained_decoding_for_binary', True)
         mapping = task_info.get("mapping", {})
         is_yes_no = is_binary_yes_no_task(mapping)
-        constrained_choices = ["Yes", "No"] if (is_yes_no and use_constrained) else None
+        constrained_choices = forced_choices_for(task_info, use_constrained)
 
         # Instrument the decode mode so a silent no-op is impossible to miss in the run log.
         if constrained_choices is not None:
+            why = "registry choices" if task_info.get("choices") else "mapping is Yes/No"
             print(f"[DECODE] task={task_name}  mode=constrained  choices={constrained_choices}  "
-                  f"(mapping is Yes/No; use_constrained={use_constrained})")
+                  f"({why}; use_constrained={use_constrained})")
         else:
-            reason = "mapping not Yes/No" if not is_yes_no else "use_constrained=False"
+            reason = "no choices and mapping not Yes/No" if not is_yes_no else "use_constrained=False"
             print(f"[DECODE] task={task_name}  mode=free  ({reason}; "
                   f"is_yes_no={is_yes_no}; use_constrained={use_constrained})")
         # Record per-task decode mode (dedup by task across experiments) for the run summary.
@@ -994,7 +1218,15 @@ class TaskOrchestrator:
         self._decode_modes[task_name] = (constrained_choices is not None)
 
         out_file, existing_indices = self._setup_output_and_resume(task_info, experiment)
+        df = self._apply_arm_splits(df, experiment)
         df_exp = self._build_prompts_for_experiment(df, task_info, experiment, timeline_col)
+        extra_drop = ()
+        if task_info.get("loader") == "bq_table":
+            # Board rows: count tokens, list over-limit rows, list rows the arm could not
+            # be built for, and keep the (PHI-heavy) prompt text out of the results CSV.
+            df_exp = self._split_overflow(df_exp, task_info, experiment, out_file)
+            self._flush_missing(task_info, experiment, out_file)
+            extra_drop = ("dynamic_prompt",)
 
         ct_dir = self.cfg.get('paths', {}).get('ct_dir')
         ct_snapshot_prefix = self.cfg.get('paths', {}).get('ct_snapshot_prefix')
@@ -1002,6 +1234,7 @@ class TaskOrchestrator:
             df=df_exp, prompt_col='dynamic_prompt', experiment=experiment,
             storage_client=self.storage_client, model_type=self.model_type, ct_dir=ct_dir,
             ct_snapshot_prefix=ct_snapshot_prefix,
+            fail_on_ct_error=(task_info.get("loader") == "bq_table"),
         )
         num_workers = 4
         loader = DataLoader(
@@ -1017,8 +1250,71 @@ class TaskOrchestrator:
 
         self._run_inference_loop(
             loader, existing_indices, constrained_choices, out_file,
-            task_name, experiment, timeline_col,
+            task_name, experiment, timeline_col, extra_drop,
         )
+
+    def _apply_arm_splits(self, df, experiment):
+        """Config `arm_splits: {<arm>: [test]}` runs an arm on some splits only (by design, so the
+        other rows are not listed as missing)."""
+        splits = (self.cfg.get('arm_splits') or {}).get(experiment)
+        if not splits:
+            return df
+        df = df[df['split'].isin(splits)]
+        print(f"[SPLITS] {experiment}: splits {splits} only, {len(df)} rows")
+        return df
+
+    def _input_token_limit(self):
+        """Prompt-token ceiling for the loaded model, or None when unknown."""
+        limit = getattr(self.adapter, "input_token_limit", None)
+        if limit:
+            return int(limit)
+        window = getattr(self.adapter, "context_window", None)
+        if window:
+            return int(window) - int(self.cfg['runtime'].get('max_new_tokens', 0))
+        return None
+
+    def _split_overflow(self, df_exp, task_info, experiment, out_file):
+        """Count every prompt's tokens; move rows over the model's limit to an overflow list.
+
+        Text tokens come from the adapter's own counter when it has one (Vertex Gemini),
+        else the loaded tokenizer; each attached image adds the adapter's per-image
+        estimate (`image_token_estimate`, default 256) for arms that attach a CT. The count
+        is kept on the row (`prompt_token_count`) and so lands in the results CSV.
+        Rows over the limit go to `<task>_overflow_<experiment>.csv` with their count and
+        are not sent to the model.
+        """
+        counter = getattr(self.adapter, "count_text_tokens", None) or self._count_prompt_tokens
+        per_image = int(getattr(self.adapter, "image_token_estimate", 256))
+        n_images = 30 if experiment in _CT_EXPERIMENTS else 0
+        df_exp = df_exp.copy()
+        if n_images and "prior_image_study_uid" in df_exp.columns:
+            n_images = df_exp["prior_image_study_uid"].notna().map({True: 60, False: 30})
+        df_exp['prompt_token_count'] = df_exp['dynamic_prompt'].apply(lambda t: int(counter(str(t)))) + n_images * per_image
+        limit = self._input_token_limit()
+        overflow_file = out_file.with_name(out_file.name.replace("_results_", "_overflow_"))
+        if limit is None:
+            print(f"[TOKENS] {experiment}: no token limit known for this model; nothing moved to overflow")
+            return df_exp
+        over = df_exp['prompt_token_count'] > limit
+        cols = [c for c in ("index", "person_id", "split", "label", "prompt_token_count") if c in df_exp.columns]
+        recs = df_exp.loc[over, cols].to_dict("records")
+        for r in recs:
+            r["limit"] = limit
+        overflow_file.unlink(missing_ok=True)
+        if recs:
+            append_to_csv_util(overflow_file, recs)
+        print(f"[TOKENS] {experiment}: {int(over.sum())}/{len(df_exp)} rows over {limit} tokens -> overflow "
+              f"(median {int(df_exp['prompt_token_count'].median()) if len(df_exp) else 0})")
+        return df_exp[~over].copy()
+
+    def _flush_missing(self, task_info, experiment, out_file):
+        """Write this arm's missing-row list (rows the arm could not be built for)."""
+        recs = getattr(self, "_missing", {}).pop((task_info['task_name'], experiment), [])
+        missing_file = out_file.with_name(out_file.name.replace("_results_", "_missing_"))
+        missing_file.unlink(missing_ok=True)
+        if recs:
+            append_to_csv_util(missing_file, recs)
+            print(f"[MISSING] {experiment}: {len(recs)} rows listed -> {missing_file}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

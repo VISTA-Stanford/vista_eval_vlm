@@ -65,6 +65,12 @@ try:
 except (ImportError, SyntaxError, AttributeError):
     pass
 
+try:
+    from .vertex_gemini import VertexGeminiAdapter
+    MODEL_REGISTRY["vertex_gemini"] = VertexGeminiAdapter
+except (ImportError, SyntaxError, AttributeError):
+    pass
+
 def load_model_adapter(model_type, model_name, device, cache_dir):
     if model_type not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model type: {model_type}")

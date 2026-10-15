@@ -317,5 +317,230 @@ def main(config_path=None, output_path=None):
     print(f"Wrote {len(rows)} rows to {output_path}")
 
 
+
+# ---------------------------------------------------------------------------
+# Forced-answer scoring for the tumor-board questions (vista_bench_v1_6).
+# Plan: planning/vista_eval_vlm/vlm-tumor-board-questions-v1_6.md, step 6 / V6.
+# Scores the forced answer only (no probabilities, so no AUROC): accuracy, balanced
+# accuracy, sensitivity/specificity (yes/no) or macro-F1 (multi-class), 95% bootstrap
+# intervals, per split and pooled, with an always-majority baseline row.
+# ---------------------------------------------------------------------------
+
+TB_SPLITS = ("train", "valid", "test")
+
+
+def answer_to_label(response, mapping, unscored=("-1",)):
+    """Map a forced answer back to its integer label; None if it is not one of the options."""
+    if response is None or (isinstance(response, float) and np.isnan(response)):
+        return None
+    r = str(response).strip().lower()
+    for k, v in (mapping or {}).items():
+        if str(k) in {str(u) for u in unscored}:
+            continue
+        if str(v).strip().lower() == r:
+            return int(k)
+    return None
+
+
+def forced_answer_metrics(y_true, y_pred, classes):
+    """Metrics from labels and predicted labels. A None prediction (unreadable) counts as wrong.
+
+    Balanced accuracy and macro-F1 average over the classes present in ``y_true``.
+    Sensitivity/specificity are recall of class 1 / class 0 when ``classes`` is {0, 1}.
+    """
+    y_true = list(y_true)
+    y_pred = list(y_pred)
+    n = len(y_true)
+    out = {"n": n, "n_unreadable": sum(p is None for p in y_pred)}
+    if n == 0:
+        return out
+    correct = [t == p for t, p in zip(y_true, y_pred)]
+    out["accuracy"] = float(np.mean(correct))
+    present = [c for c in classes if c in set(y_true)]
+    recalls, f1s = [], []
+    for c in present:
+        tp = sum(1 for t, p in zip(y_true, y_pred) if t == c and p == c)
+        fn = sum(1 for t, p in zip(y_true, y_pred) if t == c and p != c)
+        fp = sum(1 for t, p in zip(y_true, y_pred) if t != c and p == c)
+        rec = tp / (tp + fn) if tp + fn else float("nan")
+        prec = tp / (tp + fp) if tp + fp else 0.0
+        recalls.append(rec)
+        f1s.append(2 * prec * rec / (prec + rec) if (prec + rec) else 0.0)
+    out["balanced_accuracy"] = float(np.mean(recalls)) if recalls else float("nan")
+    if set(classes) == {0, 1}:
+        rec = dict(zip(present, recalls))
+        out["sensitivity"] = rec.get(1, float("nan"))
+        out["specificity"] = rec.get(0, float("nan"))
+    else:
+        out["macro_f1"] = float(np.mean(f1s)) if f1s else float("nan")
+    return out
+
+
+def _stratified_draw(y_true, rng):
+    """Bootstrap row indices resampled within each true class, so every resample keeps every
+    class present in the sample (balanced accuracy then always averages the same classes)."""
+    by_class = {}
+    for i, t in enumerate(y_true):
+        by_class.setdefault(t, []).append(i)
+    return [i for members in by_class.values() for i in rng.choice(members, len(members))]
+
+
+def bootstrap_ci(y_true, y_pred, classes, n_boot=1000, seed=0, alpha=0.05):
+    """Percentile intervals for every metric ``forced_answer_metrics`` returns (class-stratified)."""
+    y_true = list(y_true)
+    y_pred = list(y_pred)
+    n = len(y_true)
+    if n == 0:
+        return {}
+    rng = np.random.default_rng(seed)
+    draws = {}
+    for _ in range(n_boot):
+        idx = _stratified_draw(y_true, rng)
+        m = forced_answer_metrics([y_true[i] for i in idx], [y_pred[i] for i in idx], classes)
+        for k, v in m.items():
+            if k in ("n", "n_unreadable"):
+                continue
+            draws.setdefault(k, []).append(v)
+    return {k: (float(np.nanpercentile(v, 100 * alpha / 2)), float(np.nanpercentile(v, 100 * (1 - alpha / 2))))
+            for k, v in draws.items()}
+
+
+def gemini_cost_usd(df, prices):
+    """Dollars for the API calls in a results frame, from measured usage (cached rows included).
+
+    The whole request is billed at the long-context rate when its prompt is over
+    ``prices['long_context_over']`` tokens; thinking tokens bill as output.
+    """
+    if not prices or "usage_prompt_tokens" not in df.columns:
+        return None
+    pt = pd.to_numeric(df["usage_prompt_tokens"], errors="coerce").fillna(0)
+    ot = (pd.to_numeric(df.get("usage_output_tokens"), errors="coerce").fillna(0)
+          + pd.to_numeric(df.get("usage_thinking_tokens"), errors="coerce").fillna(0))
+    long = pt > prices.get("long_context_over", 200000)
+    cost = np.where(long,
+                    pt * prices["input_long"] + ot * prices["output_long"],
+                    pt * prices["input"] + ot * prices["output"]) / 1e6
+    return float(cost.sum())
+
+
+def _score_rows(base, y_true, y_pred, classes, n_boot):
+    row = dict(base)
+    row.update(forced_answer_metrics(y_true, y_pred, classes))
+    for k, (lo, hi) in bootstrap_ci(y_true, y_pred, classes, n_boot=n_boot).items():
+        row[f"{k}_lo"], row[f"{k}_hi"] = lo, hi
+    # No "above chance" flag: Phil reads the intervals against the baseline row (10-14).
+    return row
+
+
+def paired_difference(y_true, pred_a, pred_b, classes, metric="balanced_accuracy", n_boot=1000, seed=0):
+    """metric(b) - metric(a) on the same rows, with a class-stratified paired bootstrap interval."""
+    y_true, pred_a, pred_b = list(y_true), list(pred_a), list(pred_b)
+    if not y_true:
+        return {}
+    point = forced_answer_metrics(y_true, pred_b, classes)[metric] - forced_answer_metrics(y_true, pred_a, classes)[metric]
+    rng = np.random.default_rng(seed)
+    diffs = []
+    for _ in range(n_boot):
+        idx = _stratified_draw(y_true, rng)
+        t = [y_true[i] for i in idx]
+        diffs.append(forced_answer_metrics(t, [pred_b[i] for i in idx], classes)[metric]
+                     - forced_answer_metrics(t, [pred_a[i] for i in idx], classes)[metric])
+    return {"n": len(y_true), f"{metric}_diff": point,
+            f"{metric}_diff_lo": float(np.nanpercentile(diffs, 2.5)),
+            f"{metric}_diff_hi": float(np.nanpercentile(diffs, 97.5))}
+
+
+# Plan comparisons: each arm against the trimmed EHR (`no_image`), on the rows both answered
+# (the full-record arm holds only the test split, and drops overflow rows).
+TB_COMPARISONS = (("no_image", "no_image_uncut"), ("no_image", "no_notes"), ("no_image", "summary"),
+                  ("no_image", "axial_all_image"), ("summary", "summary_image"))
+
+
+def score_tb(config_path, output_path=None, n_boot=1000):
+    """One table: model x arm x task x split (train/valid/test/pooled), plus baselines.
+
+    Reads ``<results_dir>/<source>/<task>/<model>/<task>_results_<arm>.csv`` and the
+    overflow / missing / errors lists beside each. Writes the table to
+    ``<results_dir>/tb_scores.csv`` (the mount) unless ``output_path`` is given.
+    """
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    results_dir = Path(cfg["paths"]["results_dir"])
+    with open(Path(cfg["paths"]["base_dir"]) / cfg["paths"]["valid_tasks"]) as f:
+        registry = {t["task_name"]: t for t in json.load(f)}
+    prices = (cfg.get("vertex") or {}).get("price_per_mtok")
+    rows = []
+    comparisons = []
+    for task in cfg.get("tasks", []):
+        info = registry[task]
+        mapping = info["mapping"]
+        unscored = [str(u) for u in info.get("unscored_labels", [-1])]
+        classes = sorted(int(k) for k in mapping if str(k) not in unscored)
+        task_dir = results_dir / info["task_source_csv"] / task
+        if not task_dir.exists():
+            continue
+        pooled_labels = {}
+        preds_by_arm = {}
+        for model_dir in sorted(p for p in task_dir.iterdir() if p.is_dir()):
+            for fp in sorted(model_dir.glob(f"{task}_results_*.csv")):
+                arm = extract_experiment_from_filename(fp.name)
+                df = pd.read_csv(fp).drop_duplicates(subset=["index"], keep="last")
+                df = df[df["label"].astype(str).isin([str(c) for c in classes])]
+                df["pred"] = df["model_response"].apply(lambda r: answer_to_label(r, mapping, unscored))
+                side = {}
+                for kind in ("overflow", "missing", "errors"):
+                    sp = fp.with_name(fp.name.replace("_results_", f"_{kind}_"))
+                    side[f"n_{kind}"] = len(pd.read_csv(sp)) if sp.exists() else 0
+                cost = gemini_cost_usd(df, prices) if "vertex" in str(cfg.get("models")) else None
+                for split in TB_SPLITS + ("pooled",):
+                    sub = df if split == "pooled" else df[df["split"] == split]
+                    base = {"task": task, "model": model_dir.name, "arm": arm, "split": split, **side}
+                    if split == "pooled" and cost is not None:
+                        base["cost_usd"] = cost
+                    preds = [None if pd.isna(p) else int(p) for p in sub["pred"]]
+                    rows.append(_score_rows(base, sub["label"].astype(int).tolist(), preds, classes, n_boot))
+                for rec in df[["index", "split", "label"]].to_dict("records"):
+                    pooled_labels[rec["index"]] = rec
+                preds_by_arm[(model_dir.name, arm)] = df.set_index("index")[["label", "pred"]]
+        # Always-majority baseline over every row any arm scored.
+        if pooled_labels:
+            lab = pd.DataFrame(list(pooled_labels.values()))
+            majority = int(lab["label"].astype(int).value_counts().idxmax())
+            for split in TB_SPLITS + ("pooled",):
+                sub = lab if split == "pooled" else lab[lab["split"] == split]
+                base = {"task": task, "model": f"baseline_always_{mapping[str(majority)]}", "arm": "-", "split": split}
+                rows.append(_score_rows(base, sub["label"].astype(int).tolist(), [majority] * len(sub), classes, n_boot))
+        for (model, a), _ in list(preds_by_arm.items()):
+            for base_arm, arm in TB_COMPARISONS:
+                if a != arm or (model, base_arm) not in preds_by_arm:
+                    continue
+                pa, pb = preds_by_arm[(model, base_arm)], preds_by_arm[(model, arm)]
+                both = pa.index.intersection(pb.index)
+                y = pa.loc[both, "label"].astype(int).tolist()
+                fa = [None if pd.isna(p) else int(p) for p in pa.loc[both, "pred"]]
+                fb = [None if pd.isna(p) else int(p) for p in pb.loc[both, "pred"]]
+                comparisons.append({"task": task, "model": model, "arm": arm, "versus": base_arm,
+                                    **paired_difference(y, fa, fb, classes, n_boot=n_boot)})
+    out = pd.DataFrame(rows)
+    output_path = Path(output_path) if output_path else results_dir / "tb_scores.csv"
+    if comparisons:
+        cmp_path = output_path.with_name(output_path.stem + "_matched_comparisons.csv")
+        pd.DataFrame(comparisons).to_csv(cmp_path, index=False)
+        print(f"Wrote {len(comparisons)} matched comparisons to {cmp_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(output_path, index=False)
+    print(f"Wrote {len(out)} rows to {output_path}")
+    return out
+
+
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default=None)
+    ap.add_argument("--output", default=None)
+    ap.add_argument("--tb", action="store_true", help="tumor-board forced-answer scoring (score_tb)")
+    args = ap.parse_args()
+    if args.tb:
+        score_tb(args.config, args.output)
+    else:
+        main(args.config, args.output)
