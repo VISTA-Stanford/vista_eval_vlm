@@ -1,6 +1,18 @@
 # Next steps
 
-_Last updated: 2026-07-21_
+_Last updated: 2026-10-14_
+
+## In progress — tumor-board questions on v1.7 (branch `feat/vlm-tumor-board-questions`)
+
+Plan (on the mount): `planning/vista_eval_vlm/vlm-tumor-board-questions-v1_6.md` (rev 4: runs on
+vista_bench v1.7; progression asked with named answers and given the prior CT). Built: board loader,
+five open-model arms + the Gemini-only full-record arm, prior-CT join + two-scan CT input, Vertex Gemini
+adapter (cache, spend cap), overflow / missing / errors lists, forced-answer scoring with stratified
+bootstrap intervals and matched comparisons (`results.final_metrics --tb`), `scripts/vlm_preflight.py`,
+`scripts/vlm_pilot_report.py`, `tests/`. Done 10-14/15: both 20-case pilots; Gemini stage 1 (four inputs
+without CT, $256) and stage 2 (CT inputs, $179); all six scored (`results_tb_v1_7/tb_scores*.csv` on the
+mount). Next: open models on weill after its hand-off Steps 0-1. Prior CT comes from
+`vista_bench_v1_7.per_ct_prior_ct_link` (vista_bench `src/vistabench/per_ct_prior_link.py`, on main 9a788ea).
 
 ## ✅ Landed to `main` — modular VLM preprocessing roadmap (2026-07-15)
 

@@ -77,10 +77,37 @@ Models are defined in the config as `type` + `name`. The **type** must match a k
 | **lingshu** | `lingshu-medical-mllm/Lingshu-7B` | |
 | **llava** | `llava-hf/llava-1.5-7b-hf` | |
 | **llavamed** | `microsoft/llava-med-v1.5-mistral-7b` | LLaVA-Med needs llava env (see setup). |
+| **vertex_gemini** | `gemini-3.1-pro-preview` | Vertex AI REST API, no GPU; settings in the config's `vertex:` block. Responses cached under `{cache_dir}/vertex_gemini_responses/`. |
 
 **Note:** Gemma3, Qwen3-VL, InternVL3.5, and OctoMed are wired for vLLM inference and constrained decoding. For other models, check adapter support in `src/models/` before adding to config.
 
 ---
+
+## Tumor-board questions (vista_bench_v1_7)
+
+Three no-rubric board questions (`progression_assessment_answer`, `radiation_oligoprogression_answer`,
+`pneumonitis_infection_answer`) read straight from `vista_bench_v1_7.tb_classification_tasks` (registry
+`"loader": "bq_table"`, per-task `dataset`), with prediction time a week before the board. Arms:
+`no_image`, `axial_all_image`, `no_notes` (EHR without clinical notes), `summary` and `summary_image`
+(the board-time LLM summary instead of the EHR), plus `no_image_uncut` (no EHR cut; Gemini only, test
+split only via config `arm_splits`). Progression's CT arms also get the **prior CT** (30 + 30 slices)
+from `vista_bench_v1_7.per_ct_prior_ct_link`, joined by current accession for any registry task with a
+`prior_ct` entry. Registry and prompts: `{base_dir}/tasks/valid_tasks.tb_v1_7.json`,
+`prompts_by_task.tb_v1_7.json` (the `tb_v1_6` files are what the first pilot ran).
+
+```bash
+cd src && python ../scripts/vlm_preflight.py --config ../configs/all_tasks.tb.gemini.yaml   # no model, checks inputs
+cd src && python -m vista_run.run_bq --config ../configs/all_tasks.tb.gemini_pilot.yaml --type vertex_gemini --name gemini-3.1-pro-preview
+cd src && python -m results.final_metrics --tb --config ../configs/all_tasks.tb.gemini.yaml   # {results_dir}/tb_scores.csv + tb_scores_matched_comparisons.csv
+```
+
+Beside each results CSV: `_overflow_` (prompts over the model's token limit, with their count),
+`_missing_` (rows the arm could not be built for, with the reason) and `_errors_` (failed calls,
+retried on the next run; a CT that can't be read is listed there too, never answered text-only). Gemini
+answers are cached by exact request (only readable ones), and `vertex.max_spend_usd` is a hard cap on new
+spend per run, counting calls in flight. Scores carry class-stratified 95% bootstrap intervals and an
+always-majority baseline row; the matched-comparisons file gives each arm minus the trimmed EHR (and
+summary + CT minus summary) on the same rows. Results hold per-patient answers and stay on the mount.
 
 ## Results
 
