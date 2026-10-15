@@ -1,0 +1,53 @@
+# Tumor-board questions on vista_bench_v1_7 (open models, five arms; v1.7 per Phil 10-14).
+# Plan: planning/vista_eval_vlm/vlm-tumor-board-questions-v1_6.md (on the shared mount).
+#
+# Paths are the shared su-vista mount, the same on phil-sllm-01 and the GPU boxes. A box
+# without that mount keeps its own git-ignored copy (e.g. configs/all_tasks.tb.vm.yaml).
+# Results hold per-patient answers: they stay on the mount, never in git.
+
+paths:
+  base_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/base"
+  results_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/results_tb_v1_7"
+  ct_snapshot_prefix: "chaudhari_lab/ct_data/ct_scans/vista/feb26"
+  valid_tasks: "tasks/valid_tasks.tb_v1_7.json"
+  prompts: "tasks/prompts_by_task.tb_v1_7.json"
+
+model:
+  device: "cuda"
+
+runtime:
+  cache_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/model_cache"
+  batch_size: 16
+  max_new_tokens: 1024
+  # Forces every answer onto the task's options (Yes/No, or the registry `choices`).
+  use_constrained_decoding_for_binary: true
+
+models:
+  - type: "gemma3"
+    name: "google/medgemma-1.5-4b-it"
+  - type: "qwen3vl"
+    name: "Qwen/Qwen3-VL-8B-Instruct"
+  - type: "intern"
+    name: "OpenGVLab/InternVL3_5-8B-hf"
+
+tasks:
+  - progression_assessment_answer
+  - radiation_oligoprogression_answer
+  - pneumonitis_infection_answer
+
+experiments:
+  - no_image
+  - axial_all_image
+  - no_notes
+  - summary
+  - summary_image
+
+# Ryan's EHR cut: last 100 distinct dates, then about 210,000 characters.
+timeline_truncation:
+  mode: "last_k_events"
+  k: 100
+
+# The live EHR adapter reads LUMIA files from corpus_dir (the retriever stays off).
+retrieval:
+  enabled: false
+  corpus_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/thoracic_cohort_lumia"

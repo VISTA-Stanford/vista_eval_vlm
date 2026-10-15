@@ -48,6 +48,10 @@ configs/*
 !configs/
 !configs/all_tasks.yaml
 !configs/all_tasks.rung0.yaml
+!configs/all_tasks.tb.yaml
+!configs/all_tasks.tb.gemini.yaml
+!configs/all_tasks.tb.gemini_pilot.yaml
+!configs/all_tasks.tb.gemini_pilot_ct.yaml
 !configs/cls_config.yaml
 !configs/det_config.yaml
 !configs/seg_config.yaml

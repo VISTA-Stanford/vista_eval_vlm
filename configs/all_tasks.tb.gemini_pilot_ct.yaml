@@ -1,0 +1,70 @@
+# Tumor-board questions on vista_bench_v1_7: CT-arm PILOT (Phil 10-14: CT arms once the prior is wired), 20 cases each.
+# Plan: planning/vista_eval_vlm/vlm-tumor-board-questions-v1_6.md (on the shared mount).
+#
+# Paths are the shared su-vista mount, the same on phil-sllm-01 and the GPU boxes. A box
+# without that mount keeps its own git-ignored copy (e.g. configs/all_tasks.tb.vm.yaml).
+# Results hold per-patient answers: they stay on the mount, never in git.
+
+paths:
+  base_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/base"
+  results_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/results_tb_v1_7_pilot_ct"
+  ct_snapshot_prefix: "chaudhari_lab/ct_data/ct_scans/vista/feb26"
+  valid_tasks: "tasks/valid_tasks.tb_v1_7.json"
+  prompts: "tasks/prompts_by_task.tb_v1_7.json"
+
+model:
+  device: "cpu"
+
+runtime:
+  cache_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/model_cache"
+  batch_size: 16
+  # Gemini 3.1 Pro spends output tokens thinking before the one-word answer.
+  max_new_tokens: 8192
+  # Forces every answer onto the task's options (Yes/No, or the registry `choices`).
+  use_constrained_decoding_for_binary: true
+
+models:
+  - type: "vertex_gemini"
+    name: "gemini-3.1-pro-preview"
+
+# Vertex settings. media_resolution and thinking_level unset = the model defaults.
+vertex:
+  project: "som-nero-plevriti-deidbdf"
+  location: "global"
+  concurrency: 8
+  max_spend_usd: 30
+  # Dollars per million tokens, for the cost report (Gemini 3.1 Pro preview, Vertex,
+  # 2026-10): the whole request is billed at the long rate when the prompt is over 200k.
+  price_per_mtok:
+    long_context_over: 200000
+    input: 2.0
+    output: 12.0
+    input_long: 4.0
+    output_long: 18.0
+
+tasks:
+  - progression_assessment_answer
+  - radiation_oligoprogression_answer
+
+# CT arms: progression gets the prior CT (60 slices), oligoprogression the current CT (30).
+experiments:
+  - axial_all_image
+  - summary_image
+
+# Ryan's EHR cut: last 100 distinct dates, then about 210,000 characters.
+timeline_truncation:
+  mode: "last_k_events"
+  k: 100
+
+# The live EHR adapter reads LUMIA files from corpus_dir (the retriever stays off).
+retrieval:
+  enabled: false
+  corpus_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/thoracic_cohort_lumia"
+
+# The same 20 cases on every arm.
+row_sample:
+  n: 20
+  seed: 0
+  require_ct: true
+  require_summary: true
+  require_prior: true
