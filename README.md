@@ -109,6 +109,44 @@ spend per run, counting calls in flight. Scores carry class-stratified 95% boots
 always-majority baseline row; the matched-comparisons file gives each arm minus the trimmed EHR (and
 summary + CT minus summary) on the same rows. Results hold per-patient answers and stay on the mount.
 
+## Radiology progression vs the prior CT (Codex)
+
+The per-CT progression task (`vista_bench_v1_7.radiology_progression_tasks`: stable / progression /
+response / mixed against the prior CT) asked of GPT-5.6 Sol through the Codex CLI (`--type codex_exec`).
+Image-only arms, never the scan's report or EHR (the label was read from that report): `ct_pair` (prior
+then current CT) and `ct_current`. Every slice up to 250 per scan, native 512 px, chest windows as RGB,
+sent as JPEG 95. The task's class names come from vista_bench's registry through vista-eval's
+`vistabench-eval` package (registry field `shared_task`), and rows key on the scan, not the patient.
+Plan: `planning/vista_eval_vlm/vlm-radiology-progression-codex.md` (on the mount).
+
+Each call is sealed: Codex's tools are off (shell, web search, apps, browser, plugins, memories) and it
+runs under bubblewrap with the data mount, code folders and cloud credentials hidden. Needs `codex`
+(signed in) and `bwrap` on the box, and an env with `vistabench-eval` installed (see the plan).
+
+```bash
+.venv/bin/python scripts/codex_seal_check.py                      # proves the call can't see the mount
+.venv/bin/python scripts/radprog_preflight.py --config configs/radiology_progression.codex_pilot.yaml   # no model
+.venv/bin/python scripts/codex_synthetic_smoke.py --config configs/radiology_progression.codex_pilot.yaml
+cd src && ../.venv/bin/python -m vista_run.run_bq --config ../configs/radiology_progression.codex_pilot.yaml --type codex_exec --name gpt-5.6-sol
+cd src && ../.venv/bin/python -m results.final_metrics --tb --config ../configs/radiology_progression.codex_pilot.yaml
+cd src && ../.venv/bin/python -m results.final_metrics --probe --config ../configs/radiology_progression.codex_pilot.yaml
+```
+
+**GPT-6 Astra on the Stanford Health Care AI Hub** (`--type aihub_openai`, key `AI_HUB_API_KEY` in the
+environment or `~/.config/vista/aihub.env`): Azure takes at most 50 images per request, so the first look
+sends 25 + 25 slices, one scan per class, paired arm only. From phil-sllm-01 the hub's firewall rejects any
+request over ~48 KB (about two slices); `scripts/aihub_body_cap_probe.py` measures that limit from the box
+you are on, synthetic images only. `bash scripts/setup_api_env.sh` builds the light env (`.venv-api`).
+
+```bash
+.venv-api/bin/python scripts/aihub_body_cap_probe.py
+cd src && ../.venv-api/bin/python -m vista_run.run_bq --config ../configs/radiology_progression.astra_first_look.yaml --type aihub_openai --name gpt-6-astra
+```
+
+Answers are cached by exact request on the mount, so the full run (`radiology_progression.codex.yaml`,
+100 per class) reuses the pilot's 10 per class. `codex.max_total_tokens` caps new tokens per run; hitting
+the subscription's usage limit stops new calls and a rerun picks up the rest.
+
 ## Results
 
 Output CSVs are written under:
