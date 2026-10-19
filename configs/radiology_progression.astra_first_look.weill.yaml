@@ -1,0 +1,72 @@
+# Radiology progression vs the prior CT as a VLM question: GPT-6 Astra on the Stanford Health Care AI Hub.
+# This copy is for weill-p01, where the bucket is gcsfuse-mounted under /data/fries/users/padamson/mnt.
+# First look (Phil 10-19): one scan per class, paired arm only, run from weill-p01 (from phil-sllm-01 the
+# hub's firewall blocks any request over ~48 KB). Run scripts/aihub_body_cap_probe.py first.
+# Plan: planning/vista_eval_vlm/vlm-radiology-progression-codex.md (on the shared mount).
+#
+# Image-only: the question and the CTs, never the scan's report or EHR (the label was read from
+# that report). Registry and prompts on the mount: tasks/valid_tasks.radprog_v1_7.json (class
+# names come from vista_bench's registry via vistabench_eval) and prompts_by_task.radprog_v1_7.json.
+# Results hold per-scan answers: they stay on the mount, never in git.
+
+paths:
+  base_dir: "/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/base"
+  results_dir: "/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/results_radprog_v1_7/astra_first_look"
+  ct_snapshot_prefix: "chaudhari_lab/ct_data/ct_scans/vista/feb26"
+  # weill-p01 mounts the bucket here, not under /mnt: the CT reader looks in <mount_root>/<bucket>/.
+  mount_root: "/data/fries/users/padamson/mnt"
+  valid_tasks: "tasks/valid_tasks.radprog_v1_7.json"
+  prompts: "tasks/prompts_by_task.radprog_v1_7.json"
+
+model:
+  device: "cpu"
+
+runtime:
+  # Shared with the full run, so the pilot's answers are reused there (same scans, same requests).
+  cache_dir: "/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/model_cache"
+  batch_size: 1
+  # One paired row is ~500 slices (~400 MB decoded): keep the read-ahead small.
+  num_workers: 1
+  prefetch_factor: 2
+  max_new_tokens: 1024
+  use_constrained_decoding_for_binary: true
+
+models:
+  - type: "aihub_openai"
+    name: "gpt-6-astra"
+
+tasks:
+  - radiology_progression
+
+experiments:
+  - ct_pair
+
+# Azure takes at most 50 images per request, so 25 evenly spaced slices per scan (prior + current = 50);
+# native 512 px; chest windows as RGB (red lung, green soft tissue, blue bone).
+ct_arms:
+  select: {fn: "up_to_k", k: 25}
+  preprocess: {windowing: "chest_rgb", target_size: 512}
+
+# Class-balanced test sample, nested: the pilot's 10 per class are among the full run's 100.
+row_sample: {per_class: 1, seed: 20261015, splits: [test], require_ct: true}
+
+aihub:
+  # Key: AI_HUB_API_KEY in the environment, else this file (one line AI_HUB_API_KEY=..., mode 600).
+  key_file: "~/.config/vista/aihub.env"
+  reasoning_effort: null
+  jpeg_quality: 95
+  concurrency: 1
+  max_total_tokens: 200000
+
+# VLM vs linear probe on the same scans (python -m results.final_metrics --probe).
+probe_comparison:
+  task: radiology_progression
+  key: ct_accession_number
+  select_split: valid
+  score_split: test
+  arms:
+    # Until the v1.7 run-all scores this task: the 10-14 smoke on the old MerlinOnc v2.2 vectors.
+    ct_pair:
+      - "/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/ad_hoc/prior_ct_pair_smoke_2026-10-14/results/merlinonc_top_centered_v2.2_prior_pair/merlinonc_top_centered_v2.2_prior_pair_per_example.parquet"
+    ct_current:
+      - "/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/ad_hoc/prior_ct_pair_smoke_2026-10-14/results/merlinonc_top_centered_v2.2/merlinonc_top_centered_v2.2_per_example.parquet"

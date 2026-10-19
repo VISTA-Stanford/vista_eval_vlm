@@ -91,7 +91,7 @@ def images_line(n_prior, n_current, gap_days=None, windowing=None):
 
 class PromptDataset(Dataset):
     def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None, ct_snapshot_prefix=None, fail_on_ct_error=False,
-                 ct_select=None, ct_preprocess=None):
+                 ct_select=None, ct_preprocess=None, mount_root=None):
         """
         Args:
             df: Dataframe containing the data.
@@ -102,6 +102,7 @@ class PromptDataset(Dataset):
             model_type: Model type string (e.g., 'gemma3') to determine preprocessing.
             ct_dir: Optional path from config paths.ct_dir. If set and the resolved CT filename ({study}__{series}.nii.gz) exists under ct_dir, load from disk; else use GCP.
             ct_snapshot_prefix: CT storage prefix (config paths.ct_snapshot_prefix). None -> DEFAULT_CT_SNAPSHOT_PREFIX (feb26). Threaded into the blob resolver so re-materialization is a config/data change.
+            mount_root: Directory the bucket is gcsfuse-mounted under (config paths.mount_root). None -> /mnt; CTs are read from <mount_root>/<bucket>/<blob>.
         """
         self.df = df.reset_index(drop=True)
         self.prompt_col = prompt_col
@@ -110,6 +111,7 @@ class PromptDataset(Dataset):
         self.storage_client = storage_client
         self.ct_snapshot_prefix = ct_snapshot_prefix or DEFAULT_CT_SNAPSHOT_PREFIX
         self.bucket_name = 'su-vista-uscentral1'
+        self.mount_root = Path(mount_root or "/mnt")
         self.model_type = model_type
         self.is_gemma = model_type is not None and 'gemma' in model_type.lower()
         self.ct_dir = Path(ct_dir) if ct_dir else None
@@ -251,10 +253,10 @@ class PromptDataset(Dataset):
                 local_path = self.ct_dir / filename if self.ct_dir else None
                 use_local = local_path is not None and local_path.exists()
                 # Prefer reading the feb26 NIfTI directly off the gcsfuse mount
-                # (/mnt/<bucket>/<blob>) — no full download, and GCS Anywhere Cache
+                # (<mount_root>/<bucket>/<blob>, /mnt unless paths.mount_root says otherwise) — no full download, and GCS Anywhere Cache
                 # accelerates repeat reads. Fall back to a storage-client download to a
                 # temp file only when the mount path is absent.
-                mount_path = Path("/mnt") / self.bucket_name / blob_path
+                mount_path = self.mount_root / self.bucket_name / blob_path
                 use_mount = (not use_local) and mount_path.exists()
                 # Source-of-image log (rung-0 0a preflight seam): which route each CT row
                 # takes (local ct_dir / gcsfuse mount / GCS download) + the resolved blob,

@@ -203,7 +203,7 @@ def iter_captured_examples(orch, task_info, experiment, model_type, limit=None):
     dataset = PromptDataset(
         df=df_exp, prompt_col="dynamic_prompt", experiment=experiment,
         storage_client=orch.storage_client, model_type=model_type, ct_dir=ct_dir,
-        ct_snapshot_prefix=ct_snapshot_prefix,
+        ct_snapshot_prefix=ct_snapshot_prefix, mount_root=orch.cfg.get("paths", {}).get("mount_root"),
     )
     is_gemma = model_type is not None and "gemma" in model_type.lower()
     # windowing branch that produced the pixels (golden gate-2 reasoning aid): legacy
