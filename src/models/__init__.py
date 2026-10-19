@@ -71,6 +71,18 @@ try:
 except (ImportError, SyntaxError, AttributeError):
     pass
 
+try:
+    from .codex_exec import CodexExecAdapter
+    MODEL_REGISTRY["codex_exec"] = CodexExecAdapter
+except (ImportError, SyntaxError, AttributeError):
+    pass
+
+try:
+    from .aihub_openai import AIHubOpenAIAdapter
+    MODEL_REGISTRY["aihub_openai"] = AIHubOpenAIAdapter
+except (ImportError, SyntaxError, AttributeError):
+    pass
+
 def load_model_adapter(model_type, model_name, device, cache_dir):
     if model_type not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model type: {model_type}")
