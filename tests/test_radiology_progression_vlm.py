@@ -606,7 +606,8 @@ def test_panel_prompt_lists_every_question_by_its_answer_key(monkeypatch):
     o.prompts_map = {"panel::ct_current": f"Look. {IMAGES_LINE_TOKEN}\n[QUESTIONS]\nAnswer each."}
     out = o._build_prompts_for_experiment(_panel_rows("lobe_a"), panel, "ct_current", "patient_string")
     q = out["dynamic_prompt"].iloc[0]
-    assert "- lobe_a: Lesion in lobe A?\n- lobe_b: Lesion in lobe B?" in q and "[QUESTIONS]" not in q
+    assert '- lobe_a: Lesion in lobe A? Options: "No" / "Yes"\n- lobe_b: Lesion in lobe B? Options: "No" / "Yes"' in q
+    assert "[QUESTIONS]" not in q
     o.prompts_map = {"panel::ct_current": f"Look. {IMAGES_LINE_TOKEN}"}
     with pytest.raises(ValueError, match="QUESTIONS"):
         o._build_prompts_for_experiment(_panel_rows("lobe_a"), panel, "ct_current", "patient_string")
@@ -674,3 +675,85 @@ def test_compare_to_probe_runs_per_panel_member(tmp_path, monkeypatch):
     assert out.loc["lobe_a", "balanced_accuracy_diff"] == pytest.approx(-0.25)
     # lobe_b: the 2 scored scans; probe says 0,0 -> 0.5 ; VLM perfect -> +0.5
     assert out.loc["lobe_b", "n_matched"] == 2 and out.loc["lobe_b", "balanced_accuracy_diff"] == pytest.approx(0.5)
+
+
+# --- the real 21-question lesion panel, end to end (parse -> result rows -> split -> scores) -------
+LESION_PANEL_TASKS = ([f"per_ct_lung_lobe_{x}" for x in ("rul", "rml", "rll", "lul", "lll")]
+                      + [f"per_ct_lesion_{s}" for s in ("lungs", "lymph_nodes", "bone", "pleura", "liver", "adrenal",
+                                                        "peritoneum", "mediastinum", "kidney", "soft_tissue", "thyroid",
+                                                        "heart", "spleen", "pancreas", "breast", "esophagus")])
+LESION_PANEL = {"task_name": "per_ct_lesion_panel", "panel_tasks": LESION_PANEL_TASKS, "sample_task": "per_ct_lung_lobe_rul",
+                "task_source_csv": "per_ct_diagnostic_tasks", "loader": "bq_table", "label_from_own_report": True}
+
+
+def _truth(task, i):
+    # 8 scans: scans 0-3 positive, 4-7 negative, for every task (both classes present everywhere).
+    return 1 if i < 4 else 0
+
+
+def _panel_hub(tmp_path, monkeypatch, drop=None):
+    """AI Hub adapter whose fake hub answers every field its request schema requires, using each task's own
+    option words from the registry (label 1 / label 0): the truth for every task except per_ct_lesion_bone,
+    which always gets its negative option (and `drop`, left out of the reply)."""
+    a, calls = _hub_adapter(tmp_path / "hubcache", monkeypatch, [])
+    _, members = resolve_panel(LESION_PANEL)
+    words = {m["task_name"]: m["mapping"] for m in members}
+
+    def fake_post(data):
+        body = json.loads(data)
+        calls.append(body)
+        i = int(body["messages"][0]["content"][-1]["text"].split()[-1])
+        req = body["response_format"]["json_schema"]["schema"]["required"]
+        ans = {k: words[k]["0" if k == "per_ct_lesion_bone" else str(_truth(k, i))] for k in req if k != drop}
+        return 200, "application/json", json.dumps({"choices": [{"message": {"content": json.dumps(ans)}}],
+                                                    "usage": {"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300}})
+    a._post = fake_post
+    return a, calls
+
+
+def test_real_lesion_panel_parses_21_fields_and_scores_every_task(tmp_path, monkeypatch):
+    panel, members = resolve_panel(LESION_PANEL)  # the real vendored vista_bench registry, no fixture
+    assert len(members) == 21
+    opts = {m["task_name"]: m["choices"] for m in members}
+    assert all(opts[t] == ["No", "Yes"] for t in LESION_PANEL_TASKS[:5])
+    # The site tasks don't answer Yes / No: their options are the registry's own words.
+    assert all(opts[t] == ["None, or only benign", "Non-benign finding"] for t in LESION_PANEL_TASKS[5:])
+    fields = _forced(panel)
+    assert list(fields) == LESION_PANEL_TASKS
+    a, calls = _panel_hub(tmp_path, monkeypatch)
+    outs = a.infer(None, None, [{"question": f"scan {i}", "images": []} for i in range(8)], 4096, fields)
+    sch = calls[0]["response_format"]["json_schema"]["schema"]
+    assert sch["required"] == LESION_PANEL_TASKS and len(sch["properties"]) == 21
+    assert all(o.get("error") is None and len(json.loads(o["text"])) == 21 for o in outs)
+    # Result rows exactly as the run writes them, then the panel file.
+    orch = TaskOrchestrator.__new__(TaskOrchestrator)  # no BQ / GCS clients, no weights
+    orch.cfg, orch.model, orch.processor = {"runtime": {"max_new_tokens": 5}}, None, None
+    rows = []
+    for i, out in enumerate(outs):
+        raw = pd.Series({"index": f"S{i}", "ct_accession_number": f"S{i}", "person_id": i, "split": "test",
+                         "label": _truth("per_ct_lung_lobe_rul", i),
+                         **{f"label__{t}": _truth(t, i) for t in LESION_PANEL_TASKS}, "dynamic_prompt": "P"})
+        rows.append(orch._build_result_row({"raw_row": raw, "image": None}, out, "ct_current", None, ("dynamic_prompt",)))
+    base, res = tmp_path / "base", tmp_path / "res"
+    (base / "tasks").mkdir(parents=True)
+    (base / "tasks" / "reg.json").write_text(json.dumps([LESION_PANEL]))
+    d = res / "per_ct_diagnostic_tasks" / "per_ct_lesion_panel" / "gpt-test"
+    d.mkdir(parents=True)
+    pd.DataFrame(rows).to_csv(d / "per_ct_lesion_panel_results_ct_current.csv", index=False)
+    cfg = {"paths": {"base_dir": str(base), "results_dir": str(res), "valid_tasks": "tasks/reg.json"},
+           "tasks": ["per_ct_lesion_panel"], "models": [{"type": "aihub_openai", "name": "gpt-test"}]}
+    (tmp_path / "c.yaml").write_text(yaml.safe_dump(cfg))
+    out = score_tb(tmp_path / "c.yaml", tmp_path / "scores.csv", n_boot=20)
+    t = out[(out.split == "test") & (out.arm == "ct_current") & (out.model == "gpt-test")].set_index("task")
+    assert sorted(t.index) == sorted(LESION_PANEL_TASKS) and (t["n"] == 8).all() and (t["n_unreadable"] == 0).all()
+    # Hand-worked: answers match the truth on 20 tasks -> 1.0; bone always "No" -> sensitivity 0, specificity 1 -> 0.5.
+    assert t.loc["per_ct_lesion_bone", "balanced_accuracy"] == pytest.approx(0.5)
+    assert t.loc["per_ct_lesion_bone", "sensitivity"] == pytest.approx(0.0)
+    assert (t.drop(index="per_ct_lesion_bone")["balanced_accuracy"] == 1.0).all()
+
+
+def test_real_lesion_panel_reply_missing_one_field_is_an_error(tmp_path, monkeypatch):
+    panel, _ = resolve_panel(LESION_PANEL)
+    a, _ = _panel_hub(tmp_path, monkeypatch, drop="per_ct_lesion_spleen")
+    out = a.infer(None, None, [{"question": "scan 0", "images": []}], 4096, _forced(panel))[0]
+    assert out["error"] and "1 answers missing" in out["error"] and "per_ct_lesion_spleen" in out["error"]
