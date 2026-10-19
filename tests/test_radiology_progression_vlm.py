@@ -553,3 +553,124 @@ def test_ct_is_read_from_the_configured_mount_root(tmp_path, monkeypatch, capsys
     # Negative control: the default /mnt has no such blob and there is no storage client, so nothing loads.
     slices, _ = PromptDataset(pd.DataFrame([ROW]), **kw)._load_ct("s", "x", ROW, 0)
     assert slices is None and "source=none" in capsys.readouterr().out
+
+
+# --- panels: several shared tasks asked in one call per scan -------------------------------
+from tasks.registry import resolve_panel  # noqa: E402
+from vista_run.run_bq import forced_choices_for as _forced  # noqa: E402
+
+PANEL_MANIFEST = {"tasks": {
+    t: {"task_group": "per_ct_diagnostic", "question": q, "is_binary": True, "scope": "cohort", "grain": "per_ct_landmark",
+        "label_mapping": {"1": "Yes", "0": "No", "-1": "Not answerable"}}
+    for t, q in (("lobe_a", "Lesion in lobe A?"), ("lobe_b", "Lesion in lobe B?"))}}
+PANEL = {"task_name": "panel", "panel_tasks": ["lobe_a", "lobe_b"], "sample_task": "lobe_a",
+         "task_source_csv": "per_ct_diagnostic_tasks", "loader": "bq_table", "label_from_own_report": True}
+
+
+def test_panel_resolves_members_as_ordinary_tasks():
+    panel, members = resolve_panel(PANEL, PANEL_MANIFEST)
+    assert [m["task_name"] for m in members] == ["lobe_a", "lobe_b"]
+    assert all(m["panel_of"] == "panel" and m["choices"] == ["No", "Yes"] and m["label_from_own_report"] for m in members)
+    assert members[1]["question"] == "Lesion in lobe B?" and panel["row_key"] == "ct_accession_number"
+    assert _forced(panel) == {"lobe_a": ["No", "Yes"], "lobe_b": ["No", "Yes"]}
+    with pytest.raises(ValueError, match="sample_task"):
+        resolve_panel({**PANEL, "sample_task": "lobe_c"}, PANEL_MANIFEST)
+
+
+def _panel_rows(task):
+    accs = [f"S{i}" for i in range(6)]
+    if task == "lobe_a":
+        labels = [1, 1, 1, 0, 0, 0]
+    else:
+        labels = [0, 1, -1, 0, 1, 0]
+    df = pd.DataFrame({"person_id": range(6), "ct_accession_number": accs, "label": labels, "split": "test",
+                       "image_study_uid": [f"st{i}" for i in range(6)], "image_series_uid": [f"se{i}" for i in range(6)]})
+    return df.iloc[:5] if task == "lobe_b" else df  # lobe_b has no row for S5
+
+
+def test_panel_loader_samples_on_the_sample_task_and_joins_every_label(monkeypatch):
+    panel, _ = resolve_panel(PANEL, PANEL_MANIFEST)
+    o = _stub_orch(monkeypatch, _panel_rows("lobe_a"), {"row_sample": {"per_class": 2, "seed": 3, "splits": ["test"]}})
+    monkeypatch.setattr(run_bq_mod, "fetch_task_data_from_bq", lambda client, table, task: _panel_rows(task))
+    df, _, _ = o._load_bq_table_task_data(panel)
+    assert len(df) == 4 and sorted(df["label"].tolist()) == [0, 0, 1, 1]  # 2 per class of lobe_a
+    want_b = dict(zip(_panel_rows("lobe_b").ct_accession_number, _panel_rows("lobe_b").label))
+    for _, r in df.iterrows():
+        assert r["label__lobe_a"] == r["label"]
+        assert (pd.isna(r["label__lobe_b"]) and r["ct_accession_number"] not in want_b) or r["label__lobe_b"] == want_b[r["ct_accession_number"]]
+
+
+def test_panel_prompt_lists_every_question_by_its_answer_key(monkeypatch):
+    panel, _ = resolve_panel(PANEL, PANEL_MANIFEST)
+    o = _stub_orch(monkeypatch, _panel_rows("lobe_a"))
+    o.prompts_map = {"panel::ct_current": f"Look. {IMAGES_LINE_TOKEN}\n[QUESTIONS]\nAnswer each."}
+    out = o._build_prompts_for_experiment(_panel_rows("lobe_a"), panel, "ct_current", "patient_string")
+    q = out["dynamic_prompt"].iloc[0]
+    assert "- lobe_a: Lesion in lobe A?\n- lobe_b: Lesion in lobe B?" in q and "[QUESTIONS]" not in q
+    o.prompts_map = {"panel::ct_current": f"Look. {IMAGES_LINE_TOKEN}"}
+    with pytest.raises(ValueError, match="QUESTIONS"):
+        o._build_prompts_for_experiment(_panel_rows("lobe_a"), panel, "ct_current", "patient_string")
+
+
+def test_hub_panel_schema_has_one_field_per_question_and_parse_needs_all():
+    fields = {"lobe_a": ["No", "Yes"], "lobe_b": ["No", "Yes"]}
+    sch = hub_request("Q", [], fields, 100)["response_format"]["json_schema"]["schema"]
+    assert sch["required"] == ["lobe_a", "lobe_b"] and sch["properties"]["lobe_b"]["enum"] == ["No", "Yes"]
+    reply = lambda obj: json.dumps({"choices": [{"message": {"content": json.dumps(obj)}}], "usage": {}})
+    ans, _, err, _ = hub_parse(200, "application/json", reply({"lobe_b": "Yes", "lobe_a": "No"}), fields)
+    assert err is None and json.loads(ans) == {"lobe_a": "No", "lobe_b": "Yes"}
+    assert "1 answers missing" in hub_parse(200, "application/json", reply({"lobe_a": "No"}), fields)[2]
+    assert "off their options" in hub_parse(200, "application/json", reply({"lobe_a": "No", "lobe_b": "Maybe"}), fields)[2]
+
+
+def _panel_results(tmp_path):
+    base, res = tmp_path / "base", tmp_path / "res"
+    (base / "tasks").mkdir(parents=True)
+    (base / "tasks" / "reg.json").write_text(json.dumps([PANEL]))
+    d = res / "per_ct_diagnostic_tasks" / "panel" / "gpt-test"
+    d.mkdir(parents=True)
+    # 4 scans; lobe_a truth 1,1,0,0 ; lobe_b truth 0,1,-1(unscored),NaN(no row)
+    ans = [{"lobe_a": "Yes", "lobe_b": "No"}, {"lobe_a": "No", "lobe_b": "Yes"},
+           {"lobe_a": "No", "lobe_b": "Yes"}, {"lobe_a": "Yes", "lobe_b": "No"}]
+    pd.DataFrame({"index": ["S0", "S1", "S3", "S4"], "ct_accession_number": ["S0", "S1", "S3", "S4"], "split": "test",
+                  "label": [1, 1, 0, 0], "label__lobe_a": [1, 1, 0, 0], "label__lobe_b": [0, 1, -1, None],
+                  "model_response": [json.dumps(a) for a in ans]}).to_csv(d / "panel_results_ct_current.csv", index=False)
+    return base, res
+
+
+def test_panel_split_and_per_task_scores_hand_worked(tmp_path, monkeypatch):
+    monkeypatch.setattr("tasks.registry._manifest", lambda: PANEL_MANIFEST)
+    base, res = _panel_results(tmp_path)
+    cfg = {"paths": {"base_dir": str(base), "results_dir": str(res), "valid_tasks": "tasks/reg.json"},
+           "tasks": ["panel"], "models": [{"type": "aihub_openai", "name": "gpt-test"}]}
+    (tmp_path / "c.yaml").write_text(yaml.safe_dump(cfg))
+    out = score_tb(tmp_path / "c.yaml", tmp_path / "scores.csv", n_boot=20)
+    a = out[(out.task == "lobe_a") & (out.split == "test") & (out.arm == "ct_current")].iloc[0]
+    # lobe_a: truth 1,1,0,0 ; answers 1,0,0,1 -> sensitivity 1/2, specificity 1/2
+    assert a.n == 4 and a.balanced_accuracy == pytest.approx(0.5)
+    b = out[(out.task == "lobe_b") & (out.split == "test") & (out.arm == "ct_current")].iloc[0]
+    # lobe_b: only S0 (0, said No) and S1 (1, said Yes) are scored -> perfect
+    assert b.n == 2 and b.balanced_accuracy == pytest.approx(1.0)
+    split_b = pd.read_csv(res / "per_ct_diagnostic_tasks" / "lobe_b" / "gpt-test" / "lobe_b_results_ct_current.csv")
+    assert split_b["index"].tolist() == ["S0", "S1", "S3"] and split_b["label"].tolist() == [0, 1, -1]
+
+
+def test_compare_to_probe_runs_per_panel_member(tmp_path, monkeypatch):
+    monkeypatch.setattr("tasks.registry._manifest", lambda: PANEL_MANIFEST)
+    base, res = _panel_results(tmp_path)
+    rows = []
+    for task, lab, pred in (("lobe_a", [1, 1, 0, 0], [1, 1, 1, 0]), ("lobe_b", [0, 1], [0, 0])):
+        acc = ["S0", "S1", "S3", "S4"][:len(lab)]
+        rows.append(pd.DataFrame({"task": task, "split": ["test"] * len(lab) + ["val", "val"], "accession_number": acc + ["V1", "V2"],
+                                  "label": lab + [0, 1], "pred_label": pred + [0, 1]}))
+    probe = tmp_path / "p_per_example.parquet"
+    pd.concat(rows).to_parquet(probe)
+    cfg = {"paths": {"base_dir": str(base), "results_dir": str(res), "valid_tasks": "tasks/reg.json"},
+           "probe_comparison": {"task": "panel", "arms": {"ct_current": [str(probe)]}}}
+    (tmp_path / "c.yaml").write_text(yaml.safe_dump(cfg))
+    out = compare_to_probe(tmp_path / "c.yaml", tmp_path / "cmp.csv", n_boot=20).set_index("task")
+    # lobe_a probe: truth 1,1,0,0 pred 1,1,1,0 -> 0.75 ; VLM 0.5 ; diff -0.25
+    assert out.loc["lobe_a", "probe_balanced_accuracy"] == pytest.approx(0.75)
+    assert out.loc["lobe_a", "balanced_accuracy_diff"] == pytest.approx(-0.25)
+    # lobe_b: the 2 scored scans; probe says 0,0 -> 0.5 ; VLM perfect -> +0.5
+    assert out.loc["lobe_b", "n_matched"] == 2 and out.loc["lobe_b", "balanced_accuracy_diff"] == pytest.approx(0.5)
