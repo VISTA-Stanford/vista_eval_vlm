@@ -36,6 +36,17 @@ def evenly_spaced_k(depth: int, k: int) -> list[int]:
     return indices
 
 
+def up_to_k(depth: int, k: int) -> list[int]:
+    """Every slice when the volume has ``k`` or fewer, else ``evenly_spaced_k(k)``.
+
+    The whole-volume CT arms (radiology progression, 250 per scan): a 2,000-slice CT can't go
+    whole into one call, and ``evenly_spaced_k`` on a short volume would repeat slices.
+    """
+    if depth <= 0 or k <= 0:
+        return []
+    return list(range(depth)) if depth <= k else evenly_spaced_k(depth, k)
+
+
 def every_n(depth: int, n: int) -> list[int]:
     """Every ``n``-th slice: ``0, n, 2n, ...`` while ``< depth``."""
     if depth <= 0 or n <= 0:
@@ -79,6 +90,7 @@ def all(depth: int) -> list[int]:  # noqa: A001 - deliberate selector name
 # name -> selector function. Params come from the config `select` dict.
 CT_SELECTORS = {
     "evenly_spaced_k": evenly_spaced_k,
+    "up_to_k": up_to_k,
     "every_n": every_n,
     "center": center,
     "center_k": center_k,

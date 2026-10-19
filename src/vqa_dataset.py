@@ -68,9 +68,30 @@ _CT_SLICE_COUNTS = {
     "no_report": 10,
 }
 
+# Placeholder a prompt carries when the image counts are only known once the CTs are read
+# (the whole-volume arms: every slice up to a cap, so the count varies by scan).
+IMAGES_LINE_TOKEN = "[IMAGES_LINE]"
+CT_WINDOW_LINES = {
+    "chest_rgb": "Each image shows three CT windows as colour channels: red = lung window, "
+                 "green = soft-tissue window, blue = bone window.",
+}
+
+
+def images_line(n_prior, n_current, gap_days=None, windowing=None):
+    """Say how many images are the prior CT and how many the current, in image order."""
+    if n_prior:
+        line = (f"IMAGES: the first {n_prior} images are axial slices of the PRIOR CT "
+                f"({int(gap_days)} days before the current CT), in slice order; the next {n_current} "
+                f"are axial slices of the CURRENT CT, in slice order.")
+    else:
+        line = f"IMAGES: the {n_current} images are axial slices of the CURRENT CT, in slice order."
+    extra = CT_WINDOW_LINES.get(windowing)
+    return line + (" " + extra if extra else "")
+
 
 class PromptDataset(Dataset):
-    def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None, ct_snapshot_prefix=None, fail_on_ct_error=False):
+    def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None, ct_snapshot_prefix=None, fail_on_ct_error=False,
+                 ct_select=None, ct_preprocess=None):
         """
         Args:
             df: Dataframe containing the data.
@@ -101,6 +122,10 @@ class PromptDataset(Dataset):
         # dataset stays picklable for spawn-mode workers — resolve_ct_selector returns a
         # closure that can't be pickled, and it must not exist at fork/spawn time.
         self._ct_slice_count = _CT_SLICE_COUNTS.get(experiment)
+        # A config-given selector / windowing (the whole-volume arms) replaces the legacy count.
+        self._ct_select = ct_select or (
+            {"fn": "evenly_spaced_k", "k": self._ct_slice_count} if self._ct_slice_count else None)
+        self._ct_preprocess = ct_preprocess or {}
         self._ct_adapter = None
         # Board tasks: a CT that cannot be read lists the row as an error instead of sending it
         # text-only (Ryan's default, kept for every other task).
@@ -178,17 +203,23 @@ class PromptDataset(Dataset):
                 # current CT's, each through the same slicer. A prior that cannot be read is an
                 # error for the row (`load_error`), never a silent one-scan answer.
                 prior_study = row.get('prior_image_study_uid', None)
+                n_current, n_prior = (len(img) if img is not None else 0), 0
                 if img is not None and prior_study is not None and pd.notna(prior_study):
                     p_img, p_sel = self._load_ct(prior_study, row.get('prior_image_series_uid', None), row, idx)
                     if p_img is None:
                         load_error = 'prior CT could not be loaded'
                     else:
+                        n_prior = len(p_img)
                         img = list(p_img) + list(img)
                         # Same shape as one scan (the viewer and golden harness read a list):
                         # the prior's slice positions, then the current's, in image order.
                         selected_indices = list(p_sel or []) + list(selected_indices or [])
-                elif img is None and self.fail_on_ct_error and self._ct_slice_count is not None:
+                elif img is None and self.fail_on_ct_error and self._ct_select is not None:
                     load_error = 'CT could not be loaded'
+                if IMAGES_LINE_TOKEN in question and img is not None and load_error is None:
+                    question = question.replace(IMAGES_LINE_TOKEN, images_line(
+                        n_prior, n_current, row.get('prior_gap_days', None),
+                        self._ct_preprocess.get('windowing')), 1)
 
         # 3. Build Item
         item = {
@@ -255,7 +286,7 @@ class PromptDataset(Dataset):
                 else:
                     ct_img = None
 
-                if ct_img is not None and self._ct_slice_count is not None:
+                if ct_img is not None and self._ct_select is not None:
                     # 3b: the legacy per-experiment CT branch (30/50/10 evenly-spaced
                     # axial slices + windowing) is dissolved into the CT modality
                     # adapter. The adapter reproduces the legacy sampler
@@ -267,7 +298,7 @@ class PromptDataset(Dataset):
                     # resolution + NIfTI load stay in this caller, unchanged.
                     if self._ct_adapter is None:
                         self._ct_adapter = CTAdapter(
-                            config={"select": {"fn": "evenly_spaced_k", "k": self._ct_slice_count}}
+                            config={"select": self._ct_select, "preprocess": self._ct_preprocess}
                         )
                     block = self._ct_adapter.contextualize(
                         ct_img.dataobj, {"model_type": self.model_type}

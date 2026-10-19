@@ -18,7 +18,7 @@ from google.cloud import storage
 # from meds_tools import patient_timeline
 # from meds2text.ontology import OntologyDescriptionLookupTable
 
-from vqa_dataset import PromptDataset, prompt_collate
+from vqa_dataset import PromptDataset, prompt_collate, IMAGES_LINE_TOKEN
 from models import load_model_adapter
 from context.presets import get_preset, SUMMARY_EXPERIMENTS
 from context.adapters.ehr import EHRAdapter, lumia_path_for
@@ -46,6 +46,7 @@ from retrieval.prompt_building import (
 # Dep-free predicate (imports nothing heavy) — gate the Yes/No decode constraint off the
 # task's mapping, not the registry `is_binary` bool (which a 3-class Yes/No task sets False).
 from results.task_mapping import is_binary_yes_no_task
+from tasks.registry import load_valid_tasks
 
 # All retrieval experiments (used for overwrite-output and data-loading dispatch)
 RETRIEVAL_EXPERIMENTS = RETRIEVAL_SINGLE_TIMELINE | RETRIEVAL_PER_ITERATION
@@ -63,7 +64,13 @@ _EHR_ADAPTER_EXPERIMENTS = {"no_image", "axial_all_image", "no_report", "timelin
 # Arms that attach the row's CT. For tasks read straight from a BQ table (registry
 # `"loader": "bq_table"`, the tumor-board tasks) a row without a CT is listed as missing
 # for these arms instead of being sent text-only.
-_CT_EXPERIMENTS = {"axial_all_image", "summary_image"}
+_CT_EXPERIMENTS = {"axial_all_image", "summary_image", "ct_pair", "ct_current"}
+
+# Image-only arms (plan planning/vista_eval_vlm/vlm-radiology-progression-codex.md): the task's own
+# question and the CT, no EHR or report. `ct_pair` attaches the prior CT (list it in the registry
+# `prior_ct.arms`); `ct_current` never does, even when the task table carries prior columns.
+# Their slice selector and windowing come from the config's `ct_arms` block.
+IMAGE_ONLY_EXPERIMENTS = {"ct_pair", "ct_current"}
 
 
 # Standard prior-scan columns on a task row (filled by `_attach_prior_ct`, read by the CT loader).
@@ -101,6 +108,19 @@ def attach_prior_ct(df, link, spec):
     return merged[has].copy(), merged[~has].copy()
 
 
+def per_class_sample(df, row_key, per_class, seed):
+    """Up to ``per_class`` rows of each label, drawn from a fixed seeded order of the rows.
+
+    Nested by construction: the rows kept at ``per_class=10`` are among those kept at 100 with
+    the same seed (each class is shuffled once by seed, then cut), so a pilot's scans are part of
+    the full run and its answers are reused from the cache.
+    """
+    parts = []
+    for _, grp in df.sort_values(row_key).groupby('label', sort=True):
+        parts.append(grp.sample(frac=1.0, random_state=seed).head(per_class))
+    return pd.concat(parts).copy() if parts else df.iloc[:0].copy()
+
+
 def forced_choices_for(task_info, use_constrained=True):
     """The answer list decoding is forced onto, or None for free decoding.
 
@@ -135,8 +155,8 @@ class TaskOrchestrator:
         valid_task_path = os.path.join(self.base_path, self.cfg['paths']['valid_tasks'])
         prompts_path = os.path.join(self.base_path, self.cfg['paths']['prompts'])
 
-        with open(valid_task_path, 'r') as f:
-            self.valid_tasks = json.load(f)
+        # `shared_task` entries take their class names etc. from the vista_bench registry.
+        self.valid_tasks = load_valid_tasks(valid_task_path)
         with open(prompts_path, 'r') as f:
             self.prompts_map = json.load(f)
         prompts_summarized_path = os.path.join(
@@ -177,8 +197,8 @@ class TaskOrchestrator:
             self.cfg['runtime']['cache_dir']
         )
         if hasattr(self.adapter, "configure"):
-            # API adapters (Vertex Gemini) take run settings from the config's `vertex:` block.
-            self.adapter.configure(self.cfg.get("vertex", {}))
+            # API adapters take run settings from their config block (`vertex:`, `codex:`).
+            self.adapter.configure(self.cfg.get(getattr(self.adapter, "config_block", "vertex"), {}))
         self.model = None
         self.processor = None
 
@@ -430,8 +450,11 @@ class TaskOrchestrator:
         if df is None or df.empty:
             print(f"!!! No data found for task '{task_name}' in BigQuery.")
             return None
-        if df['person_id'].duplicated().any():
-            raise ValueError(f"{task_name}: more than one row per person_id; index would not be unique")
+        # Row key: the patient for board tasks, the scan (`ct_accession_number`) for per-CT tasks
+        # (registry `row_key`, filled from the shared registry's grain).
+        row_key = task_info.get("row_key", "person_id")
+        if df[row_key].duplicated().any():
+            raise ValueError(f"{task_name}: more than one row per {row_key}; index would not be unique")
         scored = {int(k) for k, v in task_info.get("mapping", {}).items()
                   if str(k) not in {str(x) for x in task_info.get("unscored_labels", [-1])}}
         n_all = len(df)
@@ -441,18 +464,25 @@ class TaskOrchestrator:
         sample = self.cfg.get('row_sample')
         if sample:
             pool = df
+            if sample.get('splits'):
+                pool = pool[pool['split'].isin(sample['splits'])]
             if sample.get('require_ct'):
                 pool = pool[pool['image_series_uid'].notna() & pool['image_study_uid'].notna()]
             if sample.get('require_summary'):
                 pool = pool[pool['compact_summary'].notna() & (pool['compact_summary'].astype(str).str.strip() != "")]
             if sample.get('require_prior') and task_info.get('prior_ct'):
                 pool, _ = attach_prior_ct(pool, self._prior_link(task_info['prior_ct']), task_info['prior_ct'])
-            n = min(int(sample['n']), len(pool))
-            df = pool.sort_values('person_id').sample(n=n, random_state=int(sample.get('seed', 0))).copy()
-            print(f"    row_sample: kept {len(df)} of {len(pool)} eligible rows (seed {sample.get('seed', 0)}).")
+            if sample.get('per_class'):
+                df = per_class_sample(pool, row_key, int(sample['per_class']), int(sample.get('seed', 0)))
+                print(f"    row_sample: kept {len(df)} of {len(pool)} eligible rows, up to {sample['per_class']} "
+                      f"per class {df['label'].value_counts().sort_index().to_dict()} (seed {sample.get('seed', 0)}).")
+            else:
+                n = min(int(sample['n']), len(pool))
+                df = pool.sort_values(row_key).sample(n=n, random_state=int(sample.get('seed', 0))).copy()
+                print(f"    row_sample: kept {len(df)} of {len(pool)} eligible rows (seed {sample.get('seed', 0)}).")
 
-        df = df.sort_values('person_id').reset_index(drop=True)
-        df['index'] = df['person_id']
+        df = df.sort_values(row_key).reset_index(drop=True)
+        df['index'] = df[row_key]
         timeline_col = 'patient_string'
         df[timeline_col] = None
         df['unique_events'] = float("nan")
@@ -737,7 +767,7 @@ class TaskOrchestrator:
         Returns (new_items, inference_batches, max_input_tokens) or None if no new items.
         inference_batches: list of {"indices": [...], "inputs": ...}
         """
-        new_items = [item for item in batch if item['raw_row']['index'] not in existing_indices]
+        new_items = [item for item in batch if str(item['raw_row']['index']) not in existing_indices]
         # A row whose CT (or prior CT) could not be read is listed as an error, not inferred.
         failed = [item for item in new_items if item.get('load_error')]
         if failed:
@@ -863,9 +893,11 @@ class TaskOrchestrator:
         existing_indices = set()
         if out_file.exists():
             try:
-                existing_df = pd.read_csv(out_file)
+                # Row ids as text: a zero-padded accession must not come back as a number.
+                existing_df = pd.read_csv(out_file, dtype={'index': str})
                 if 'index' in existing_df.columns:
-                    existing_indices = set(existing_df['index'].tolist())
+                    # As text: an accession read back from CSV may come back as a number.
+                    existing_indices = {str(i) for i in existing_df['index'].tolist()}
                     print(f"Resuming: Found {len(existing_indices)} existing records.")
             except Exception as e:
                 print(f"Could not read existing file, starting fresh: {e}")
@@ -934,11 +966,26 @@ class TaskOrchestrator:
             no_ct = df_exp['image_series_uid'].isna() | df_exp['image_study_uid'].isna()
             self._record_missing(task_info, experiment, df_exp[no_ct], "no CT on the row")
             df_exp = df_exp[~no_ct].copy()
+        if task_info.get("label_from_own_report") and experiment not in IMAGE_ONLY_EXPERIMENTS:
+            # The label was read from this scan's report: any arm with patient text could carry it.
+            raise ValueError(f"{task_name}: labelled from the scan's own report, so only the image-only "
+                             f"arms {sorted(IMAGE_ONLY_EXPERIMENTS)} may run, not {experiment!r}")
         prior_spec = task_info.get("prior_ct")
         with_prior = bool(prior_spec) and experiment in prior_spec.get("arms", sorted(_CT_EXPERIMENTS))
         if with_prior:
             df_exp, no_prior = attach_prior_ct(df_exp, self._prior_link(prior_spec), prior_spec)
             self._record_missing(task_info, experiment, no_prior, "no prior CT")
+        elif experiment in IMAGE_ONLY_EXPERIMENTS:
+            # The table may carry prior columns; a current-only arm must not load that scan.
+            df_exp = df_exp.drop(columns=[c for c in PRIOR_COLUMNS if c in df_exp.columns])
+        if experiment in IMAGE_ONLY_EXPERIMENTS:
+            # The question alone (a per-arm prompt `<task>::<arm>` wins), with the image line filled
+            # in once the CTs are read and the slice counts are known.
+            template = self.prompts_map.get(f"{task_name}::{experiment}") or self.prompts_map[task_name]
+            if IMAGES_LINE_TOKEN not in template:
+                raise ValueError(f"{task_name}: the {experiment} prompt needs {IMAGES_LINE_TOKEN}")
+            df_exp['dynamic_prompt'] = template
+            return df_exp
         if experiment in SUMMARY_EXPERIMENTS:
             # Board-time LLM summary in place of the EHR timeline. A row without one is
             # missing for this arm, never filled from the EHR.
@@ -1230,18 +1277,23 @@ class TaskOrchestrator:
 
         ct_dir = self.cfg.get('paths', {}).get('ct_dir')
         ct_snapshot_prefix = self.cfg.get('paths', {}).get('ct_snapshot_prefix')
+        ct_arms = (self.cfg.get('ct_arms') or {}) if experiment in IMAGE_ONLY_EXPERIMENTS else {}
+        if experiment in IMAGE_ONLY_EXPERIMENTS and not ct_arms.get('select'):
+            raise ValueError(f"experiment {experiment!r} needs the config's ct_arms.select")
         dataset = PromptDataset(
             df=df_exp, prompt_col='dynamic_prompt', experiment=experiment,
             storage_client=self.storage_client, model_type=self.model_type, ct_dir=ct_dir,
             ct_snapshot_prefix=ct_snapshot_prefix,
             fail_on_ct_error=(task_info.get("loader") == "bq_table"),
+            ct_select=ct_arms.get('select'), ct_preprocess=ct_arms.get('preprocess'),
         )
-        num_workers = 4
+        # Whole-volume rows are ~400 MB of slices each, so the read-ahead is a config setting.
+        num_workers = int(self.cfg['runtime'].get('num_workers', 4))
         loader = DataLoader(
             dataset,
             batch_size=self.cfg['runtime']['batch_size'],
             shuffle=False,
-            prefetch_factor=8,
+            prefetch_factor=int(self.cfg['runtime'].get('prefetch_factor', 8)) if num_workers > 0 else None,
             collate_fn=prompt_collate,
             num_workers=num_workers,
             persistent_workers=num_workers > 0,
@@ -1285,10 +1337,11 @@ class TaskOrchestrator:
         """
         counter = getattr(self.adapter, "count_text_tokens", None) or self._count_prompt_tokens
         per_image = int(getattr(self.adapter, "image_token_estimate", 256))
-        n_images = 30 if experiment in _CT_EXPERIMENTS else 0
+        per_scan = self._ct_arm_cap() if experiment in IMAGE_ONLY_EXPERIMENTS else 30
+        n_images = per_scan if experiment in _CT_EXPERIMENTS else 0
         df_exp = df_exp.copy()
         if n_images and "prior_image_study_uid" in df_exp.columns:
-            n_images = df_exp["prior_image_study_uid"].notna().map({True: 60, False: 30})
+            n_images = df_exp["prior_image_study_uid"].notna().map({True: 2 * per_scan, False: per_scan})
         df_exp['prompt_token_count'] = df_exp['dynamic_prompt'].apply(lambda t: int(counter(str(t)))) + n_images * per_image
         limit = self._input_token_limit()
         overflow_file = out_file.with_name(out_file.name.replace("_results_", "_overflow_"))
@@ -1306,6 +1359,11 @@ class TaskOrchestrator:
         print(f"[TOKENS] {experiment}: {int(over.sum())}/{len(df_exp)} rows over {limit} tokens -> overflow "
               f"(median {int(df_exp['prompt_token_count'].median()) if len(df_exp) else 0})")
         return df_exp[~over].copy()
+
+    def _ct_arm_cap(self):
+        """Most slices per scan the image-only arms send (the `ct_arms.select` cap; an upper bound)."""
+        select = (self.cfg.get('ct_arms') or {}).get('select') or {}
+        return int(select.get('k', 50))
 
     def _flush_missing(self, task_info, experiment, out_file):
         """Write this arm's missing-row list (rows the arm could not be built for)."""
