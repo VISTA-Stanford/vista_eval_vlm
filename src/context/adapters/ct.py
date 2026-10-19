@@ -21,7 +21,7 @@ from PIL import Image
 from vista_run.utils.utils_inference import pad_to_size
 
 from ..block import ContextBlock, IMAGES
-from ..windowing import multi_window_rgb, grayscale
+from ..windowing import chest_rgb, multi_window_rgb, grayscale
 from ..selectors.ct_selectors import resolve_ct_selector
 from .base import ModalityAdapter, ModelCaps, resolve_model_caps
 
@@ -46,8 +46,9 @@ class CTAdapter(ModalityAdapter):
         return self.selector(depth)
 
     def preprocess_slice(self, ct_slice: np.ndarray, caps: ModelCaps) -> Image.Image:
-        if caps.ct_windowing == "multi_window_rgb":
-            windowed = multi_window_rgb(ct_slice)
+        if caps.ct_windowing in ("multi_window_rgb", "chest_rgb"):
+            fn = chest_rgb if caps.ct_windowing == "chest_rgb" else multi_window_rgb
+            windowed = fn(ct_slice)
             windowed = np.round(windowed, 0).astype(np.uint8)
             pil_img = Image.fromarray(windowed, mode="RGB")
         else:

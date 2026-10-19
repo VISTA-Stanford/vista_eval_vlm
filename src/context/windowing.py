@@ -36,6 +36,16 @@ def multi_window_rgb(ct_vol: np.ndarray) -> np.ndarray:
     return np.stack([norm(ct_vol, clip[0], clip[1]) for clip in window_clips], axis=-1)
 
 
+#: Chest windows (low, high HU) for ``chest_rgb``: lung (W1500/L-600), soft tissue (W400/L40),
+#: bone (W1800/L400). ``multi_window_rgb`` above is wide / mediastinal / brain, kept for Gemma.
+CHEST_WINDOWS = ((-1350, 150), (-160, 240), (-500, 1300))
+
+
+def chest_rgb(ct_vol: np.ndarray) -> np.ndarray:
+    """Window a chest CT slice as red = lung, green = soft tissue, blue = bone (0-255 float)."""
+    return np.stack([norm(ct_vol, lo, hi) for lo, hi in CHEST_WINDOWS], axis=-1)
+
+
 def grayscale(slice_data: np.ndarray) -> np.ndarray:
     """Normalize a slice to a 0-255 uint8 array (verbatim lift of
     ``utils_inference.normalize_slice``)."""
