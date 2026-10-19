@@ -71,6 +71,8 @@ _CT_EXPERIMENTS = {"axial_all_image", "summary_image", "ct_pair", "ct_current"}
 # `prior_ct.arms`); `ct_current` never does, even when the task table carries prior columns.
 # Their slice selector and windowing come from the config's `ct_arms` block.
 IMAGE_ONLY_EXPERIMENTS = {"ct_pair", "ct_current"}
+# A panel prompt (several tasks in one call) lists its questions here, one per answer key.
+PANEL_QUESTIONS_TOKEN = "[QUESTIONS]"
 
 
 # Standard prior-scan columns on a task row (filled by `_attach_prior_ct`, read by the CT loader).
@@ -129,6 +131,9 @@ def forced_choices_for(task_info, use_constrained=True):
     """
     if not use_constrained:
         return None
+    if task_info.get("panel"):
+        # One answer field per member task, each forced onto that task's options.
+        return {m["task_name"]: [str(c) for c in m["choices"]] for m in task_info["panel"]}
     if task_info.get("choices"):
         return [str(c) for c in task_info["choices"]]
     if is_binary_yes_no_task(task_info.get("mapping", {})):
@@ -439,6 +444,8 @@ class TaskOrchestrator:
         Optional config `row_sample: {n, seed, require_ct, require_summary, require_prior}` keeps
         a fixed random subset per task (the 20-case pilots).
         """
+        if task_info.get("panel"):
+            return self._load_panel_task_data(task_info)
         task_name = task_info['task_name']
         source_csv = task_info['task_source_csv']
         # Per-task dataset (registry `dataset`), so these tasks can sit on a newer release than
@@ -486,6 +493,32 @@ class TaskOrchestrator:
         timeline_col = 'patient_string'
         df[timeline_col] = None
         df['unique_events'] = float("nan")
+        return (df, timeline_col, source_csv)
+
+    def _load_panel_task_data(self, task_info):
+        """A panel's scans, with every member task's label as its own column (`label__<task>`).
+
+        The scans are the panel's `sample_task` loaded and sampled exactly as on its own (so the
+        lesion panel asks about the same 400 scans as the right-upper-lobe plan); each member's
+        label is joined on the row key, NaN where that task has no row for the scan.
+        """
+        sample_info = next(m for m in task_info["panel"] if m["task_name"] == task_info["sample_task"])
+        loaded = self._load_bq_table_task_data(sample_info)
+        if loaded is None:
+            return None
+        df, timeline_col, source_csv = loaded
+        row_key = task_info["row_key"]
+        dataset = task_info.get("dataset", VISTA_BENCH_DATASET)
+        table = f"{self.project_id}.{dataset}.{task_info['task_source_csv']}"
+        for m in task_info["panel"]:
+            rows = fetch_task_data_from_bq(self.bq_client, table, m["task_name"])
+            if rows is None or rows.empty:
+                raise ValueError(f"{task_info['task_name']}: member {m['task_name']} has no rows in {table}")
+            if rows[row_key].duplicated().any():
+                raise ValueError(f"{m['task_name']}: more than one row per {row_key}")
+            lab = rows[[row_key, "label"]].rename(columns={"label": f"label__{m['task_name']}"})
+            df = df.merge(lab, on=row_key, how="left")
+        print(f"    panel {task_info['task_name']}: {len(df)} scans x {len(task_info['panel'])} questions")
         return (df, timeline_col, source_csv)
 
     def _record_missing(self, task_info, experiment, rows, reason):
@@ -984,6 +1017,12 @@ class TaskOrchestrator:
             template = self.prompts_map.get(f"{task_name}::{experiment}") or self.prompts_map[task_name]
             if IMAGES_LINE_TOKEN not in template:
                 raise ValueError(f"{task_name}: the {experiment} prompt needs {IMAGES_LINE_TOKEN}")
+            if task_info.get("panel"):
+                # The member questions, by answer key, in the panel's order.
+                if PANEL_QUESTIONS_TOKEN not in template:
+                    raise ValueError(f"{task_name}: a panel prompt needs {PANEL_QUESTIONS_TOKEN}")
+                lines = "\n".join(f"- {m['task_name']}: {m['question']}" for m in task_info["panel"])
+                template = template.replace(PANEL_QUESTIONS_TOKEN, lines, 1)
             df_exp['dynamic_prompt'] = template
             return df_exp
         if experiment in SUMMARY_EXPERIMENTS:
