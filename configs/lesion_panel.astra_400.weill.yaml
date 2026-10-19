@@ -1,0 +1,54 @@
+# Lesion panel on GPT-6 Astra (SHC AI Hub), from weill-p01 (Phil 2026-10-19): 21 lesion-presence questions
+# (5 lung lobes + 'non-benign finding' in 16 sites) answered together, one call per scan, on the 400 test scans
+# sampled for the right-upper-lobe plan (200 RUL yes / 200 no), which this replaces. Current CT only, 50 native
+# 512 px slices, chest windows as RGB; ~$76 at $10 / M input. Image-only: never the report, notes or EHR.
+# Each task is then scored on its own and compared with the MerlinOnc probe (results.final_metrics).
+# Plan: planning/vista_eval_vlm/vlm-radiology-progression-codex.md (on the shared mount).
+
+paths:
+  base_dir: "/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/base"
+  results_dir: "/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/results_single_ct_v1_7/astra_lesion_panel_400"
+  ct_snapshot_prefix: "chaudhari_lab/ct_data/ct_scans/vista/feb26"
+  # weill-p01 mounts the bucket here, not under /mnt: the CT reader looks in <mount_root>/<bucket>/.
+  mount_root: "/data/fries/users/padamson/mnt"
+  valid_tasks: "tasks/valid_tasks.single_ct_v1_7.json"
+  prompts: "tasks/prompts_by_task.single_ct_v1_7.json"
+
+model:
+  device: "cpu"
+
+runtime:
+  # Shared with the full run, so the pilot's answers are reused there (same scans, same requests).
+  cache_dir: "/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/model_cache"
+  # 4 rows per batch, answered 4 at a time (aihub.concurrency); a row is 50 slices (~40 MB decoded).
+  batch_size: 4
+  num_workers: 2
+  prefetch_factor: 2
+  max_new_tokens: 4096
+  use_constrained_decoding_for_binary: true
+
+models:
+  - type: "aihub_openai"
+    name: "gpt-6-astra"
+
+tasks:
+  - per_ct_lesion_panel
+
+experiments:
+  - ct_current
+
+# One scan per question, so all 50 of Azure's images go to it: every slice up to 50, else 50 evenly spaced.
+ct_arms:
+  select: {fn: "up_to_k", k: 50}
+  preprocess: {windowing: "chest_rgb", target_size: 512}
+
+# The panel samples on its sample_task (RUL): 200 yes, 200 no, the same scans as the RUL plan.
+row_sample: {per_class: 200, seed: 20261015, splits: [test], require_ct: true}
+
+aihub:
+  # Key: AI_HUB_API_KEY in the environment, else this file (one line AI_HUB_API_KEY=..., mode 600).
+  key_file: "~/.config/vista/aihub.env"
+  reasoning_effort: null
+  jpeg_quality: 95
+  concurrency: 4
+  max_total_tokens: 10000000
