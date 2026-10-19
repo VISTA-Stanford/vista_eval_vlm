@@ -1021,7 +1021,10 @@ class TaskOrchestrator:
                 # The member questions, by answer key, in the panel's order.
                 if PANEL_QUESTIONS_TOKEN not in template:
                     raise ValueError(f"{task_name}: a panel prompt needs {PANEL_QUESTIONS_TOKEN}")
-                lines = "\n".join(f"- {m['task_name']}: {m['question']}" for m in task_info["panel"])
+                # Each line names its own options: they differ by task (Yes/No for the lobes, but
+                # "Non-benign finding" / "None, or only benign" for the sites), as the schema forces them.
+                lines = "\n".join(f"- {m['task_name']}: {m['question']} Options: "
+                                  + " / ".join(f'"{c}"' for c in m["choices"]) for m in task_info["panel"])
                 template = template.replace(PANEL_QUESTIONS_TOKEN, lines, 1)
             df_exp['dynamic_prompt'] = template
             return df_exp
