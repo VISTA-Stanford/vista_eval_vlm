@@ -1,7 +1,7 @@
-# Single-CT questions on GPT-6 Astra (SHC AI Hub), from weill-p01 (Phil 2026-10-19): one diagnostic task
-# (malignant or uncertain lesion in the right upper lobe) and one prognostic (death within 2 years).
+# Single-CT prognostic question on GPT-6 Astra (SHC AI Hub), from weill-p01 (Phil 2026-10-19): death within
+# 2 years of the scan. (The right-upper-lobe question moved into the lesion panel config.)
 # Current CT only, 50 evenly spaced native 512 px slices (Azure's per-request cap), chest windows as RGB.
-# 400 test scans per task (200 yes / 200 no), ~$66 each at $10 / M input tokens. Image-only: never the
+# 400 test scans per task (200 yes / 200 no), ~$66 at $10 / M input tokens. Image-only: never the
 # scan's report, notes or EHR. Registry and prompts on the mount: tasks/*single_ct_v1_7.json.
 # Plan: planning/vista_eval_vlm/vlm-radiology-progression-codex.md (on the shared mount).
 
@@ -24,7 +24,7 @@ runtime:
   batch_size: 4
   num_workers: 2
   prefetch_factor: 2
-  max_new_tokens: 1024
+  max_new_tokens: 2048
   use_constrained_decoding_for_binary: true
 
 models:
@@ -32,7 +32,6 @@ models:
     name: "gpt-6-astra"
 
 tasks:
-  - per_ct_lung_lobe_rul
   - per_ct_died_any_cause_2_yr
 
 experiments:
@@ -52,4 +51,4 @@ aihub:
   reasoning_effort: null
   jpeg_quality: 95
   concurrency: 4
-  max_total_tokens: 16000000
+  max_total_tokens: 8000000
