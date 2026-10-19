@@ -20,6 +20,7 @@ from context.normalize import experiment_names
 # Single source of truth for the Yes/No-task predicate (dep-free module); re-exported here
 # so existing `from results.final_metrics import is_binary_yes_no_task` callers keep working.
 from results.task_mapping import is_binary_yes_no_task
+from tasks.registry import load_valid_tasks
 
 
 def extract_experiment_from_filename(filename):
@@ -453,7 +454,9 @@ def paired_difference(y_true, pred_a, pred_b, classes, metric="balanced_accuracy
 # Plan comparisons: each arm against the trimmed EHR (`no_image`), on the rows both answered
 # (the full-record arm holds only the test split, and drops overflow rows).
 TB_COMPARISONS = (("no_image", "no_image_uncut"), ("no_image", "no_notes"), ("no_image", "summary"),
-                  ("no_image", "axial_all_image"), ("summary", "summary_image"))
+                  ("no_image", "axial_all_image"), ("summary", "summary_image"),
+                  # Image-only arms: what the prior CT adds (radiology progression).
+                  ("ct_current", "ct_pair"))
 
 
 def score_tb(config_path, output_path=None, n_boot=1000):
@@ -466,8 +469,7 @@ def score_tb(config_path, output_path=None, n_boot=1000):
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
     results_dir = Path(cfg["paths"]["results_dir"])
-    with open(Path(cfg["paths"]["base_dir"]) / cfg["paths"]["valid_tasks"]) as f:
-        registry = {t["task_name"]: t for t in json.load(f)}
+    registry = {t["task_name"]: t for t in load_valid_tasks(Path(cfg["paths"]["base_dir"]) / cfg["paths"]["valid_tasks"])}
     prices = (cfg.get("vertex") or {}).get("price_per_mtok")
     rows = []
     comparisons = []
@@ -492,6 +494,9 @@ def score_tb(config_path, output_path=None, n_boot=1000):
                     sp = fp.with_name(fp.name.replace("_results_", f"_{kind}_"))
                     side[f"n_{kind}"] = len(pd.read_csv(sp)) if sp.exists() else 0
                 cost = gemini_cost_usd(df, prices) if "vertex" in str(cfg.get("models")) else None
+                if "usage_total_tokens" in df.columns:
+                    # Subscription-billed models (Codex): spend is tokens, not dollars.
+                    side["tokens_total"] = int(pd.to_numeric(df["usage_total_tokens"], errors="coerce").fillna(0).sum())
                 for split in TB_SPLITS + ("pooled",):
                     sub = df if split == "pooled" else df[df["split"] == split]
                     base = {"task": task, "model": model_dir.name, "arm": arm, "split": split, **side}
@@ -533,14 +538,101 @@ def score_tb(config_path, output_path=None, n_boot=1000):
     return out
 
 
+# ---------------------------------------------------------------------------
+# VLM vs linear probe on the same scans (radiology progression).
+# Plan: planning/vista_eval_vlm/vlm-radiology-progression-codex.md.
+# ---------------------------------------------------------------------------
+
+def _probe_rows(path, shared_task, classes):
+    """A vista-eval per-example parquet -> rows of (accession key, split, label, top-class prediction)."""
+    from vistabench_eval.frames import normalize_accession
+    pe = pd.read_parquet(path)
+    if "task" in pe.columns:
+        pe = pe[pe["task"] == shared_task]
+    pe = pe[pe["label"].astype(int).isin(classes)].copy()
+    pe["key"] = pe["accession_number"].map(normalize_accession)
+    if pe["key"].duplicated().any():
+        raise ValueError(f"{path}: more than one row per accession")
+    pe["split"] = pe["split"].replace({"val": "valid"})
+    return pe.set_index("key")[["split", "label", "pred_label"]]
+
+
+def compare_to_probe(config_path, output_path=None, n_boot=1000):
+    """Each image arm's VLM answers against the best probe variant, on the scans the VLM answered.
+
+    Config ``probe_comparison``: ``task`` (the VLM task), ``key`` (the row column holding the scan's
+    accession), ``arms`` ({arm: [per-example parquet, ...]}, one file per probe variant: the paired
+    variant for ``ct_pair``, the current-only one for ``ct_current``), ``select_split`` (default
+    valid) and ``score_split`` (default test). The headline variant is the one with the best
+    balanced accuracy on ``select_split`` over all its rows, chosen before the score split is read;
+    every variant gets a row, ``headline`` marks the chosen one. ``balanced_accuracy_diff`` is VLM
+    minus probe, with a class-stratified paired bootstrap interval.
+    """
+    from vistabench_eval.frames import normalize_accession
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    pc = cfg["probe_comparison"]
+    results_dir = Path(cfg["paths"]["results_dir"])
+    registry = {t["task_name"]: t for t in load_valid_tasks(Path(cfg["paths"]["base_dir"]) / cfg["paths"]["valid_tasks"])}
+    info = registry[pc["task"]]
+    mapping = info["mapping"]
+    unscored = [str(u) for u in info.get("unscored_labels", [-1])]
+    classes = sorted(int(k) for k in mapping if str(k) not in unscored)
+    shared_task = info.get("shared_task", pc["task"])
+    select_split, score_split = pc.get("select_split", "valid"), pc.get("score_split", "test")
+    key_col = pc.get("key", "ct_accession_number")
+    task_dir = results_dir / info["task_source_csv"] / pc["task"]
+    out = []
+    for arm, probe_files in pc["arms"].items():
+        probes = {Path(p).name.replace("_per_example.parquet", ""): _probe_rows(p, shared_task, classes) for p in probe_files}
+        val_ba = {}
+        for name, pr in probes.items():
+            v = pr[pr["split"] == select_split]
+            val_ba[name] = forced_answer_metrics(v["label"].astype(int).tolist(), v["pred_label"].astype(int).tolist(), classes)["balanced_accuracy"]
+        best = max(val_ba, key=val_ba.get)
+        for model_dir in sorted(p for p in task_dir.iterdir() if p.is_dir()) if task_dir.exists() else []:
+            fp = model_dir / f"{pc['task']}_results_{arm}.csv"
+            if not fp.exists():
+                continue
+            vlm = pd.read_csv(fp, dtype={key_col: str}).drop_duplicates(subset=["index"], keep="last")
+            vlm = vlm[(vlm["split"] == score_split) & vlm["label"].astype(str).isin([str(c) for c in classes])].copy()
+            vlm["key"] = vlm[key_col].map(normalize_accession)
+            vlm["pred"] = vlm["model_response"].apply(lambda r: answer_to_label(r, mapping, unscored))
+            vlm = vlm.set_index("key")
+            for name, pr in probes.items():
+                both = vlm.index.intersection(pr.index)
+                lab_v, lab_p = vlm.loc[both, "label"].astype(int), pr.loc[both, "label"].astype(int)
+                if (lab_v != lab_p).any():
+                    raise ValueError(f"{name}: {int((lab_v != lab_p).sum())} scans carry a different label than the VLM rows")
+                y = lab_v.tolist()
+                p_vlm = [None if pd.isna(p) else int(p) for p in vlm.loc[both, "pred"]]
+                p_probe = pr.loc[both, "pred_label"].astype(int).tolist()
+                row = {"task": pc["task"], "model": model_dir.name, "arm": arm, "probe": name,
+                       "headline": name == best, f"probe_{select_split}_balanced_accuracy": val_ba[name],
+                       "n_vlm_rows": len(vlm), "n_matched": len(both),
+                       "vlm_balanced_accuracy": forced_answer_metrics(y, p_vlm, classes).get("balanced_accuracy"),
+                       "probe_balanced_accuracy": forced_answer_metrics(y, p_probe, classes).get("balanced_accuracy")}
+                row.update(paired_difference(y, p_probe, p_vlm, classes, n_boot=n_boot))
+                out.append(row)
+    df = pd.DataFrame(out)
+    output_path = Path(output_path) if output_path else results_dir / "probe_comparison.csv"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False)
+    print(f"Wrote {len(df)} rows to {output_path}")
+    return df
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
     ap.add_argument("--output", default=None)
     ap.add_argument("--tb", action="store_true", help="tumor-board forced-answer scoring (score_tb)")
+    ap.add_argument("--probe", action="store_true", help="VLM vs linear probe on the same scans (compare_to_probe)")
     args = ap.parse_args()
-    if args.tb:
+    if args.probe:
+        compare_to_probe(args.config, args.output)
+    elif args.tb:
         score_tb(args.config, args.output)
     else:
         main(args.config, args.output)
