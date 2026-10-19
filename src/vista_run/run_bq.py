@@ -1283,7 +1283,7 @@ class TaskOrchestrator:
         dataset = PromptDataset(
             df=df_exp, prompt_col='dynamic_prompt', experiment=experiment,
             storage_client=self.storage_client, model_type=self.model_type, ct_dir=ct_dir,
-            ct_snapshot_prefix=ct_snapshot_prefix,
+            ct_snapshot_prefix=ct_snapshot_prefix, mount_root=self.cfg.get('paths', {}).get('mount_root'),
             fail_on_ct_error=(task_info.get("loader") == "bq_table"),
             ct_select=ct_arms.get('select'), ct_preprocess=ct_arms.get('preprocess'),
         )

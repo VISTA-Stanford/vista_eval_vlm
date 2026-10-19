@@ -536,3 +536,20 @@ def test_hub_key_from_file_when_env_unset(tmp_path, monkeypatch):
     assert read_key(str(f)) == "abc123"
     with pytest.raises(RuntimeError, match="no AI Hub key"):
         read_key(str(tmp_path / "missing.env"))
+
+
+def test_ct_is_read_from_the_configured_mount_root(tmp_path, monkeypatch, capsys):
+    # weill-p01 mounts the bucket under ~/mnt, not /mnt: paths.mount_root must reach the CT read.
+    import nibabel as nib
+    import numpy as np
+    import vqa_dataset
+    blob = "snap/scan.nii.gz"
+    (tmp_path / "su-vista-uscentral1" / "snap").mkdir(parents=True)
+    nib.save(nib.Nifti1Image(np.zeros((8, 8, 3), dtype=np.int16), np.eye(4)), str(tmp_path / "su-vista-uscentral1" / blob))
+    monkeypatch.setattr(vqa_dataset, "resolve_ct_blob", lambda study, series, prefix=None: (blob, "scan.nii.gz"))
+    kw = dict(experiment="ct_pair", ct_select={"fn": "up_to_k", "k": 25}, ct_preprocess={"windowing": "chest_rgb"})
+    slices, _ = PromptDataset(pd.DataFrame([ROW]), mount_root=str(tmp_path), **kw)._load_ct("s", "x", ROW, 0)
+    assert slices is not None and len(slices) == 3 and "source=mount" in capsys.readouterr().out
+    # Negative control: the default /mnt has no such blob and there is no storage client, so nothing loads.
+    slices, _ = PromptDataset(pd.DataFrame([ROW]), **kw)._load_ct("s", "x", ROW, 0)
+    assert slices is None and "source=none" in capsys.readouterr().out

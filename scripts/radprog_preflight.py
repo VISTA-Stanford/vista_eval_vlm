@@ -56,7 +56,8 @@ def main():
             exp = orch._build_prompts_for_experiment(df, info, arm, col)
             ct_arms = orch.cfg["ct_arms"]
             ds = PromptDataset(exp, prompt_col="dynamic_prompt", experiment=arm, model_type=args.type,
-                               ct_snapshot_prefix=orch.cfg["paths"].get("ct_snapshot_prefix"), fail_on_ct_error=True,
+                               ct_snapshot_prefix=orch.cfg["paths"].get("ct_snapshot_prefix"),
+                               mount_root=orch.cfg["paths"].get("mount_root"), fail_on_ct_error=True,
                                ct_select=ct_arms["select"], ct_preprocess=ct_arms.get("preprocess"))
             has_prior = exp["prior_image_study_uid"].notna().sum() if "prior_image_study_uid" in exp.columns else 0
             n_img, mb, bad = [], [], 0

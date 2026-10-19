@@ -55,6 +55,7 @@ configs/*
 !configs/cls_config.yaml
 !configs/det_config.yaml
 !configs/seg_config.yaml
+!configs/radiology_progression.astra_first_look.weill.yaml
 
 # random
 scripts/hold_gpu.sh
