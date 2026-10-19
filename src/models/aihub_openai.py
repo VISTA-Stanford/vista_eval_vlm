@@ -52,9 +52,11 @@ def build_request(question, encoded_images, choices=None, max_output_tokens=4096
     content.append({"type": "text", "text": str(question)})
     body = {"messages": [{"role": "user", "content": content}], "max_completion_tokens": int(max_output_tokens)}
     if choices:
+        # A list forces one `answer`; a dict {field: options} (a panel) forces one field per question.
+        fields = choices if isinstance(choices, dict) else {"answer": choices}
         body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "strict": True, "schema": {
-            "type": "object", "additionalProperties": False, "required": ["answer"],
-            "properties": {"answer": {"type": "string", "enum": [str(c) for c in choices]}}}}}
+            "type": "object", "additionalProperties": False, "required": list(fields),
+            "properties": {k: {"type": "string", "enum": [str(c) for c in v]} for k, v in fields.items()}}}}
     if reasoning_effort:
         body["reasoning_effort"] = reasoning_effort
     return body
@@ -82,9 +84,18 @@ def parse_response(status, content_type, text, choices=None):
     if not msg.strip():
         return None, usage, f"empty answer (finish_reason={ch.get('finish_reason')})", False
     try:
-        answer = str(json.loads(msg).get("answer", "")).strip() if choices else msg.strip()
+        parsed = json.loads(msg) if choices else None
+        answer = msg.strip() if not choices else (parsed if isinstance(choices, dict) else str(parsed.get("answer", "")).strip())
     except (json.JSONDecodeError, AttributeError):
         return None, usage, f"answer is not the schema's JSON: {msg[:100]!r}", False
+    if isinstance(choices, dict):
+        # Every question answered, each on its own options; kept as one JSON string, split per task at scoring.
+        if not isinstance(answer, dict):
+            return None, usage, f"answer is not one object: {msg[:100]!r}", False
+        bad = {k: answer.get(k) for k, opts in choices.items() if str(answer.get(k, "")).strip() not in [str(o) for o in opts]}
+        if bad:
+            return None, usage, f"{len(bad)} answers missing or off their options: {json.dumps(bad)[:150]}", False
+        return json.dumps({k: str(answer[k]).strip() for k in choices}, sort_keys=True), usage, None, False
     if choices and answer not in [str(c) for c in choices]:
         return None, usage, f"answer {answer[:100]!r} not in options", False
     return answer, usage, None, False

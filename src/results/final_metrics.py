@@ -459,6 +459,59 @@ TB_COMPARISONS = (("no_image", "no_image_uncut"), ("no_image", "no_notes"), ("no
                   ("ct_current", "ct_pair"))
 
 
+def expand_panels(tasks, registry):
+    """Config task names with each panel replaced by its member tasks, in order."""
+    out = []
+    for t in tasks:
+        info = registry[t]
+        out += [m["task_name"] for m in info["panel"]] if info.get("panel") else [t]
+    return out
+
+
+def split_panel_results(results_dir, panel_info):
+    """Write each member task's own results file from a panel's (one row per scan, all answers in one JSON).
+
+    For every model and arm under the panel's folder, member ``<task>`` gets
+    ``<results_dir>/<source>/<task>/<model>/<task>_results_<arm>.csv`` with the scan's index, ids, split,
+    that task's label (``label__<task>``; scans with no row for the task are left out) and its answer.
+    Rewritten from the panel file every time, so a rerun of the panel is picked up. Returns files written.
+    """
+    results_dir = Path(results_dir)
+    src = results_dir / panel_info["task_source_csv"] / panel_info["task_name"]
+    written = []
+    if not src.exists():
+        return written
+    keep = [c for c in ("index", "person_id", "ct_accession_number", "split") ]
+    for model_dir in sorted(p for p in src.iterdir() if p.is_dir()):
+        for fp in sorted(model_dir.glob(f"{panel_info['task_name']}_results_*.csv")):
+            arm = extract_experiment_from_filename(fp.name)
+            df = pd.read_csv(fp, dtype={"index": str, "ct_accession_number": str}).drop_duplicates(subset=["index"], keep="last")
+            answers = df["model_response"].apply(lambda r: json.loads(r) if isinstance(r, str) and r.strip().startswith("{") else {})
+            for m in panel_info["panel"]:
+                name = m["task_name"]
+                col = f"label__{name}"
+                if col not in df.columns:
+                    raise ValueError(f"{fp}: no {col} column; was it written by the panel loader?")
+                out = df[[c for c in keep if c in df.columns]].copy()
+                out["label"] = df[col]
+                out["model_response"] = answers.apply(lambda a: a.get(name))
+                out = out[out["label"].notna()]
+                out["label"] = out["label"].astype(int)
+                dest = results_dir / m["task_source_csv"] / name / model_dir.name
+                dest.mkdir(parents=True, exist_ok=True)
+                path = dest / f"{name}_results_{arm}.csv"
+                out.to_csv(path, index=False)
+                written.append(path)
+    return written
+
+
+def _split_all_panels(cfg, results_dir, registry, names):
+    for t in names:
+        if registry[t].get("panel"):
+            n = len(split_panel_results(results_dir, registry[t]))
+            print(f"[PANEL] {t}: wrote {n} per-task result files")
+
+
 def score_tb(config_path, output_path=None, n_boot=1000):
     """One table: model x arm x task x split (train/valid/test/pooled), plus baselines.
 
@@ -473,7 +526,8 @@ def score_tb(config_path, output_path=None, n_boot=1000):
     prices = (cfg.get("vertex") or {}).get("price_per_mtok")
     rows = []
     comparisons = []
-    for task in cfg.get("tasks", []):
+    _split_all_panels(cfg, results_dir, registry, cfg.get("tasks", []))
+    for task in expand_panels(cfg.get("tasks", []), registry):
         info = registry[task]
         mapping = info["mapping"]
         unscored = [str(u) for u in info.get("unscored_labels", [-1])]
@@ -574,14 +628,29 @@ def compare_to_probe(config_path, output_path=None, n_boot=1000):
     pc = cfg["probe_comparison"]
     results_dir = Path(cfg["paths"]["results_dir"])
     registry = {t["task_name"]: t for t in load_valid_tasks(Path(cfg["paths"]["base_dir"]) / cfg["paths"]["valid_tasks"])}
-    info = registry[pc["task"]]
+    names = pc["task"] if isinstance(pc["task"], list) else [pc["task"]]
+    _split_all_panels(cfg, results_dir, registry, names)
+    out = []
+    for task in expand_panels(names, registry):
+        out += _compare_one_task(task, registry[task], pc, results_dir, n_boot)
+    df = pd.DataFrame(out)
+    output_path = Path(output_path) if output_path else results_dir / "probe_comparison.csv"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False)
+    print(f"Wrote {len(df)} rows to {output_path}")
+    return df
+
+
+def _compare_one_task(task, info, pc, results_dir, n_boot):
+    """compare_to_probe's rows for one task (see there)."""
+    from vistabench_eval.frames import normalize_accession
     mapping = info["mapping"]
     unscored = [str(u) for u in info.get("unscored_labels", [-1])]
     classes = sorted(int(k) for k in mapping if str(k) not in unscored)
-    shared_task = info.get("shared_task", pc["task"])
+    shared_task = info.get("shared_task", task)
     select_split, score_split = pc.get("select_split", "valid"), pc.get("score_split", "test")
     key_col = pc.get("key", "ct_accession_number")
-    task_dir = results_dir / info["task_source_csv"] / pc["task"]
+    task_dir = results_dir / info["task_source_csv"] / task
     out = []
     for arm, probe_files in pc["arms"].items():
         probes = {Path(p).name.replace("_per_example.parquet", ""): _probe_rows(p, shared_task, classes) for p in probe_files}
@@ -591,7 +660,7 @@ def compare_to_probe(config_path, output_path=None, n_boot=1000):
             val_ba[name] = forced_answer_metrics(v["label"].astype(int).tolist(), v["pred_label"].astype(int).tolist(), classes)["balanced_accuracy"]
         best = max(val_ba, key=val_ba.get)
         for model_dir in sorted(p for p in task_dir.iterdir() if p.is_dir()) if task_dir.exists() else []:
-            fp = model_dir / f"{pc['task']}_results_{arm}.csv"
+            fp = model_dir / f"{task}_results_{arm}.csv"
             if not fp.exists():
                 continue
             vlm = pd.read_csv(fp, dtype={key_col: str}).drop_duplicates(subset=["index"], keep="last")
@@ -607,19 +676,14 @@ def compare_to_probe(config_path, output_path=None, n_boot=1000):
                 y = lab_v.tolist()
                 p_vlm = [None if pd.isna(p) else int(p) for p in vlm.loc[both, "pred"]]
                 p_probe = pr.loc[both, "pred_label"].astype(int).tolist()
-                row = {"task": pc["task"], "model": model_dir.name, "arm": arm, "probe": name,
+                row = {"task": task, "model": model_dir.name, "arm": arm, "probe": name,
                        "headline": name == best, f"probe_{select_split}_balanced_accuracy": val_ba[name],
                        "n_vlm_rows": len(vlm), "n_matched": len(both),
                        "vlm_balanced_accuracy": forced_answer_metrics(y, p_vlm, classes).get("balanced_accuracy"),
                        "probe_balanced_accuracy": forced_answer_metrics(y, p_probe, classes).get("balanced_accuracy")}
                 row.update(paired_difference(y, p_probe, p_vlm, classes, n_boot=n_boot))
                 out.append(row)
-    df = pd.DataFrame(out)
-    output_path = Path(output_path) if output_path else results_dir / "probe_comparison.csv"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False)
-    print(f"Wrote {len(df)} rows to {output_path}")
-    return df
+    return out
 
 
 if __name__ == "__main__":

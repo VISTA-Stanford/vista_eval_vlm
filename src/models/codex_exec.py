@@ -81,6 +81,8 @@ def build_command(model, image_files, schema_file, last_file, workdir, reasoning
 
 
 def answer_schema(choices):
+    if isinstance(choices, dict):
+        raise NotImplementedError("panel questions (one field per task) are only wired for the AI Hub adapter")
     return {"type": "object", "properties": {"answer": {"type": "string", "enum": [str(c) for c in choices]}},
             "required": ["answer"], "additionalProperties": False}
 
