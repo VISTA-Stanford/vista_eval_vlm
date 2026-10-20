@@ -23,6 +23,14 @@ Evaluation pipeline for vision-language models (VLMs) on the Vista Bench benchma
 
 Edit `scripts/setup.sh` if you use different paths or env names. For all runs besides with llava models the default `.venv` is sufficient.
 
+**Tests** (synthetic inputs; no network, weights or patient data):
+
+```bash
+UV_PYTHON=3.12 uv sync --extra test && uv run pytest
+```
+
+Python 3.14 breaks the sync on the VMs; use 3.12.
+
 ---
 
 ## Configs
