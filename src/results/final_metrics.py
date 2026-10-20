@@ -641,6 +641,19 @@ def compare_to_probe(config_path, output_path=None, n_boot=1000):
     return df
 
 
+def _probe_names(probe_files):
+    """{name: path} for the probe files. The name is the file's model stem; files sharing a stem (the same model
+    unweighted and balanced, in two folders) are named by their two folders, so none silently replaces another."""
+    stems = [Path(p).name.replace("_per_example.parquet", "") for p in probe_files]
+    names = {}
+    for p, stem in zip(probe_files, stems):
+        name = stem if stems.count(stem) == 1 else f"{Path(p).parent.parent.name}/{Path(p).parent.name}"
+        if name in names:
+            raise ValueError(f"two probe files resolve to the same name {name!r}: {names[name]} and {p}")
+        names[name] = p
+    return names
+
+
 def _compare_one_task(task, info, pc, results_dir, n_boot):
     """compare_to_probe's rows for one task (see there)."""
     from vistabench_eval.frames import normalize_accession
@@ -653,7 +666,7 @@ def _compare_one_task(task, info, pc, results_dir, n_boot):
     task_dir = results_dir / info["task_source_csv"] / task
     out = []
     for arm, probe_files in pc["arms"].items():
-        probes = {Path(p).name.replace("_per_example.parquet", ""): _probe_rows(p, shared_task, classes) for p in probe_files}
+        probes = {name: _probe_rows(p, shared_task, classes) for name, p in _probe_names(probe_files).items()}
         val_ba = {}
         for name, pr in probes.items():
             v = pr[pr["split"] == select_split]
