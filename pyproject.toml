@@ -15,3 +15,16 @@ dependencies = [
     "reportlab>=4.4.9",
     "seaborn>=0.13.2",
 ]
+
+[project.optional-dependencies]
+# What tests/ imports beyond the base deps (models/ and run_bq import torch at module
+# level). Pinned to requirements-default.txt. Run: uv sync --extra test && uv run pytest
+test = [
+    "torch==2.8.0",
+    "pyyaml==6.0.3",
+    "tqdm==4.67.1",
+]
+
+[tool.pytest.ini_options]
+# src/ holds ad hoc scripts named test_*.py that need packages this project does not install.
+testpaths = ["tests"]
