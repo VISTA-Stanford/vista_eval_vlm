@@ -757,3 +757,27 @@ def test_real_lesion_panel_reply_missing_one_field_is_an_error(tmp_path, monkeyp
     a, _ = _panel_hub(tmp_path, monkeypatch, drop="per_ct_lesion_spleen")
     out = a.infer(None, None, [{"question": "scan 0", "images": []}], 4096, _forced(panel))[0]
     assert out["error"] and "1 answers missing" in out["error"] and "per_ct_lesion_spleen" in out["error"]
+
+
+def test_compare_keeps_probe_files_that_share_a_name(tmp_path, monkeypatch):
+    # The same model probed unweighted and balanced: two folders, one file name. Both must be scored.
+    monkeypatch.setattr("tasks.registry._manifest", lambda: PANEL_MANIFEST)
+    base, res = _panel_results(tmp_path)
+    files = []
+    for folder, pred in (("unweighted", [0, 0, 0, 0]), ("balanced", [1, 1, 0, 0])):
+        d = tmp_path / folder / "model_x"
+        d.mkdir(parents=True)
+        f = d / "model_x_per_example.parquet"
+        a = pd.DataFrame({"task": "lobe_a", "split": ["test"] * 4 + ["val", "val"], "accession_number": ["S0", "S1", "S3", "S4", "V1", "V2"],
+                          "label": [1, 1, 0, 0, 0, 1], "pred_label": pred + [0, 1]})
+        b = a.assign(task="lobe_b").iloc[[0, 1, 4, 5]].assign(label=[0, 1, 0, 1], pred_label=[0, 1, 0, 1])
+        pd.concat([a, b]).to_parquet(f)
+        files.append(str(f))
+    cfg = {"paths": {"base_dir": str(base), "results_dir": str(res), "valid_tasks": "tasks/reg.json"},
+           "probe_comparison": {"task": "panel", "arms": {"ct_current": files}}}
+    (tmp_path / "c.yaml").write_text(yaml.safe_dump(cfg))
+    out = compare_to_probe(tmp_path / "c.yaml", tmp_path / "cmp.csv", n_boot=10)
+    out = out[out.task == "lobe_a"].set_index("probe")
+    assert len(out) == 2
+    assert out.loc["unweighted/model_x", "probe_balanced_accuracy"] == pytest.approx(0.5)
+    assert out.loc["balanced/model_x", "probe_balanced_accuracy"] == pytest.approx(1.0)
