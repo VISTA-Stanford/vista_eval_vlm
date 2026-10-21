@@ -90,7 +90,12 @@ fi
 [ "$(git -C "$ENGINE_WT" rev-parse HEAD)" = "$PIN" ] || fail "engine is not at the pin $PIN"
 echo "task $(git -C "$TASK_WT" rev-parse --short HEAD), engine $(git -C "$ENGINE_WT" rev-parse --short HEAD)"
 
-# Images, this machine's pins, the token, and the $0 dry run.
+# Images, this machine's pins, the token, and the $0 dry run. A rebuild replaces the image under the same tag, so
+# a run of this task already going on this machine would lose its pinned image (it did, 2026-10-20): refuse.
+for pid in $(pgrep -f "run.py run --run-id" || true); do
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -qx run.py || continue  # run.py as its own argument
+    case "$(readlink "/proc/$pid/cwd" 2>/dev/null)" in */optimizer/died-2yr-ct) fail "a died-2yr-ct run is live here (pid $pid); setup would rebuild its image";; esac
+done
 alo build-images >/dev/null || fail "build-images"
 [ -d "$TASK_WORKDIR/repo" ] || alo init || fail "init"
 alo pins --write | tail -1 || fail "pins --write"
