@@ -22,7 +22,7 @@ if not (ENGINE_ROOT / "engine" / "driver.py").is_file():
     raise SystemExit(f"no engine at {ENGINE_ROOT}: set AGENTIC_LABEL_OPT to your agentic-label-opt checkout")
 #: The full 40-character engine commit this task was built and tested against
 #: (``git -C $AGENTIC_LABEL_OPT rev-parse HEAD``). Bump it on purpose, after re-running the dry run.
-ENGINE_PIN = "36dd87c4da2cf47ced5b86b27c1acc717d1aae3e"  # DECIDE (set by the setup skill)
+ENGINE_PIN = "9dcf806f778465b561ba28496b8f10f7c0e3a553"  # DECIDE (set by the setup skill)
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
