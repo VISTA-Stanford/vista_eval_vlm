@@ -155,12 +155,18 @@ def program_runner(layout, *, image: str, pin: str, forbidden):
     from isolation.program_runner import ProgramRunner
     from isolation.session_scope import SessionScope
 
+    if config.PROGRAM_PROFILE == "vertex":
+        profile = ss.VertexProfile(project=config.VERTEX_PROJECT, region=config.VERTEX_REGION,
+                                   approved_projects=frozenset({config.VERTEX_PROJECT}))
+        credential = config.VERTEX_CREDENTIAL
+    else:
+        profile, credential = ss.AnthropicApiProfile(token_env_name=config.TOKEN_ENV_NAME), ss.NO_CREDENTIAL
     template = ss.SessionDescription(
         # A placeholder grant: the runner builds each call's real one. denied may not be empty.
         scope=SessionScope(program=layout.versions, denied=forbidden),
         posture="deny-by-default", tools=TOOLS, allowed_tools=TOOLS,
         model=config.PROGRAM_MODEL, image=image,
-        profile=ss.AnthropicApiProfile(token_env_name=config.TOKEN_ENV_NAME), credential=ss.NO_CREDENTIAL,
+        profile=profile, credential=credential,
         transcript_dir=layout.transcripts / "program", expected_fingerprint=pin,
     )
     return ProgramRunner(spec=program_spec(forbidden), template=template, output_root=layout.program_outputs,

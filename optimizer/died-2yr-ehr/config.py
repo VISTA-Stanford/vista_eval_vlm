@@ -23,7 +23,7 @@ if not (ENGINE_ROOT / "engine" / "driver.py").is_file():
     raise SystemExit(f"no engine at {ENGINE_ROOT}: set AGENTIC_LABEL_OPT to your agentic-label-opt checkout")
 #: The full 40-character engine commit this task was built and tested against
 #: (``git -C $AGENTIC_LABEL_OPT rev-parse HEAD``). Bump it on purpose, after re-running the dry run.
-ENGINE_PIN = "7a13ddb6cd7a3f1a8f2401d98b93e8f0e417d558"  # DECIDE (resume-lineage fix, 2026-10-21)
+ENGINE_PIN = "bd81bf35c9a73c6dadf906c7090c0ea69d1ed0c3"  # DECIDE (Vertex global session host fix on fix/vertex-global-session-host, 2026-10-21)
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
@@ -123,8 +123,19 @@ PROFILE = "anthropic"  # DECIDE
 TOKEN_ENV_NAME = "CLAUDE_CODE_OAUTH_TOKEN"
 TOKEN_FILE = Path(os.environ.get("ALO_TOKEN_FILE", Path.home() / ".config" / "alo" / "oauth_token"))
 #: The Claude Code version baked into the optimizer image; its tag must name it.
-CLAUDE_CODE_VERSION = "2.1.295"
+CLAUDE_CODE_VERSION = "2.1.307"  # Vertex global verified from this image 2026-10-21
 OPTIMIZER_IMAGE_TAG = f"alo-{TASK_NAME}-optimizer:{CLAUDE_CODE_VERSION}"
 WORKER_IMAGE_TAG = f"alo-{TASK_NAME}-worker:3.11.0"
 #: Patient data: turns on the engine's patient-data guards (fail-closed run store, Vertex only).
+#: The patient sessions' route. "vertex" bills the GCP project instead of the seat and reaches Google's API
+#: addresses, not api.anthropic.com, so it neither spends the seat's session limit nor shares the Cloud NAT's
+#: 64 ports for api.anthropic.com (Phil 2026-10-21, after the seat hit its limit and the NAT kept dropping).
+#: The optimizer stays on the seat: the engine allows WebSearch only on the Anthropic profile.
+#: Vertex is NOT usable yet (2026-10-21): the only credential at hand is the user's own login, which can read the
+#: BigQuery labels, and the seal forbids mounting it. Needs a Vertex-only identity; hand-off in
+#: planning/vista_eval_vlm/session/2026-10-21-vertex-pipeline-handoff.md. Until then the patient sessions use the seat.
+PROGRAM_PROFILE = os.environ.get("PROGRAM_PROFILE", "anthropic")  # DECIDE: "anthropic" | "vertex"
+VERTEX_PROJECT = "som-nero-plevriti-deidbdf"
+VERTEX_REGION = "global"  # Sonnet 5.5 is served on global only in this project (probed 2026-10-17)
+VERTEX_CREDENTIAL = Path(os.environ.get("VERTEX_CREDENTIAL", Path.home() / ".config" / "alo" / "vertex-sa.json"))  # a Vertex-only identity, never the user login
 PATIENT_DATA = False  # DECIDE: de-identified, approved for the subscription route (Phil 2026-10-17), as died-2yr-ct

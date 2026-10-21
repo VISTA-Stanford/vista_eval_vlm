@@ -14,7 +14,7 @@
 set -euo pipefail
 
 BRANCH=feat/died-2yr-ehr-agentic
-ENGINE_BRANCH=feat/optimizer-websearch
+ENGINE_BRANCH=fix/vertex-global-session-host
 VLM=${VLM_REPO:-$HOME/code/vista_eval_vlm}
 TASK_WT=$HOME/code/vista_eval_vlm-died2yr-ehr
 TASK_DIR=$TASK_WT/optimizer/died-2yr-ehr

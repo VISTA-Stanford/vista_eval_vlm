@@ -14,7 +14,7 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
 # The image's tag must name this version (name:<version>); the engine checks the CLI inside matches.
-ARG CLAUDE_CODE_VERSION=2.1.295
+ARG CLAUDE_CODE_VERSION=2.1.307
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 WORKDIR /workspace/program
