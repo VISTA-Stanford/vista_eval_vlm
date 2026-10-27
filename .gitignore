@@ -56,6 +56,12 @@ configs/*
 !configs/det_config.yaml
 !configs/seg_config.yaml
 !configs/radiology_progression.astra_first_look.weill.yaml
+!configs/radiology_progression.astra_first_look.yaml
+!configs/radiology_progression.astra_400.weill.yaml
+!configs/radiology_progression.codex.yaml
+!configs/radiology_progression.codex_pilot.yaml
+!configs/lesion_panel.astra_400.weill.yaml
+!configs/single_ct.astra_400.weill.yaml
 
 # random
 scripts/hold_gpu.sh

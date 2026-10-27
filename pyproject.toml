@@ -23,6 +23,8 @@ test = [
     "torch==2.8.0",
     "pyyaml==6.0.3",
     "tqdm==4.67.1",
+    # Shared task registry (src/tasks/registry.py), at the commit scripts/setup_api_env.sh pins.
+    "vistabench-eval @ git+ssh://git@github.com/VISTA-Stanford/vista-eval.git@79688c2654e75846f3dd66e3aca578af9b7db69d#subdirectory=packages/vistabench_eval",
 ]
 
 [tool.pytest.ini_options]
