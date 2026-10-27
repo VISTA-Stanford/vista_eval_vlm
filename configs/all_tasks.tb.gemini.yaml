@@ -1,6 +1,10 @@
 # Tumor-board questions on vista_bench_v1_7: Vertex Gemini, six arms (the five plus the uncut EHR).
 # Plan: planning/vista_eval_vlm/vlm-tumor-board-questions-v1_6.md (on the shared mount).
 #
+# The input settings below are rev 5 (2026-10-15). The rev-4 answers already in results_tb_v1_7 were made
+# with the old inputs, and a rerun into that folder skips rows that have an answer, so it would not redo
+# them; the rev-5 progression rerun uses all_tasks.tb.gemini_rev5.yaml and its own folder.
+#
 # Paths are the shared su-vista mount, the same on phil-sllm-01 and the GPU boxes. A box
 # without that mount keeps its own git-ignored copy (e.g. configs/all_tasks.tb.vm.yaml).
 # Results hold per-patient answers: they stay on the mount, never in git.
