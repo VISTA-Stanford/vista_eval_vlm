@@ -210,7 +210,8 @@ def iter_captured_examples(orch, task_info, experiment, model_type, limit=None):
     # windowing branch that produced the pixels (golden gate-2 reasoning aid): legacy
     # dispatch is is_gemma-gated; 3b moves it to by_model but the pixels stay identical
     # per model.
-    windowing = "multi_window_rgb" if is_gemma else "grayscale"
+    # The board config's ct_windowing, when set, overrides the per-model default.
+    windowing = dataset._ct_preprocess.get("windowing") or ("multi_window_rgb" if is_gemma else "grayscale")
 
     for i in range(len(dataset)):
         item = dataset[i]

@@ -77,6 +77,10 @@ def keep_latest_lines(text: str, max_chars: int) -> str:
             break
         kept.append(line)
         used += len(line) + 1
+    if not any(kept):
+        # The newest record alone is over the budget: keep its start, cut to fit, rather than nothing.
+        newest = next((line for line in reversed(text.split('\n')) if line), '')
+        kept = [newest[:budget]]
     return KEEP_LATEST_MARKER + '\n' + '\n'.join(reversed(kept))
 
 

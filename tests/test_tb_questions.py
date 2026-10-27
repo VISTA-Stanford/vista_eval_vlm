@@ -557,3 +557,113 @@ def test_board_window_fills_in_only_when_the_arm_names_none():
     assert arm._ct_preprocess == {"windowing": "chest_rgb"}
     assert board._ct_preprocess == {"windowing": "multi_window_rgb"}
     assert plain._ct_preprocess == {}
+
+
+# --- rev-5 review (2026-10-27): the runner's own wiring, after the rebase onto the per-arm CT options ---
+from vista_run.run_bq import CT_CHANNELS_LINE  # noqa: E402
+from vqa_dataset import IMAGES_LINE_TOKEN  # noqa: E402
+class _StopAtDataset(Exception):
+    pass
+
+
+def _spy_dataset(monkeypatch):
+    seen, real = {}, run_bq_mod.PromptDataset
+
+    def spy(*a, **kw):
+        seen["ds"] = real(*a, **kw)
+        raise _StopAtDataset
+    monkeypatch.setattr(run_bq_mod, "PromptDataset", spy)
+    return seen
+
+
+def _runner_orch(monkeypatch, tmp_path, cfg):
+    o = _board_orch(monkeypatch, _board_rows(), {"runtime": {"max_new_tokens": 5, "batch_size": 1}, **cfg})
+    o.prompts_map = {"t": "Q\n\nPATIENT RECORD:\n\n[PATIENT_TIMELINE]",
+                     "t::ct_current": f"Q {IMAGES_LINE_TOKEN}"}
+    o.model_type, o.storage_client = "vertex_gemini", None
+    monkeypatch.setattr(o, "_setup_output_and_resume", lambda t, e: (tmp_path / f"t_results_{e}.csv", set()))
+    monkeypatch.setattr(o, "_split_overflow", lambda df, *a: df)
+    monkeypatch.setattr(o, "_flush_missing", lambda *a: None)
+    return o
+
+
+def test_runner_adds_the_channels_line_only_on_ct_arms_when_the_board_window_is_set(monkeypatch, tmp_path):
+    on = _runner_orch(monkeypatch, tmp_path, {"ct_windowing": "multi_window_rgb"})
+    df, col, _ = on._load_bq_table_task_data(TB_TASK)
+    ct = on._build_prompts_for_experiment(df, TB_TASK, "summary_image", col)["dynamic_prompt"].tolist()
+    text = on._build_prompts_for_experiment(df, TB_TASK, "summary", col)["dynamic_prompt"].tolist()
+    off = _runner_orch(monkeypatch, tmp_path, {})
+    unset = off._build_prompts_for_experiment(df, TB_TASK, "summary_image", col)["dynamic_prompt"].tolist()
+    assert ct and all(p.count(CT_CHANNELS_LINE) == 1 for p in ct)
+    assert text and not any(CT_CHANNELS_LINE in p for p in text)
+    assert unset and not any(CT_CHANNELS_LINE in p for p in unset)
+
+
+def test_runner_gives_board_ct_arms_the_board_window_and_keeps_an_arms_own_window(monkeypatch, tmp_path):
+    seen = _spy_dataset(monkeypatch)
+    cfg = {"ct_windowing": "multi_window_rgb",
+           "ct_arms": {"select": {"fn": "up_to_k", "k": 250}, "preprocess": {"windowing": "chest_rgb"}}}
+    o = _runner_orch(monkeypatch, tmp_path, cfg)
+    df, col, _ = o._load_bq_table_task_data(TB_TASK)
+    with pytest.raises(_StopAtDataset):
+        o._process_single_task_with_data(TB_TASK, "summary_image", df, col)
+    assert seen["ds"]._ct_preprocess == {"windowing": "multi_window_rgb"}
+    with pytest.raises(_StopAtDataset):
+        o._process_single_task_with_data(TB_TASK, "ct_current", df, col)
+    assert seen["ds"]._ct_preprocess == {"windowing": "chest_rgb"}  # the radiology-progression arm's own window
+
+
+def test_runner_turns_the_board_switches_into_the_header_and_the_report_drop(monkeypatch, tmp_path):
+    ev = _events_with_demo()
+    ev.loc[1, "note_id"] = "777"  # the board CT's report
+    monkeypatch.setattr(run_bq_mod, "lumia_path_for", lambda pid, d: tmp_path)
+    monkeypatch.setattr(run_bq_mod.EHRAdapter, "ingest", lambda self, raw, ctx: ev.copy())
+    rows = pd.DataFrame({"person_id": [1], "embed_time": [pd.Timestamp("2020-03-01")], "ct_note_id": [777],
+                         "patient_string": ["old"]})
+
+    def render(extra):
+        o = _orch()
+        o.model_type = "vertex_gemini"
+        o.cfg.update({"retrieval": {"corpus_dir": str(tmp_path)}, **extra})
+        return o._apply_ehr_adapter(rows.copy(), "no_image", "patient_string")["patient_string"].iloc[0]
+    board = render({"ehr_demographics_header": True, "ehr_drop_current_ct_report": True})
+    plain = render({})
+    assert board.splitlines()[0] == "PATIENT: age 66 years at the prediction time; sex female."
+    assert "long clinical note" not in board
+    assert "PATIENT:" not in plain and "long clinical note" in plain
+
+
+def test_keep_latest_keeps_part_of_an_oversized_newest_record():
+    text = "[2020-01-01 00:00] | LOINC/1 | VALUE: 1\n[2020-01-02 00:00] | NOTE | " + "x" * 500
+    out = keep_latest_lines(text, 200)
+    assert out.startswith(KEEP_LATEST_MARKER) and "[2020-01-02 00:00] | NOTE" in out and len(out) <= 200
+
+
+def test_runner_adds_the_channels_line_on_the_ehr_plus_ct_arm_the_rerun_uses(monkeypatch, tmp_path):
+    # axial_all_image builds its prompt through the EHR path, not the summary path.
+    monkeypatch.setattr(run_bq_mod, "lumia_path_for", lambda pid, d: tmp_path)
+    monkeypatch.setattr(run_bq_mod.EHRAdapter, "ingest", lambda self, raw, ctx: _events())
+    rows = _board_rows().assign(embed_time=pd.Timestamp("2020-03-01"), patient_string="old")
+    monkeypatch.setattr(run_bq_mod, "fetch_task_data_from_bq", lambda client, table, task: rows.copy())
+
+    def prompts(extra):
+        o = _runner_orch(monkeypatch, tmp_path, {"retrieval": {"corpus_dir": str(tmp_path)}, **extra})
+        monkeypatch.setattr(run_bq_mod, "fetch_task_data_from_bq", lambda client, table, task: rows.copy())
+        df, col, _ = o._load_bq_table_task_data(TB_TASK)
+        return o._build_prompts_for_experiment(df, TB_TASK, "axial_all_image", col)["dynamic_prompt"].tolist()
+    on, off = prompts({"ct_windowing": "multi_window_rgb"}), prompts({})
+    assert on and all(p.count(CT_CHANNELS_LINE) == 1 for p in on)
+    assert off and not any(CT_CHANNELS_LINE in p for p in off)
+
+
+def test_capture_labels_the_window_from_the_board_setting(monkeypatch, tmp_path):
+    import vista_run.context_capture as cc
+    rows = _board_rows()
+
+    def labels(extra):
+        o = _runner_orch(monkeypatch, tmp_path, extra)
+        df, col, _ = o._load_bq_table_task_data(TB_TASK)
+        monkeypatch.setattr(cc, "_load_experiment_data", lambda orch, t, e: (df, col, None))
+        return {ex.windowing for ex in cc.iter_captured_examples(o, TB_TASK, "summary", "vertex_gemini")}
+    assert labels({"ct_windowing": "multi_window_rgb"}) == {"multi_window_rgb"}
+    assert labels({}) == {"grayscale"}  # a non-Gemma model without the board setting
