@@ -5,8 +5,9 @@
 #
 #   git -C ~/code/vista_eval_vlm fetch -q origin && git -C ~/code/vista_eval_vlm show origin/feat/died-2yr-ehr-agentic:optimizer/died-2yr-ehr/scripts/run_on_vm.sh > ~/run_died2yr_ehr.sh && bash ~/run_died2yr_ehr.sh
 #
-# Needs: Docker, the su-vista-uscentral1 mount, uv, git access to both repos, and the Claude token at
-# ~/.config/alo/oauth_token (mode 600; `claude setup-token` makes one). Settings, all optional, on the same line:
+# Needs: Docker, the su-vista-uscentral1 mount, uv, git access to both repos, and on the Vertex route (the default) the
+# Vertex-only service account key at ~/.config/alo/vertex-sa.json (mode 600); with ALO_ROUTE=anthropic, the Claude
+# token at ~/.config/alo/oauth_token (mode 600; `claude setup-token` makes one). Settings, all optional, on the same line:
 # RUN_ID (first), ITERATIONS (2), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20); SETUP_ONLY=1 stops before the run.
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
@@ -14,12 +15,12 @@
 set -euo pipefail
 
 BRANCH=feat/died-2yr-ehr-agentic
-ENGINE_BRANCH=fix/vertex-global-session-host
+ENGINE_BRANCH=main
 VLM=${VLM_REPO:-$HOME/code/vista_eval_vlm}
 TASK_WT=$HOME/code/vista_eval_vlm-died2yr-ehr
 TASK_DIR=$TASK_WT/optimizer/died-2yr-ehr
 ENGINE=$HOME/code/agentic-label-opt
-ENGINE_WT=$ENGINE/.claude/worktrees/optimizer-websearch
+ENGINE_WT=$ENGINE/.claude/worktrees/mortality-engine
 DATA=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7
 # The local working copy the task reads (config.DATA_DIR): rebuilt from $DATA/archive by build_data.py rehydrate.
 export TASK_DATA_DIR=${TASK_DATA_DIR:-$HOME/data/died-2yr-ehr-v1_7}
@@ -66,9 +67,15 @@ command -v uv >/dev/null || fail "uv is not installed"
 docker info >/dev/null 2>&1 || fail "Docker is not running or this user cannot use it"
 [ -f "$DATA/pools.json" ] || fail "the data is not readable at $DATA (is the su-vista-uscentral1 mount here?)"
 [ -d "$DATA/archive/tables" ] || fail "no record archive at $DATA/archive (the export has not been run yet)"
-TOKEN=$HOME/.config/alo/oauth_token
-[ -f "$TOKEN" ] || fail "no Claude token at $TOKEN: run claude setup-token, save it there with mode 600"
-[ "$(stat -c %a "$TOKEN")" = 600 ] || fail "$TOKEN must be mode 600"
+if [ "${ALO_ROUTE:-vertex}" = vertex ]; then
+    KEY=$HOME/.config/alo/vertex-sa.json
+    [ -f "$KEY" ] || fail "no Vertex-only key at $KEY (or run on the seat with ALO_ROUTE=anthropic)"
+    [ "$(stat -c %a "$KEY")" = 600 ] || fail "$KEY must be mode 600"
+else
+    TOKEN=$HOME/.config/alo/oauth_token
+    [ -f "$TOKEN" ] || fail "no Claude token at $TOKEN: run claude setup-token, save it there with mode 600"
+    [ "$(stat -c %a "$TOKEN")" = 600 ] || fail "$TOKEN must be mode 600"
+fi
 
 # The task code, at the pushed branch.
 [ -d "$VLM/.git" ] || git clone -q git@github.com:VISTA-Stanford/vista_eval_vlm.git "$VLM"
@@ -117,7 +124,9 @@ done
 alo build-images >/dev/null || fail "build-images"
 [ -d "$TASK_WORKDIR/repo" ] || alo init || fail "init"
 alo pins --write | tail -1 || fail "pins --write"
-alo check-token | grep -q ": PASS" || fail "check-token did not PASS (try: cd $TASK_DIR && uv run --project $ENGINE_WT python run.py check-token)"
+if [ "${ALO_ROUTE:-vertex}" != vertex ]; then
+    alo check-token | grep -q ": PASS" || fail "check-token did not PASS (try: cd $TASK_DIR && uv run --project $ENGINE_WT python run.py check-token)"
+fi
 out=$(alo dry-run 2>&1) || fail "dry-run exited non-zero"
 echo "$out" | grep -q "^FINISHED" && ! echo "$out" | grep -q " FAIL " || { echo "$out" | tail -20; fail "dry-run"; }
 echo "$out" | grep "best program-v0"

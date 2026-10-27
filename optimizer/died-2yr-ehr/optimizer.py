@@ -5,6 +5,9 @@ Two containers run in a real run, both sealed by the engine:
     the optimizer   a Claude Code session per iteration that edits a copy of the program
     the worker      runs the program over one batch: no network, user nobody, nothing writable
 
+plus, with ``config.SEARCH_PROXY``, the engine's search sessions: one per request the optimizer drops, seeing only
+that request and the findings file (engine/search_proxy).
+
 The forbidden list is the heart of the seal: every folder whose contents would let either container
 see the answers. The engine refuses to mount anything on or under these paths, and the setup check
 fingerprints both containers so a change to either stops the run before it spends anything.
@@ -71,8 +74,16 @@ class Layout:
         return self.root / "program-outputs"
 
     @property
+    def search(self) -> Path:  # the search proxy's drop folder, findings file (kept across runs) and requests
+        return self.root / "search"
+
+    @property
     def private(self) -> Path:
         return self.root / "private"
+
+    @property
+    def search_logs(self) -> Path:  # every search request, its queries, reply and cost, per round
+        return self.private / "search-logs"
 
     @property
     def outputs(self) -> Path:  # the program's answers, per pass
@@ -181,23 +192,41 @@ class ChangeNoteAgent:
         return dataclasses.replace(outcome, attempting_step_back=step_back)
 
 
-def profile():
-    from isolation import sealed_session as ss
+#: The optimizer's container variables, shared with the search sessions (the same route, Decided 2026-10-22).
+#: Running the program writes __pycache__ into the program folder, and any file outside the editable list refuses
+#: the whole edit and stops the run. This keeps Python from writing it.
+ENV = (("PYTHONDONTWRITEBYTECODE", "1"),)
 
-    if config.PROFILE == "anthropic":
-        return ss.AnthropicApiProfile(token_env_name=config.TOKEN_ENV_NAME), ss.NO_CREDENTIAL
-    raise SystemExit(
-        "PROFILE='vertex' needs your project, region and Google credential: build an "
-        "isolation.sealed_session.VertexProfile here (see docs/guide/decisions.md, 'Patient data')."
+
+def search_proxy(layout: Layout, *, image: str, pin: str, token: str | None):
+    """The engine's search proxy on the optimizer's route, or None when ``config.SEARCH_PROXY`` is off. ``pin`` is
+    the committed ``search`` pin (or ``UNPINNED`` while printing one). Its first pass reads the staged task brief
+    (no patient data) to pick literature topics before round 1."""
+    if not config.SEARCH_PROXY:
+        return None
+    from engine.search_proxy import SearchLimits, SearchProxy
+
+    prof, credential = config.ROUTE.session_auth()
+    return SearchProxy(
+        work_root=layout.search, log_root=layout.search_logs, forbidden=optimizer_forbidden(layout),
+        profile=prof, credential=credential, image=image, expected_fingerprint=pin,
+        model=config.PROGRAM_MODEL,  # Sonnet 5.5, the same id on both routes
+        host_env={config.TOKEN_ENV_NAME: token} if token and not config.ROUTE.is_vertex else None, env=ENV,
+        limits=SearchLimits(requests_per_round=config.SEARCH_REQUESTS_PER_ROUND),
+        brief_path=layout.inputs / op.TASK_BRIEF_NAME,
     )
 
 
-def build_agent(layout: Layout, store, *, run_id: str, image: str, pin: str, token: str | None):
-    """The sealed optimizer. ``pin`` is the committed setup pin (or ``UNPINNED`` while printing one)."""
+def build_agent(layout: Layout, store, *, run_id: str, image: str, pin: str, token: str | None,
+                search_pin: str):
+    """The sealed optimizer, wrapped in the search proxy when it is on (the wrapper's ``proxy`` attribute is the
+    ``search`` setup owner). ``pin`` and ``search_pin`` are the committed setup pins (or ``UNPINNED``)."""
+    from engine.search_proxy import ProxiedOptimizer
     from isolation.contained_agent import ContainedOptimizerAgent, DeclaredOutput
 
-    prof, credential = profile()
-    return ContainedOptimizerAgent(
+    prof, credential = config.ROUTE.session_auth()
+    proxy = search_proxy(layout, image=image, pin=search_pin, token=token)
+    agent = ContainedOptimizerAgent(
         model=config.OPTIMIZER_MODEL,
         system_prompt=op.system_prompt(),
         prompt_builder=op.build_prompt,
@@ -222,13 +251,13 @@ def build_agent(layout: Layout, store, *, run_id: str, image: str, pin: str, tok
         max_budget_usd=config.OPTIMIZER_SESSION_BUDGET_USD,
         effort=config.OPTIMIZER_EFFORT,
         web_search=config.OPTIMIZER_WEB_SEARCH,
+        search_grant=proxy.grant if proxy else None,
         timeout_seconds=config.OPTIMIZER_TIMEOUT_SECONDS,
-        host_env={config.TOKEN_ENV_NAME: token} if token else None,
-        # Running the program writes __pycache__ into the program folder, and any file outside the
-        # editable list refuses the whole edit and stops the run. This keeps Python from writing it.
-        env=(("PYTHONDONTWRITEBYTECODE", "1"),),
+        host_env={config.TOKEN_ENV_NAME: token} if token and not config.ROUTE.is_vertex else None,
+        env=ENV,
         patient_data=config.PATIENT_DATA,
     )
+    return ProxiedOptimizer(agent, proxy) if proxy else agent
 
 
 def stage_files(layout: Layout) -> None:

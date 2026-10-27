@@ -169,20 +169,26 @@ def drive(cfg: DriverConfig) -> int:
 SCRIPTED_EDITS: dict = {}  # agentic: the scripted edit appends a comment to instructions.md
 
 
+def stub_answer(pid: str) -> dict:
+    """The dry run's stand-in answer for one patient: right at both horizons when the id ends in an even hex digit,
+    "no" at both otherwise, and an unreadable answer when it ends in "f" (scored wrong). So a pass's balanced
+    accuracy is a number scripts/check_task.py works out independently from the gold (a constant stand-in would
+    score 0.5 whatever the scorer did)."""
+    if pid[-1] == "f":
+        return {"status": "ok", "id": pid, "error": "not_yes_or_no", "reason": "dry-run stand-in"}
+    gold = next(r for r in ad.read_split("val") + ad.read_split("train") if r["id"] == pid)
+    even = int(pid[-1], 16) % 2 == 0
+    return {"status": "ok", "id": pid, "reason": "dry-run stand-in",
+            **{key: (bool(gold[field]) if even else False) for key, field, _w in config.HORIZONS}}
+
+
 class StubAgenticRunner(ad._Runner):
-    """The dry run's stand-in for agentic sessions (which cost money). For patients whose id ends in an even
-    hex digit it answers 0.8 if they died and 0.2 if they lived; for the rest, 0.5. So the seed's VAL AUROC is
-    a number that can be worked out independently from the batch (a constant stand-in would score 0.5 whatever
-    the scorer did). Dry run only: it runs on the host, unsealed, and never reaches an optimizer."""
+    """The dry run's stand-in for agentic sessions (which cost money): ``stub_answer`` per patient. Dry run only:
+    it runs on the host, unsealed, and never reaches an optimizer."""
 
     class _Stub:
         def request(self, payload):
-            if int(payload["id"][-1], 16) % 2 == 0:
-                gold = next(r for r in ad.read_split("val") + ad.read_split("train") if r["id"] == payload["id"])
-                p = 0.8 if gold["label"] == 1 else 0.2
-            else:
-                p = 0.5
-            return {"status": "ok", "id": payload["id"], "probability": p, "reason": "dry-run stand-in"}
+            return stub_answer(payload["id"])
 
         def close(self):
             pass
@@ -312,19 +318,29 @@ def program_runner(layout, *, image, pin):
                            stderr_dir=layout.transcripts / "worker", versions_root=layout.versions)
 
 
-def sealed_parts(layout, *, run_id, optimizer_pin, program_pin, token):
+def sealed_parts(layout, *, run_id, pins, token):
+    """(optimizer, program runner, owners): ``owners`` maps each sealed kind to what the setup check fingerprints,
+    the search sessions included when the proxy is on (a proxied optimizer without that owner is refused)."""
     optimizer_image, program_image = images()
-    agent = opt.build_agent(layout, ad.TaskStore(), run_id=run_id, image=optimizer_image, pin=optimizer_pin, token=token)
-    return agent, program_runner(layout, image=program_image, pin=program_pin)
+    agent = opt.build_agent(layout, ad.TaskStore(), run_id=run_id, image=optimizer_image, pin=pins["optimizer"],
+                            search_pin=pins.get("search"), token=token)
+    runner = program_runner(layout, image=program_image, pin=pins["program"])
+    owners = {"optimizer": agent, "program": runner}
+    if config.SEARCH_PROXY:
+        owners["search"] = agent.proxy
+    return agent, runner, owners
+
+
+#: The sealed kinds this task pins: the optimizer, the program, and the search sessions when the proxy is on.
+PIN_KINDS = ("optimizer", "program", *(("search",) if config.SEARCH_PROXY else ()))
 
 
 def cmd_pins(args) -> int:
     from isolation.setup_fingerprint import PIN_KEY, UNPINNED, fingerprint_hash, platform_key, setup_fingerprint
 
     layout = opt.Layout()
-    agent, runner = sealed_parts(layout, run_id="pins", optimizer_pin=UNPINNED, program_pin=UNPINNED, token=None)
-    prints = {"optimizer": setup_fingerprint(agent.setup_description()),
-              "program": setup_fingerprint(runner.setup_description())}
+    _agent, _runner, owners = sealed_parts(layout, run_id="pins", pins=dict.fromkeys(PIN_KINDS, UNPINNED), token=None)
+    prints = {kind: setup_fingerprint(owner.setup_description()) for kind, owner in owners.items()}
     hashes = {k: fingerprint_hash(v) for k, v in prints.items()}
     print(json.dumps(prints, indent=2))
     print(f"\nplatform {platform_key()}: {json.dumps(hashes, indent=2)}")
@@ -347,9 +363,13 @@ def committed_pins(layout) -> dict:
     from isolation.setup_fingerprint import committed_pin
 
     try:
-        return {k: committed_pin(layout.repo, PIN_FILE, kind=k) for k in ("optimizer", "program")}
+        pins = {k: committed_pin(layout.repo, PIN_FILE, kind=k) for k in PIN_KINDS}
     except Exception as exc:  # noqa: BLE001
         raise SystemExit(f"no committed setup pins ({exc}); run: python {HERE / 'run.py'} pins --write") from exc
+    missing = [k for k, v in pins.items() if v is None]
+    if missing:
+        raise SystemExit(f"no committed setup pin for {missing}; run: python {HERE / 'run.py'} pins --write")
+    return pins
 
 
 # ==================================================================================================
@@ -441,14 +461,12 @@ def cmd_run(args) -> int:
     layout = opt.Layout()
     op.ITERATIONS = args.iterations
     token, _source = load_token()
-    if config.PROFILE == "anthropic" and not token:
+    if not config.ROUTE.is_vertex and not token:
         print(NO_TOKEN.format(file=config.TOKEN_FILE, env=config.TOKEN_ENV_NAME))
         return 1
     opt.stage_files(layout)
-    pins = committed_pins(layout)
-    agent, runner = sealed_parts(layout, run_id=args.run_id, optimizer_pin=pins["optimizer"],
-                                 program_pin=pins["program"], token=token)
-    owners = {"optimizer": agent, "program": runner}
+    agent, runner, owners = sealed_parts(layout, run_id=args.run_id, pins=committed_pins(layout),
+                                         token=None if config.ROUTE.is_vertex else token)
     try:
         stamp = check_setup(owners, program_mode=ProgramMode(config.PROGRAM_MODE), runner=runner).value
     except LoopStop as exc:

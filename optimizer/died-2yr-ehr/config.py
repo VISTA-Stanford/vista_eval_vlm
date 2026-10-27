@@ -1,4 +1,5 @@
-"""Every decision for the died-2yr-ehr task, in one place: predict vista_bench's ``died_any_cause_2_yr`` from
+"""Every decision for the died-2yr-ehr task, in one place: predict vista_bench's ``died_any_cause_1_yr`` and
+``died_any_cause_2_yr`` (two forced yes/no answers, one session) from
 the patient's EHR (OMOP tables, notes, allow-listed registry fields) cut at first treatment - 7 days, one sealed
 Claude Code session per patient. The EHR twin of died-2yr-ct: same patients, splits, pools, scorer and engine.
 
@@ -17,13 +18,13 @@ HERE = Path(__file__).resolve().parent
 # --------------------------------------------------------------------------------------------------
 # Where the engine is. The engine checks that it runs from a git checkout that contains ENGINE_PIN.
 # --------------------------------------------------------------------------------------------------
-#: The web-search branch (feat/optimizer-websearch, on top of the fix branch's effort setting) until it lands.
-ENGINE_ROOT = Path(os.environ.get("AGENTIC_LABEL_OPT") or Path.home() / "code" / "agentic-label-opt" / ".claude" / "worktrees" / "optimizer-websearch").resolve()
+#: A checkout of agentic-label-opt main at ENGINE_PIN (shared with died-2yr-ct).
+ENGINE_ROOT = Path(os.environ.get("AGENTIC_LABEL_OPT") or Path.home() / "code" / "agentic-label-opt" / ".claude" / "worktrees" / "mortality-engine").resolve()
 if not (ENGINE_ROOT / "engine" / "driver.py").is_file():
     raise SystemExit(f"no engine at {ENGINE_ROOT}: set AGENTIC_LABEL_OPT to your agentic-label-opt checkout")
 #: The full 40-character engine commit this task was built and tested against
 #: (``git -C $AGENTIC_LABEL_OPT rev-parse HEAD``). Bump it on purpose, after re-running the dry run.
-ENGINE_PIN = "bd81bf35c9a73c6dadf906c7090c0ea69d1ed0c3"  # DECIDE (Vertex global session host fix on fix/vertex-global-session-host, 2026-10-21)
+ENGINE_PIN = "9aee75ffa1fcdbb949f9f639247ec2fef623f757"  # DECIDE (main: Vertex host fix, search proxy, NAT fix, shared route + key check, 2026-10-27)
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
@@ -31,9 +32,12 @@ if str(ENGINE_ROOT) not in sys.path:
 # The task
 # --------------------------------------------------------------------------------------------------
 TASK_NAME = "died-2yr-ehr"  # DECIDE: short, lowercase, dashes; names the work folder and images
-#: The gold: vista_bench v1.7 died_any_cause_2_yr (1 died, 0 alive at 2 years; -1, too little follow-up, dropped).
-#: The program answers a probability of death, not a label.
+#: The gold: vista_bench v1.7 died_any_cause_2_yr (``label``: 1 died, 0 alive at 2 years; -1, too little follow-up,
+#: dropped) and died_any_cause_1_yr (``label_1yr``, same patient and scan; scripts/build_data.py splits). The program
+#: answers yes or no for each horizon (work package 2, Phil 2026-10-27: forced answers, scored like the VLMs).
 LABELS = (0, 1)  # DECIDE
+#: The two questions: (answer key in output.json, gold field in splits/*.jsonl, words in the prompt).
+HORIZONS = (("died_within_1_year", "label_1yr", "1 year"), ("died_within_2_years", "label", "2 years"))
 #: The task data on the shared mount (inside the secure environment): splits/{train,val,test}.jsonl
 #: ({"id", "label"}), pools.json (the fixed TRAIN and VAL pools, the CT task's own) and the shared exporter's
 #: archive of every patient's record. scripts/build_data.py writes it.
@@ -66,15 +70,17 @@ TASK_BRIEF = HERE / "context" / ("task_agentic.md" if AGENTIC else "task.md")
 PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-sonnet-5-5")  # DECIDE: pinned id, same as CT (Phil 2026-10-21)
 #: The Squid network gate stalls above about 2 concurrent sessions on phil-sllm-01 (recurrence run, 10-19).
 PROGRAM_MAX_CONCURRENT = int(os.environ.get("PROGRAM_MAX_CONCURRENT", "2"))
-#: Same $0.40 cap as died-2yr-ct (Phil 2026-10-21). The EHR is text, not images, but a patient has a median of
+#: $0.50 a patient, one session for both horizons (Phil 2026-10-27, eval-set spec). A patient has a median of
 #: about 55 notes before the cutoff; the 5+5-patient cost check (an Expensive step) confirms under 1 in 20 hit it.
-PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD", "0.40"))
+PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD", "0.50"))
 PROGRAM_CALL_TIMEOUT_SECONDS = 900
 
 # --------------------------------------------------------------------------------------------------
 # The metric: one number, higher is better. adapters.TaskScorer computes it.
 # --------------------------------------------------------------------------------------------------
-METRIC_NAME = "auroc"  # DECIDE: as the vista_bench leaderboard scores this task (Phil 2026-10-20, kept 10-21)
+#: Balanced accuracy at each horizon, averaged over the two: forced answers, macro balanced accuracy, as the
+#: eval set scores every model (spec planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md, Decided: Score).
+METRIC_NAME = "balanced_accuracy"  # DECIDE
 
 # --------------------------------------------------------------------------------------------------
 # The optimizer
@@ -85,9 +91,12 @@ OPTIMIZER_SESSION_BUDGET_USD = float(os.environ.get("OPTIMIZER_SESSION_BUDGET_US
 #: Claude Code --effort: at the default a Sonnet optimizer quit in 4-6 turns on recurrence (10-19).
 OPTIMIZER_EFFORT = os.environ.get("OPTIMIZER_EFFORT", "high")  # DECIDE: Phil 2026-10-20
 OPTIMIZER_TIMEOUT_SECONDS = 2700
-#: The optimizer may search the web for literature (WebSearch only; page fetching stays refused). Its
-#: queries leave the seal; the brief forbids patient details in them (Phil 2026-10-20).
-OPTIMIZER_WEB_SEARCH = True  # DECIDE
+#: The optimizer reads TRAIN records, so it never searches itself (Phil 2026-10-22): it asks the engine's search
+#: proxy, a separate sealed session that sees only the request and the findings file and refuses anything
+#: patient-specific. Spec planning/agentic-label-opt/2026-10-22-search-proxy.md.
+OPTIMIZER_WEB_SEARCH = False  # DECIDE
+SEARCH_PROXY = True  # DECIDE
+SEARCH_REQUESTS_PER_ROUND = 6
 #: Pass ``attempting_step_back: true`` in the change note to try a big change that is undone if VAL drops
 #: by more than this. 0.0 means any drop.
 STEP_BACK_REVERT_TOLERANCE = 0.0
@@ -113,8 +122,6 @@ WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-task
 # --------------------------------------------------------------------------------------------------
 # Sealing: which model route and which images. docs/guide/decisions.md, "Which models it can use".
 # --------------------------------------------------------------------------------------------------
-#: Phil 2026-10-17: de-identified VISTA data (EHR included) may use the Claude subscription route.
-PROFILE = "anthropic"  # DECIDE
 #: The optimizer runs in a container that cannot see your Claude Code login, so it needs its own token.
 #: `claude setup-token` mints a one-year token on the account you sign into (Pro, Max, Team or Enterprise):
 #: your existing seat, not a new account or an API key. Pick your organization's account at the browser
@@ -126,16 +133,16 @@ TOKEN_FILE = Path(os.environ.get("ALO_TOKEN_FILE", Path.home() / ".config" / "al
 CLAUDE_CODE_VERSION = "2.1.307"  # Vertex global verified from this image 2026-10-21
 OPTIMIZER_IMAGE_TAG = f"alo-{TASK_NAME}-optimizer:{CLAUDE_CODE_VERSION}"
 WORKER_IMAGE_TAG = f"alo-{TASK_NAME}-worker:3.11.0"
+#: The route, one setting for the optimizer, the patient sessions and the search sessions (engine isolation.route;
+#: ALO_ROUTE=anthropic runs one run on the seat instead). Vertex bills the GCP project, not the seat, and reaches
+#: Google's API addresses, not api.anthropic.com, so it neither spends the seat's session limit nor shares the Cloud
+#: NAT's 64 ports (Phil 2026-10-21). It mounts only a Vertex-only service account key (~/.config/alo/vertex-sa.json):
+#: no container holds a person's login, which could read the BigQuery labels (Phil 2026-10-21, kept 2026-10-27).
+#: Both routes are approved for this de-identified data (Phil 2026-10-17, 10-22).
+from isolation.route import Route, route_name  # noqa: E402  (the engine is on sys.path above)
+
+ROUTE = Route(route_name("vertex"), vertex_project="som-nero-plevriti-deidbdf",
+              vertex_region="global",  # Claude 5.5 is served on global only in this project (probed 2026-10-17)
+              token_env_name=TOKEN_ENV_NAME)  # DECIDE
 #: Patient data: turns on the engine's patient-data guards (fail-closed run store, Vertex only).
-#: The patient sessions' route. "vertex" bills the GCP project instead of the seat and reaches Google's API
-#: addresses, not api.anthropic.com, so it neither spends the seat's session limit nor shares the Cloud NAT's
-#: 64 ports for api.anthropic.com (Phil 2026-10-21, after the seat hit its limit and the NAT kept dropping).
-#: The optimizer stays on the seat: the engine allows WebSearch only on the Anthropic profile.
-#: Vertex is NOT usable yet (2026-10-21): the only credential at hand is the user's own login, which can read the
-#: BigQuery labels, and the seal forbids mounting it. Needs a Vertex-only identity; hand-off in
-#: planning/vista_eval_vlm/session/2026-10-21-vertex-pipeline-handoff.md. Until then the patient sessions use the seat.
-PROGRAM_PROFILE = os.environ.get("PROGRAM_PROFILE", "anthropic")  # DECIDE: "anthropic" | "vertex"
-VERTEX_PROJECT = "som-nero-plevriti-deidbdf"
-VERTEX_REGION = "global"  # Sonnet 5.5 is served on global only in this project (probed 2026-10-17)
-VERTEX_CREDENTIAL = Path(os.environ.get("VERTEX_CREDENTIAL", Path.home() / ".config" / "alo" / "vertex-sa.json"))  # a Vertex-only identity, never the user login
 PATIENT_DATA = False  # DECIDE: de-identified, approved for the subscription route (Phil 2026-10-17), as died-2yr-ct
