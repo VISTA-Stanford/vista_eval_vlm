@@ -83,6 +83,9 @@ def program_spec(forbidden):
         # clear it.
         dest = Path(folder) / RECORD
         dest.mkdir(parents=True)
+        # Readable by others: on Vertex the container runs as the credential's owner, not the host user, and a
+        # 077 umask left the record unreadable there (live check 2026-10-21).
+        dest.chmod(0o755)
         for f in record_files(patient_dir(call.payload["id"])):
             shutil.copy2(f, dest / f.name)
             (dest / f.name).chmod(0o444)
