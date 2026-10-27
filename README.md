@@ -129,7 +129,8 @@ Plan: `planning/vista_eval_vlm/vlm-radiology-progression-codex.md` (on the mount
 
 Each call is sealed: Codex's tools are off (shell, web search, apps, browser, plugins, memories) and it
 runs under bubblewrap with the data mount, code folders and cloud credentials hidden. Needs `codex`
-(signed in) and `bwrap` on the box, and an env with `vistabench-eval` installed (see the plan).
+(signed in) and `bwrap` on the box, and an env with `vistabench-eval` installed (`bash scripts/setup_api_env.sh`,
+or `uv sync --extra test`).
 
 ```bash
 .venv/bin/python scripts/codex_seal_check.py                      # proves the call can't see the mount
@@ -150,6 +151,12 @@ you are on, synthetic images only. `bash scripts/setup_api_env.sh` builds the li
 .venv-api/bin/python scripts/aihub_body_cap_probe.py
 cd src && ../.venv-api/bin/python -m vista_run.run_bq --config ../configs/radiology_progression.astra_first_look.yaml --type aihub_openai --name gpt-6-astra
 ```
+
+The Astra runs went from weill-p01, where the hub takes full requests. The `*.weill.yaml` configs set
+`paths.mount_root` because weill mounts the bucket under `/data/fries/users/padamson/mnt`, not `/mnt`:
+`radiology_progression.astra_400.weill.yaml` is the 400-scan paired run (100 per class, 25 + 25 slices);
+`lesion_panel.astra_400.weill.yaml` asks 21 lesion questions in one call per scan on 400 current CTs (50 slices),
+each scored on its own; `single_ct.astra_400.weill.yaml` holds death within 2 years from one CT, not approved to run.
 
 Answers are cached by exact request on the mount, so the full run (`radiology_progression.codex.yaml`,
 100 per class) reuses the pilot's 10 per class. `codex.max_total_tokens` caps new tokens per run; hitting
