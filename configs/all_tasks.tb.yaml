@@ -42,10 +42,21 @@ experiments:
   - summary
   - summary_image
 
-# Ryan's EHR cut: last 100 distinct dates, then about 210,000 characters.
+# EHR trim (rev 5, Phil 10-15): keep the newest records within about 210,000 characters, dropping
+# the oldest first. Ryan's last_k_events trim cut the END of long records (the newest months).
 timeline_truncation:
-  mode: "last_k_events"
-  k: 100
+  mode: "keep_latest"
+  max_chars: 210000
+
+# Rev 5 (Phil 10-15): an age (at the prediction time) and sex header on every EHR input, and the
+# board CT's own radiology report removed (older imaging reports stay).
+ehr_demographics_header: true
+ehr_drop_current_ct_report: true
+
+# CT slices (rev 5, Phil 10-15): every model gets MedGemma's 3-window colour images (wide,
+# soft-tissue, brain), with a prompt line naming the channels. Before this, non-Gemma models got
+# each slice stretched min-to-max with no CT window, which hides contrast and soft tissue.
+ct_windowing: "multi_window_rgb"
 
 # The live EHR adapter reads LUMIA files from corpus_dir (the retriever stays off).
 retrieval:

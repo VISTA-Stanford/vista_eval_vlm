@@ -64,6 +64,28 @@ _RENDERER_EXTRA_FIELDS = ("numeric_value", "unit", "text_value", "description")
 # intervals (start ≈ end within 1 minute) — same state-marker, not a note body.
 _STATE_TOKENS = {"start", "end", "start|end", "", None}
 
+# OMOP gender concept ids -> words, for the board tasks' age/sex header.
+_GENDER_WORDS = {"8507": "male", "8532": "female"}
+
+
+def demographics_header(event_df: pd.DataFrame, as_of) -> str:
+    """One line with age at ``as_of`` and sex, read from the synthesized birth/gender rows.
+
+    Those rows are dated at the birthdate, so a window filter drops them; call this on the
+    unfiltered events. Missing values say "unknown" rather than being guessed.
+    """
+    age, sex = "unknown", "unknown"
+    if not event_df.empty and "code" in event_df.columns:
+        birth = event_df.loc[event_df["code"] == "MEDS_BIRTH", "time"]
+        if len(birth) and pd.notna(birth.iloc[0]) and as_of is not None and pd.notna(as_of):
+            b, t = pd.Timestamp(birth.iloc[0]), pd.Timestamp(as_of)
+            age = str(t.year - b.year - ((t.month, t.day) < (b.month, b.day)))
+        g = event_df.loc[event_df["code"].astype(str).str.startswith("Gender/"), "code"]
+        if len(g):
+            sex = _GENDER_WORDS.get(str(g.iloc[0]).split("/", 1)[1], "unknown")
+    return f"PATIENT: age {age} years at the prediction time; sex {sex}."
+
+
 # <person>/<demographics> child tags to synthesize as pseudo-event rows, in the fixed order
 # confirmed against the legacy render (13/13 patients, VM Phase 0.5): Ethnicity, Race, Gender.
 _DEMOGRAPHIC_TAGS = ("ethnicity", "race", "gender")
@@ -294,12 +316,20 @@ class EHRAdapter(ModalityAdapter):
     def _render_events(self, event_df: pd.DataFrame, ctx: dict) -> tuple[str, dict]:
         meta: dict = {}
         embed_time = ctx.get("embed_time")
+        header = demographics_header(event_df, embed_time) if ctx.get("demographics_header") else None
         fctx = {"embed_time": embed_time, "model_type": ctx.get("model_type")}
         applied = []
         for f in self.filters:
             event_df = f(event_df, fctx)
             applied.append({"fn": f.fn_name, **f.params})
         meta["filters"] = applied
+        drop_ids = {str(i) for i in (ctx.get("drop_note_ids") or [])}
+        if drop_ids and "note_id" in event_df.columns:
+            # The board CT's own report: drop the note that carries its text. Image events share
+            # the note id but hold no text, so they stay (they only mark that a scan happened).
+            is_report = event_df["note_id"].astype(str).isin(drop_ids) & event_df["code"].astype(str).str.startswith("STANFORD_NOTE")
+            meta["dropped_report_events"] = int(is_report.sum())
+            event_df = event_df[~is_report]
         meta["event_count"] = int(len(event_df))
         meta["lumia_missing_fields"] = lumia_missing_fields(event_df) if not event_df.empty else list(_RENDERER_EXTRA_FIELDS)
         include_text = bool(self.serialize_cfg.get("include_text", True))
@@ -308,6 +338,8 @@ class EHRAdapter(ModalityAdapter):
         text = get_llm_event_string(
             event_df, include_text=include_text, max_text_len=max_text_len, exclude_report=False
         )
+        if header is not None:
+            meta["demographics_header"] = header
         return text, meta
 
     def contextualize(self, normalized, ctx: dict) -> ContextBlock:
@@ -332,6 +364,9 @@ class EHRAdapter(ModalityAdapter):
         elif truncation_cfg is not None:
             text = truncate_timeline(text, truncation_cfg)
             meta["truncation"] = truncation_cfg
+        if meta.get("demographics_header"):
+            # Added after the trim, so a long record can never push it out.
+            text = meta["demographics_header"] + "\n" + text
 
         return ContextBlock(
             id=self.block_id,

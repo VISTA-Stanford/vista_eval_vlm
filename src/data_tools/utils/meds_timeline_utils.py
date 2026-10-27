@@ -59,6 +59,27 @@ def get_first_4_rows(text) -> str:
     pass
 
 
+KEEP_LATEST_MARKER = "[earlier records omitted to fit; the newest are kept]"
+
+
+def keep_latest_lines(text: str, max_chars: int) -> str:
+    """Keep the newest whole lines (the timeline is chronological) within ``max_chars``.
+
+    Unlike ``last_k_events``, this never cuts the end of the record: when a long record must
+    shrink, the oldest lines go first, so the months right before the prediction time stay.
+    """
+    if len(text) <= max_chars:
+        return text
+    budget = max_chars - len(KEEP_LATEST_MARKER) - 1
+    kept, used = [], 0
+    for line in reversed(text.split('\n')):
+        if used + len(line) + 1 > budget:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    return KEEP_LATEST_MARKER + '\n' + '\n'.join(reversed(kept))
+
+
 def truncate_timeline(text, truncation_config=None) -> str:
     """
     Truncate timeline based on configuration.
@@ -75,6 +96,9 @@ def truncate_timeline(text, truncation_config=None) -> str:
         Truncated timeline string
     """
     text_str = str(text)
+
+    if truncation_config is not None and truncation_config.get('mode') == 'keep_latest':
+        return keep_latest_lines(text_str, truncation_config.get('max_chars', 210000))
 
     lines = text_str.split('\n')
     if len(lines) <= 4:

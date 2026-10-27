@@ -450,3 +450,110 @@ def test_failed_calls_go_to_the_errors_file_not_the_results(tmp_path):
     res, err = pd.read_csv(out_file), pd.read_csv(tmp_path / "t_errors_no_image.csv")
     assert res["index"].tolist() == [0, 2] and "dynamic_prompt" not in res.columns
     assert err["index"].tolist() == [1] and err["error"].iloc[0] == "HTTP 400: bad"
+
+
+# --- rev 5 input fixes (Phil 10-15) ----------------------------------------------------------
+from context.adapters.ehr import demographics_header  # noqa: E402
+from data_tools.utils.meds_timeline_utils import keep_latest_lines, truncate_timeline, KEEP_LATEST_MARKER  # noqa: E402
+
+
+def _events_with_demo():
+    ev = _events()
+    demo = pd.DataFrame({"time": [pd.Timestamp("1953-05-20")] * 3, "code": ["MEDS_BIRTH", "MEDS_BIRTH", "Gender/8532"],
+                         "description": [None] * 3, "numeric_value": [None] * 3, "unit": [None] * 3,
+                         "text_value": [None] * 3, "type": [None] * 3, "note_id": [None] * 3,
+                         "provider_id": [None] * 3, "speciality": [None] * 3})
+    return pd.concat([ev, demo], ignore_index=True)
+
+
+def test_header_gives_age_at_prediction_time_and_sex():
+    # born 1953-05-20; on 2020-03-01 the birthday hasn't come yet -> 66
+    assert demographics_header(_events_with_demo(), pd.Timestamp("2020-03-01")) == \
+        "PATIENT: age 66 years at the prediction time; sex female."
+    assert demographics_header(_events(), pd.Timestamp("2020-03-01")) == \
+        "PATIENT: age unknown years at the prediction time; sex unknown."
+
+
+def test_header_survives_the_window_that_drops_birth_rows():
+    block = next(b for b in get_preset("no_image")["blocks"] if b["id"] == "ehr")
+    ctx = {"embed_time": pd.Timestamp("2020-03-01"), "demographics_header": True}
+    text = EHRAdapter(config=block["config"]).contextualize(_events_with_demo(), ctx).payload
+    assert text.splitlines()[0] == "PATIENT: age 66 years at the prediction time; sex female."
+    assert "MEDS_BIRTH" not in text  # the window still drops the raw rows
+    plain = EHRAdapter(config=block["config"]).contextualize(_events_with_demo(), {"embed_time": pd.Timestamp("2020-03-01")}).payload
+    assert "PATIENT:" not in plain  # off unless the board config asks
+
+
+def test_current_report_note_is_dropped_but_its_image_marker_and_older_reports_stay():
+    ev = _events()
+    ev.loc[1, "note_id"] = "777"   # the board CT's report (a STANFORD_NOTE)
+    extra = ev.iloc[[1]].assign(code="STANFORD_IMAGE/CT-CHEST", text_value=None, description="ct marker")
+    older = ev.iloc[[1]].assign(note_id="555", text_value="older imaging report", time=pd.Timestamp("2020-01-15"))
+    ev = pd.concat([ev, extra, older], ignore_index=True).sort_values("time", kind="stable")
+    block = next(b for b in get_preset("no_image")["blocks"] if b["id"] == "ehr")
+    out = EHRAdapter(config=block["config"]).contextualize(ev, {"embed_time": pd.Timestamp("2020-03-01"), "drop_note_ids": [777]})
+    assert "long clinical note" not in out.payload
+    assert "ct marker" in out.payload and "older imaging report" in out.payload
+    assert out.metadata["dropped_report_events"] == 1
+
+
+def test_keep_latest_keeps_the_newest_lines_whole():
+    lines = [f"[2020-01-{d:02d} 00:00] | LOINC/{d} | VALUE: {d}" for d in range(1, 21)]
+    text = "\n".join(lines)
+    out = keep_latest_lines(text, 200)
+    assert out.startswith(KEEP_LATEST_MARKER) and out.endswith(lines[-1])
+    kept = out.split("\n")[1:]
+    assert kept == lines[-len(kept):] and 0 < len(kept) < 20 and len(out) <= 200
+    assert keep_latest_lines(text, 10_000) == text  # short records untouched
+    assert truncate_timeline(text, {"mode": "keep_latest", "max_chars": 200}) == out
+
+
+def test_old_trim_cut_the_newest_lines_which_is_why_keep_latest_exists():
+    # 20 distinct dates (<= k=100) and over the cap: last_k_events keeps the START.
+    lines = [f"[2020-01-{d:02d} 00:00] | LOINC/{d} | VALUE: {d}" for d in range(1, 21)]
+    old = truncate_timeline("\n".join(lines), {"mode": "last_k_events", "k": 100, "max_chars": 200})
+    assert lines[0] in old and lines[-1] not in old
+
+
+def _tiny_ct(tmp_path, study="st", series="se"):
+    import nibabel as nib
+    import numpy as np
+    vol = np.stack([np.full((16, 16), v, dtype=np.float32) for v in (-1000, -500, 40, 300, 1500, 3000)], axis=2)
+    vol[4:12, 4:12, :] += 60  # a soft-tissue square
+    nib.save(nib.Nifti1Image(vol, np.eye(4)), str(tmp_path / f"{study}__{series}.nii.gz"))
+
+
+def test_board_window_setting_gives_every_model_the_three_window_colour_slices(tmp_path):
+    _tiny_ct(tmp_path)
+    row = {"dynamic_prompt": "q", "image_study_uid": "st", "image_series_uid": "se"}
+    colour = PromptDataset(pd.DataFrame([row]), experiment="axial_all_image", model_type="vertex_gemini",
+                           ct_dir=str(tmp_path), ct_windowing="multi_window_rgb")[0]["image"]
+    grey = PromptDataset(pd.DataFrame([row]), experiment="axial_all_image", model_type="vertex_gemini",
+                         ct_dir=str(tmp_path))[0]["image"]
+    assert len(colour) == 30 and colour[0].mode == "RGB"
+    assert grey[0].mode == "L"  # Ryan's default for non-Gemma models is unchanged
+
+
+def test_channels_line_sits_before_the_record_once():
+    from vista_run.run_bq import CT_CHANNELS_LINE
+    df = pd.DataFrame({"dynamic_prompt": ["Q\n\nPATIENT RECORD:\n\nstuff"]})
+    out = TaskOrchestrator._add_channels_line(df)["dynamic_prompt"].iloc[0]
+    assert out.count(CT_CHANNELS_LINE) == 1 and out.index("soft-tissue window") < out.index("PATIENT RECORD:")
+
+
+def test_board_loader_can_keep_named_cases(monkeypatch):
+    df, _, _ = _board_orch(monkeypatch, _board_rows(), {"row_person_ids": [40, 20, 10]})._load_bq_table_task_data(TB_TASK)
+    assert df["person_id"].tolist() == [20, 40]  # 10 is unscored
+
+
+def test_board_window_fills_in_only_when_the_arm_names_none():
+    # Both CT option sets reach the dataset: a per-arm preprocess window (radiology progression) wins over the
+    # board config's window style for every model (rev 5), which applies when the arm names none.
+    row = pd.DataFrame([{"dynamic_prompt": "q"}])
+    arm = PromptDataset(row, experiment="axial_all_image", ct_preprocess={"windowing": "chest_rgb"},
+                        ct_windowing="multi_window_rgb")
+    board = PromptDataset(row, experiment="axial_all_image", ct_windowing="multi_window_rgb")
+    plain = PromptDataset(row, experiment="axial_all_image")
+    assert arm._ct_preprocess == {"windowing": "chest_rgb"}
+    assert board._ct_preprocess == {"windowing": "multi_window_rgb"}
+    assert plain._ct_preprocess == {}

@@ -77,6 +77,11 @@ PANEL_QUESTIONS_TOKEN = "[QUESTIONS]"
 
 # Standard prior-scan columns on a task row (filled by `_attach_prior_ct`, read by the CT loader).
 PRIOR_COLUMNS = ("prior_image_study_uid", "prior_image_series_uid", "prior_gap_days", "prior_source")
+# Said once in every CT prompt when the config sets the 3-window colour style for all models.
+CT_CHANNELS_LINE = (
+    "IMAGES: each CT slice is a colour image whose red, green and blue channels show the same slice in a "
+    "wide window (-1024 to 1024 HU), a soft-tissue window (-135 to 215 HU) and a brain window (0 to 80 HU)."
+)
 PRIOR_IMAGES_LINE = (
     "IMAGES: the first {k} images are axial slices of the PRIOR CT ({gap} days before the current CT); "
     "the next {k} are axial slices of the CURRENT CT."
@@ -468,6 +473,10 @@ class TaskOrchestrator:
         df = df[df['label'].isin(scored)].copy()
         print(f"    Loaded {n_all} rows; {len(df)} with a scored label {sorted(scored)}.")
 
+        if self.cfg.get('row_person_ids'):
+            # A hand-picked case list (the viewer's structured-look pages).
+            df = df[df['person_id'].isin([int(p) for p in self.cfg['row_person_ids']])].copy()
+            print(f"    row_person_ids: kept {len(df)} named cases.")
         sample = self.cfg.get('row_sample')
         if sample:
             pool = df
@@ -984,6 +993,10 @@ class TaskOrchestrator:
                 "model_type": self.model_type,
                 "lumia_corpus_dir": corpus_dir,
                 "timeline_truncation": self.cfg.get("timeline_truncation"),
+                # Board configs (rev 5): an age/sex header, and the board CT's own report removed.
+                "demographics_header": bool(self.cfg.get("ehr_demographics_header")),
+                "drop_note_ids": ([int(row.get("ct_note_id"))] if self.cfg.get("ehr_drop_current_ct_report")
+                                  and pd.notna(row.get("ct_note_id")) else []),
             }
             return adapter.contextualize(adapter.ingest(row["person_id"], ctx), ctx).payload
 
@@ -1003,6 +1016,7 @@ class TaskOrchestrator:
             # The label was read from this scan's report: any arm with patient text could carry it.
             raise ValueError(f"{task_name}: labelled from the scan's own report, so only the image-only "
                              f"arms {sorted(IMAGE_ONLY_EXPERIMENTS)} may run, not {experiment!r}")
+        channels_line = experiment in _CT_EXPERIMENTS and self.cfg.get("ct_windowing") == "multi_window_rgb"
         prior_spec = task_info.get("prior_ct")
         with_prior = bool(prior_spec) and experiment in prior_spec.get("arms", sorted(_CT_EXPERIMENTS))
         if with_prior:
@@ -1039,6 +1053,7 @@ class TaskOrchestrator:
             df_exp['dynamic_prompt'] = df_exp['compact_summary'].apply(
                 lambda x: template.replace('[PATIENT_TIMELINE]', str(x))
             )
+            df_exp = self._add_channels_line(df_exp) if channels_line else df_exp
             return self._add_prior_images_line(df_exp) if with_prior else df_exp
         df_exp = self._apply_ehr_adapter(df_exp, experiment, timeline_col, task_info)
 
@@ -1117,7 +1132,16 @@ class TaskOrchestrator:
         df_exp['dynamic_prompt'] = df_exp[timeline_col].apply(
             lambda x: base_prompt_template.replace('[PATIENT_TIMELINE]', str(x))
         )
+        df_exp = self._add_channels_line(df_exp) if channels_line else df_exp
         return self._add_prior_images_line(df_exp) if with_prior else df_exp
+
+    @staticmethod
+    def _add_channels_line(df_exp):
+        """Say what the colour channels of the CT slices show, just before the record."""
+        df_exp = df_exp.copy()
+        df_exp["dynamic_prompt"] = df_exp["dynamic_prompt"].str.replace(
+            "PATIENT RECORD:", CT_CHANNELS_LINE + "\n\nPATIENT RECORD:", n=1, regex=False)
+        return df_exp
 
     def _prior_link(self, spec):
         """The per-CT prior link named by a registry `prior_ct` entry (BQ `table` or `path`), cached."""
@@ -1328,6 +1352,7 @@ class TaskOrchestrator:
             ct_snapshot_prefix=ct_snapshot_prefix, mount_root=self.cfg.get('paths', {}).get('mount_root'),
             fail_on_ct_error=(task_info.get("loader") == "bq_table"),
             ct_select=ct_arms.get('select'), ct_preprocess=ct_arms.get('preprocess'),
+            ct_windowing=self.cfg.get("ct_windowing"),
         )
         # Whole-volume rows are ~400 MB of slices each, so the read-ahead is a config setting.
         num_workers = int(self.cfg['runtime'].get('num_workers', 4))

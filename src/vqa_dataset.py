@@ -91,7 +91,7 @@ def images_line(n_prior, n_current, gap_days=None, windowing=None):
 
 class PromptDataset(Dataset):
     def __init__(self, df, prompt_col='dynamic_prompt', add_options=False, experiment='no_image', storage_client=None, model_type=None, ct_dir=None, ct_snapshot_prefix=None, fail_on_ct_error=False,
-                 ct_select=None, ct_preprocess=None, mount_root=None):
+                 ct_select=None, ct_preprocess=None, mount_root=None, ct_windowing=None):
         """
         Args:
             df: Dataframe containing the data.
@@ -127,7 +127,12 @@ class PromptDataset(Dataset):
         # A config-given selector / windowing (the whole-volume arms) replaces the legacy count.
         self._ct_select = ct_select or (
             {"fn": "evenly_spaced_k", "k": self._ct_slice_count} if self._ct_slice_count else None)
-        self._ct_preprocess = ct_preprocess or {}
+        self._ct_preprocess = dict(ct_preprocess or {})
+        # Board configs (rev 5) set one window style for every model (`multi_window_rgb`); an arm's own
+        # preprocess windowing wins. None keeps the per-model default (Gemma: 3-window colour, others:
+        # min-max greyscale).
+        if ct_windowing and "windowing" not in self._ct_preprocess:
+            self._ct_preprocess["windowing"] = ct_windowing
         self._ct_adapter = None
         # Board tasks: a CT that cannot be read lists the row as an error instead of sending it
         # text-only (Ryan's default, kept for every other task).

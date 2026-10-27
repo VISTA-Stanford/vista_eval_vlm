@@ -1,0 +1,81 @@
+# Tumor-board questions on vista_bench_v1_7: Vertex Gemini, rev-5 progression rerun (fixed inputs).
+# Plan: planning/vista_eval_vlm/vlm-tumor-board-questions-v1_6.md (on the shared mount).
+#
+# Paths are the shared su-vista mount, the same on phil-sllm-01 and the GPU boxes. A box
+# without that mount keeps its own git-ignored copy (e.g. configs/all_tasks.tb.vm.yaml).
+# Results hold per-patient answers: they stay on the mount, never in git.
+
+paths:
+  base_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/base"
+  results_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/results_tb_v1_7_rev5"
+  ct_snapshot_prefix: "chaudhari_lab/ct_data/ct_scans/vista/feb26"
+  valid_tasks: "tasks/valid_tasks.tb_v1_7.json"
+  prompts: "tasks/prompts_by_task.tb_v1_7.json"
+
+model:
+  device: "cpu"
+
+runtime:
+  cache_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/model_cache"
+  batch_size: 16
+  # Gemini 3.1 Pro spends output tokens thinking before the one-word answer.
+  max_new_tokens: 8192
+  # Forces every answer onto the task's options (Yes/No, or the registry `choices`).
+  use_constrained_decoding_for_binary: true
+
+models:
+  - type: "vertex_gemini"
+    name: "gemini-3.1-pro-preview"
+
+# Vertex settings. media_resolution and thinking_level unset = the model defaults.
+vertex:
+  project: "som-nero-plevriti-deidbdf"
+  location: "global"
+  concurrency: 8
+  # Dollars per million tokens, for the cost report (Gemini 3.1 Pro preview, Vertex,
+  # 2026-10): the whole request is billed at the long rate when the prompt is over 200k.
+  # Hard cap on new spend per run (Phil approved about $208 for stage 1 on 10-14).
+  max_spend_usd: 300
+  price_per_mtok:
+    long_context_over: 200000
+    input: 2.0
+    output: 12.0
+    input_long: 4.0
+    output_long: 18.0
+
+tasks:
+  - progression_assessment_answer
+
+# Rev-5 rerun (Phil 10-15): the four EHR-based inputs with the fixed inputs (age/sex header, board CT
+# report removed, newest-first trim, 3-window colour CT slices). The summary input is unchanged and is
+# copied in from results_tb_v1_7 for comparisons; summary + CT stays on its rev-4 run, marked outdated.
+experiments:
+  - no_image
+  - no_notes
+  - no_image_uncut
+  - axial_all_image
+
+# The full untrimmed record on the test split only (Phil 10-14: $385 for all splits was over $150).
+arm_splits:
+  no_image_uncut: [test]
+
+# EHR trim (rev 5, Phil 10-15): keep the newest records within about 210,000 characters, dropping
+# the oldest first. Ryan's last_k_events trim cut the END of long records (the newest months).
+timeline_truncation:
+  mode: "keep_latest"
+  max_chars: 210000
+
+# Rev 5 (Phil 10-15): an age (at the prediction time) and sex header on every EHR input, and the
+# board CT's own radiology report removed (older imaging reports stay).
+ehr_demographics_header: true
+ehr_drop_current_ct_report: true
+
+# CT slices (rev 5, Phil 10-15): every model gets MedGemma's 3-window colour images (wide,
+# soft-tissue, brain), with a prompt line naming the channels. Before this, non-Gemma models got
+# each slice stretched min-to-max with no CT window, which hides contrast and soft tissue.
+ct_windowing: "multi_window_rgb"
+
+# The live EHR adapter reads LUMIA files from corpus_dir (the retriever stays off).
+retrieval:
+  enabled: false
+  corpus_dir: "/mnt/su-vista-uscentral1/vistabench/vlm/thoracic_cohort_lumia"
