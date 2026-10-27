@@ -209,7 +209,10 @@ def cmd_rehydrate(_args) -> int:
     shutil.rmtree(part, ignore_errors=True)
     part.mkdir(parents=True)
     con = duckdb.connect()
-    con.execute("SET memory_limit = '4GB'; SET threads = 2; SET partitioned_write_max_open_files = 20000")
+    # Insertion order off: the partitioned COPY of the measurement table ran out of memory at 4 GB with it on
+    # (phil-sllm-02, 2026-10-27), and row order within a patient's table carries no meaning.
+    con.execute("SET memory_limit = '4GB'; SET threads = 2; SET partitioned_write_max_open_files = 20000; "
+                "SET preserve_insertion_order = false")
     con.execute(f"SET temp_directory = '{STAGE / 'spill'}'")
     rows = {}
     for t in tables:
