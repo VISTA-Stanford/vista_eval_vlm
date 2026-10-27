@@ -10,6 +10,7 @@ import os
 import stat
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import numpy as np
@@ -781,3 +782,20 @@ def test_compare_keeps_probe_files_that_share_a_name(tmp_path, monkeypatch):
     assert len(out) == 2
     assert out.loc["unweighted/model_x", "probe_balanced_accuracy"] == pytest.approx(0.5)
     assert out.loc["balanced/model_x", "probe_balanced_accuracy"] == pytest.approx(1.0)
+
+
+def test_wall_time_per_call_reaches_the_usage(tmp_path, monkeypatch, fake_codex):
+    # The spec wants seconds per call in the results; usage_* columns carry it there.
+    a, _ = _hub_adapter(tmp_path, monkeypatch, [])
+    post = a._post
+
+    def slow_post(data):
+        t = time.perf_counter()
+        while time.perf_counter() - t < 0.25:  # time.sleep is patched out by _hub_adapter
+            pass
+        return post(data)
+    a._post = slow_post
+    out = a.infer(None, None, [{"question": "q", "images": [Image.new("RGB", (8, 8))]}], 100, CHOICES)[0]
+    assert out["usage"]["seconds"] >= 0.2
+    cx = fake_codex.infer(None, None, [{"question": "q", "images": [Image.new("RGB", (8, 8))]}], 100, CHOICES)[0]
+    assert cx["usage"]["seconds"] is not None and cx["usage"]["seconds"] >= 0  # rounded to 0.1 s, so a fast fake can read 0.0

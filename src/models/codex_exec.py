@@ -40,7 +40,7 @@ from pathlib import Path
 from .base import BaseVLMAdapter
 
 USAGE_KEYS = ("prompt_tokens", "cached_prompt_tokens", "output_tokens", "thinking_tokens",
-              "total_tokens", "image_count")
+              "total_tokens", "image_count", "seconds")
 DISABLED_FEATURES = ("shell_tool", "apps", "browser_use", "image_generation", "plugins", "memories")
 # Event item types a sealed answer may contain; anything else (a command, a tool call) is a breach.
 ALLOWED_ITEM_TYPES = {"agent_message", "reasoning", "error"}
@@ -256,6 +256,7 @@ class CodexExecAdapter(BaseVLMAdapter):
             usage = {k: rec["usage"].get(k) for k in USAGE_KEYS}
             return {"text": rec["answer"], "cumulative_logprob": None, "log_probs": None, "usage": usage, "cached": True}
         err, usage = None, {}
+        t0 = time.monotonic()  # wall time for this scan, retries included
         for attempt in range(self.retries + 1):
             with self._lock:
                 if self.usage_limited:
@@ -274,6 +275,7 @@ class CodexExecAdapter(BaseVLMAdapter):
             time.sleep(5)
         usage = dict(usage or {})
         usage["image_count"] = len(encoded)
+        usage["seconds"] = round(time.monotonic() - t0, 1)
         usage = {k: usage.get(k) for k in USAGE_KEYS}
         if err:
             return {"text": "", "error": err, "usage": usage, "cached": False}

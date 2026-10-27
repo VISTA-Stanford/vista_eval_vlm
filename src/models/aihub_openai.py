@@ -37,7 +37,7 @@ DEFAULT_API_VERSION = "2025-04-01-preview"
 MAX_IMAGES = 50  # Azure: "maximum allowed: 50" (probed 10-15)
 _RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 USAGE_KEYS = ("prompt_tokens", "cached_prompt_tokens", "output_tokens", "thinking_tokens",
-              "total_tokens", "image_count", "request_bytes")
+              "total_tokens", "image_count", "request_bytes", "seconds")
 
 
 def build_request(question, encoded_images, choices=None, max_output_tokens=4096, reasoning_effort=None,
@@ -200,6 +200,7 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
             if self.max_total_tokens is not None and self.tokens_used >= int(self.max_total_tokens):
                 return {"text": "", "error": f"token cap {self.max_total_tokens} reached ({self.tokens_used} used)"}
         answer, usage, err = None, {}, None
+        t0 = time.monotonic()  # wall time for this scan, retries included
         for attempt in range(self.max_retries + 1):
             status, ctype, text = self._post(data)
             if status is None:
@@ -212,6 +213,7 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         usage = dict(usage or {})
         usage["image_count"] = len(encoded)
         usage["request_bytes"] = len(data)
+        usage["seconds"] = round(time.monotonic() - t0, 1)
         usage = {k: usage.get(k) for k in USAGE_KEYS}
         with self._lock:
             self.tokens_used += int(usage.get("total_tokens") or 0)
