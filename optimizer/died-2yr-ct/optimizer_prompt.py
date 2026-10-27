@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from config import AGENTIC, EDITABLE_FILES, ITERATIONS, TASK_BRIEF  # run.py sets ITERATIONS to the run's own count
+from config import AGENTIC, EDITABLE_FILES, ITERATIONS, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF  # run.py sets ITERATIONS
 
 HERE = Path(__file__).resolve().parent
 INSTRUCTIONS = HERE / "prompts" / "optimizer_instructions.md"
@@ -40,7 +40,13 @@ TEST_RULES_BASED = (
 
 
 def system_prompt() -> str:
-    return INSTRUCTIONS.read_text(encoding="utf-8")
+    """The standing instructions, plus how to ask the search proxy when it is on (the engine's own wording)."""
+    text = INSTRUCTIONS.read_text(encoding="utf-8")
+    if SEARCH_PROXY:
+        from engine.search_proxy import optimizer_instructions
+
+        text = f"{text.rstrip()}\n\n{optimizer_instructions(SEARCH_REQUESTS_PER_ROUND)}"
+    return text
 
 
 def build_prompt(iter_n: int, paths) -> str:
@@ -66,9 +72,10 @@ def build_prompt(iter_n: int, paths) -> str:
          "  && cp <files>/<id>-meta.json /tmp/ct/<id>/meta.json`, then\n"
          "  `python3 -B {program}/tools/view_ct.py /tmp/ct/<id> --plane axial --count 16 --window lung --out /tmp/v.png`\n"
          "  and open `/tmp/v.png` with Read. Each image costs tokens: look at a handful of patients, not all.\n"
-         "- Every TRAIN patient of the pass is in the mistakes file, right or wrong (`mistake` says which), with\n"
-         "  its probability: read the right ones' reasons too, since the score is how well the ranking separates\n"
-         "  the two groups. Only mistakes come with their CT and transcript.\n"
+         "- Every TRAIN patient of the pass is in the mistakes file, right or wrong at each horizon (`mistake` and\n"
+         "  `wrong_at` say which), with its yes/no answers: read the right ones' reasons too, since balanced\n"
+         "  accuracy counts the patients who died and those who lived equally. Only mistakes come with their CT\n"
+         "  and transcript.\n"
          .replace("{program}", paths.program).replace("<files>", f"{paths.feedback}/iter/{iter_n}/files"))
         if AGENTIC else
         TEST_RULES_BASED.format(program=paths.program, feedback=paths.feedback, iter_n=iter_n)
