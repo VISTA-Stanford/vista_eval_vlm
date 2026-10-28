@@ -21,8 +21,8 @@ from PIL import Image
 from vista_run.utils.utils_inference import pad_to_size
 
 from ..block import ContextBlock, IMAGES
-from ..windowing import chest_rgb, multi_window_rgb, grayscale
-from ..selectors.ct_selectors import resolve_ct_selector
+from ..windows import chest_rgb, multi_window_rgb, grayscale
+from ..slices import resolve_ct_selector
 from .base import ModalityAdapter, ModelCaps, resolve_model_caps
 
 # Legacy default sampler (the no_timeline / all_vb_image_only branch used 50).

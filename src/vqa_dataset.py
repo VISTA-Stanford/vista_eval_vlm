@@ -12,12 +12,13 @@ from vista_run.utils.utils_inference import pad_to_512, pad_to_size
 # windowing byte-for-byte (golden gate 1/2). The blob resolution + NIfTI load stay
 # here in the caller (outside the adapter), unchanged across the 3b refactor.
 from context.adapters.ct import CTAdapter
+from context import nifti
 
 # Go-forward CT snapshot. `nov25` is deleted from the bucket (zero objects); `feb26` is the
 # only snapshot. The prefix is a config value (`paths.ct_snapshot_prefix`, threaded via
 # PromptDataset(ct_snapshot_prefix=...)) so a future re-materialization is a config/data change,
 # not a code edit — the modular-preprocessing thesis.
-DEFAULT_CT_SNAPSHOT_PREFIX = "chaudhari_lab/ct_data/ct_scans/vista/feb26"
+DEFAULT_CT_SNAPSHOT_PREFIX = nifti.DEFAULT_CT_SNAPSHOT_PREFIX
 
 
 def resolve_ct_blob(study_uid, series_uid, prefix=DEFAULT_CT_SNAPSHOT_PREFIX):
@@ -42,16 +43,7 @@ def resolve_ct_blob(study_uid, series_uid, prefix=DEFAULT_CT_SNAPSHOT_PREFIX):
         the row as no-image (the same fail-closed result as a missing CT), and never reaches
         for the deprecated `nifti_path`.
     """
-    if study_uid is None or series_uid is None:
-        return None
-    if pd.isna(study_uid) or pd.isna(series_uid):
-        return None
-    study = str(study_uid).strip()
-    series = str(series_uid).strip()
-    if not study or not series:
-        return None
-    filename = f"{study}__{series}.nii.gz"
-    return f"{prefix}/{filename}", filename
+    return nifti.ct_blob(study_uid, series_uid, prefix)
 
 
 # Experiment -> number of evenly-spaced axial slices, i.e. the legacy per-branch CT
@@ -254,7 +246,6 @@ class PromptDataset(Dataset):
             blob_path, filename = resolved
             tmp_file_path = None
             try:
-                import nibabel as nib
                 local_path = self.ct_dir / filename if self.ct_dir else None
                 use_local = local_path is not None and local_path.exists()
                 # Prefer reading the feb26 NIfTI directly off the gcsfuse mount
@@ -282,14 +273,14 @@ class PromptDataset(Dataset):
                 # — a 512x512x8652 CT would need ~18 GB via get_fdata and OOM the box.
                 # (indexed_gzip gives efficient random access into the .nii.gz.)
                 if use_local:
-                    ct_img = nib.load(str(local_path))
+                    ct_img = nifti.load(local_path)
                 elif use_mount:
-                    ct_img = nib.load(str(mount_path))
+                    ct_img = nifti.load(mount_path)
                 elif self.storage_client is not None:
                     with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp_file:
                         tmp_file_path = tmp_file.name
                     self.storage_client.bucket(self.bucket_name).blob(blob_path).download_to_filename(tmp_file_path)
-                    ct_img = nib.load(tmp_file_path)
+                    ct_img = nifti.load(tmp_file_path)
                 else:
                     ct_img = None
 
