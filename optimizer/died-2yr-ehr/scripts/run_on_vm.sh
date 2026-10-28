@@ -8,7 +8,7 @@
 # Needs: Docker, the su-vista-uscentral1 mount, uv, git access to both repos, and on the seat route (the default) the
 # Claude token at ~/.config/alo/oauth_token (mode 600; `claude setup-token` makes one); with ALO_ROUTE=vertex, the
 # Vertex-only service account key at ~/.config/alo/vertex-sa.json (mode 600). Settings, all optional, on the same line:
-# RUN_ID (first), ITERATIONS (2), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20); SETUP_ONLY=1 stops before the run.
+# RUN_ID (yesno-r1), ITERATIONS (2), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20); SETUP_ONLY=1 stops before the run.
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
 # baselines scored on the same VAL pool (baselines_val_pool.json).
@@ -24,12 +24,12 @@ ENGINE_WT=$ENGINE/.claude/worktrees/mortality-engine
 DATA=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7
 # The local working copy the task reads (config.DATA_DIR): rebuilt from $DATA/archive by build_data.py rehydrate.
 export TASK_DATA_DIR=${TASK_DATA_DIR:-$HOME/data/died-2yr-ehr-v1_7}
-RUN_ID=${RUN_ID:-first}
+RUN_ID=${RUN_ID:-yesno-r1}  # not `first`: that name is a probability-era run on both VMs
 ITERATIONS=${ITERATIONS:-2}
 MAX_RESUMES=${MAX_RESUMES:-20}
 export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-3}
 export AGENTIC_LABEL_OPT=$ENGINE_WT
-export TASK_WORKDIR=$HOME/.cache/alo-tasks/died-2yr-ehr
+export TASK_WORKDIR=$HOME/.cache/alo-tasks/died-2yr-ehr-yesno  # the old folder holds the probability-era seed (config.WORKDIR)
 RESULTS=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/$(hostname)/$RUN_ID
 LOG=$TASK_WORKDIR/$RUN_ID-run.log
 
