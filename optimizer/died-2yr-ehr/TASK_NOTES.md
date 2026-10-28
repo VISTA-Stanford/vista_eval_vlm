@@ -4,7 +4,7 @@ The EHR twin of `optimizer/died-2yr-ct/`, copied from it 2026-10-21. Spec (appro
 `planning/vista_eval_vlm/2026-10-21-died-2yr-ehr-agentic.md` on the mount
 (`/mnt/su-vista-uscentral1/chaudhari_lab/phil/`). Since 2026-10-27 it is the full-EHR arm of the agent in the eval-set
 spec (`planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md`, work package 2): two forced yes/no answers, balanced
-accuracy, $0.50 a patient, on the seat (Vertex an opt-in, 2026-10-28). Engine pin: agentic-label-opt main f784912, shared with died-2yr-ct.
+accuracy, $0.50 a patient, on the seat (Vertex an opt-in, 2026-10-28). Engine pin: agentic-label-opt main 0c39e1d, shared with died-2yr-ct.
 
 ## The idea
 
