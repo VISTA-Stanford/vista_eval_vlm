@@ -35,6 +35,10 @@ DEFAULT_LOCATION = "global"
 _RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 # Same keys on every row, so the appended results CSV keeps one column set.
 USAGE_KEYS = ("prompt_tokens", "output_tokens", "thinking_tokens", "total_tokens", "image_count")
+#: Eval-set calls also report cached prompt tokens (kept off USAGE_KEYS so older runs' files keep their columns).
+PARTS_USAGE_KEYS = USAGE_KEYS + ("cached_tokens",)
+#: Explicit context caches live this long; a scan's questions run back to back, then the cache is deleted.
+CACHE_TTL_S = 900
 
 
 def _endpoint(project, location, model, method):
@@ -64,6 +68,38 @@ def build_request(question, images, choices=None, max_output_tokens=8192,
     return {"contents": [{"role": "user", "parts": parts}], "generationConfig": gen}
 
 
+def gemini_parts(parts):
+    """Eval-set parts ({"type": "text"|"image", ...}) -> generateContent parts, order kept."""
+    out = []
+    for p in parts:
+        if p["type"] == "text":
+            out.append({"text": str(p["text"])})
+        else:
+            out.append({"inlineData": {"mimeType": p.get("mime", "image/jpeg"),
+                                       "data": base64.b64encode(p["data"]).decode("ascii")}})
+    return out
+
+
+def build_parts_request(parts, choices=None, max_output_tokens=8192, media_resolution=None, thinking_level=None,
+                        cached_content=None, prefix_len=0):
+    """generateContent body from ordered parts. With ``cached_content`` (an explicit cache's name holding
+    the first ``prefix_len`` parts), only the remaining parts are sent. Pure (no network): unit-tested."""
+    body = build_request("", [], choices, max_output_tokens, media_resolution, thinking_level)
+    send = parts[prefix_len:] if cached_content else parts
+    body["contents"] = [{"role": "user", "parts": gemini_parts(send)}]
+    if cached_content:
+        body["cachedContent"] = cached_content
+        # The cached images keep the resolution they were cached with (Gemini 3+ default: high).
+        body["generationConfig"].pop("mediaResolution", None)
+    return body
+
+
+def build_cache_request(project, location, model, prefix_parts, ttl_s=CACHE_TTL_S):
+    """cachedContents body holding a scan's images and labels (the shared prefix)."""
+    return {"model": f"projects/{project}/locations/{location}/publishers/google/models/{model}",
+            "contents": [{"role": "user", "parts": gemini_parts(prefix_parts)}], "ttl": f"{int(ttl_s)}s"}
+
+
 def parse_response(body, choices=None):
     """(answer_text, usage, error) from a ``generateContent`` response body.
 
@@ -77,6 +113,8 @@ def parse_response(body, choices=None):
         "thinking_tokens": um.get("thoughtsTokenCount"),
         "total_tokens": um.get("totalTokenCount"),
     }
+    if "cachedContentTokenCount" in um:
+        usage["cached_tokens"] = um["cachedContentTokenCount"]
     cands = body.get("candidates") or []
     if not cands:
         fb = body.get("promptFeedback", {})
@@ -110,6 +148,7 @@ class VertexGeminiAdapter(BaseVLMAdapter):
         self.max_retries = 8
         self.media_resolution = None
         self.thinking_level = None
+        self.explicit_cache = False
         self.prices = None
         self.max_spend_usd = None
         self.spent_usd = 0.0
@@ -129,6 +168,7 @@ class VertexGeminiAdapter(BaseVLMAdapter):
         self.max_retries = int(opts.get("max_retries", self.max_retries))
         self.media_resolution = opts.get("media_resolution", self.media_resolution)
         self.thinking_level = opts.get("thinking_level", self.thinking_level)
+        self.explicit_cache = bool(opts.get("explicit_cache", self.explicit_cache))
         self.prices = opts.get("price_per_mtok", self.prices)
         self.max_spend_usd = opts.get("max_spend_usd", self.max_spend_usd)
 
@@ -138,10 +178,12 @@ class VertexGeminiAdapter(BaseVLMAdapter):
         if not p:
             return 0.0
         pt = usage.get("prompt_tokens") or 0
+        ct = min(usage.get("cached_tokens") or 0, pt)
         ot = (usage.get("output_tokens") or 0) + (usage.get("thinking_tokens") or 0)
         if pt > p.get("long_context_over", 200000):
             return (pt * p["input_long"] + ot * p["output_long"]) / 1e6
-        return (pt * p["input"] + ot * p["output"]) / 1e6
+        # Cached prompt tokens bill at the cached rate when the config gives one.
+        return ((pt - ct) * p["input"] + ct * p.get("cached", p["input"]) + ot * p["output"]) / 1e6
 
     # -- auth / transport ---------------------------------------------------------
     def _token(self):
@@ -154,9 +196,13 @@ class VertexGeminiAdapter(BaseVLMAdapter):
                 self._creds.refresh(google.auth.transport.requests.Request())
             return self._creds.token
 
-    def _post(self, method, body):
+    def _base(self):
+        host = "aiplatform.googleapis.com" if self.location == "global" else f"{self.location}-aiplatform.googleapis.com"
+        return f"https://{host}/v1"
+
+    def _post(self, method, body, url=None, http="POST"):
         import requests
-        url = _endpoint(self.project, self.location, self.model_name, method)
+        url = url or _endpoint(self.project, self.location, self.model_name, method)
         last = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -165,7 +211,8 @@ class VertexGeminiAdapter(BaseVLMAdapter):
                            "Content-Type": "application/json"}
                 with self._lock:
                     self.api_calls += 1
-                r = requests.post(url, headers=headers, data=json.dumps(body), timeout=600)
+                r = requests.request(http, url, headers=headers, data=None if body is None else json.dumps(body),
+                                     timeout=600)
                 if r.status_code == 200:
                     return r.json(), None
                 last = f"HTTP {r.status_code}: {r.text[:500]}"
@@ -208,10 +255,19 @@ class VertexGeminiAdapter(BaseVLMAdapter):
         key = hashlib.sha256((self.model_name + "\n" + json.dumps(body, sort_keys=True)).encode()).hexdigest()
         return self.response_cache / key[:2] / f"{key}.json"
 
-    def _one(self, msg, max_new_tokens, choices):
-        body = build_request(msg["question"], msg["images"], choices, max_new_tokens,
-                             self.media_resolution, self.thinking_level)
-        path = self._cache_path(body)
+    def _one(self, msg, max_new_tokens, choices, cached_content=None):
+        if "parts" in msg:
+            body = build_parts_request(msg["parts"], choices, max_new_tokens, self.media_resolution,
+                                       self.thinking_level, cached_content, msg.get("prefix_len", 0))
+            # The answer cache keys on the logical request (all parts), not on the cache object's name.
+            key_body = build_parts_request(msg["parts"], choices, max_new_tokens, self.media_resolution,
+                                           self.thinking_level)
+            n_images = sum(1 for p in msg["parts"] if p["type"] == "image")
+        else:
+            body = build_request(msg["question"], msg["images"], choices, max_new_tokens,
+                                 self.media_resolution, self.thinking_level)
+            key_body, n_images = body, len(msg["images"])
+        path = self._cache_path(key_body)
         cached = path.exists()
         if cached:
             resp = json.loads(path.read_text())
@@ -244,11 +300,47 @@ class VertexGeminiAdapter(BaseVLMAdapter):
             with self._lock:
                 self.spent_usd += self.call_cost_usd(usage)
                 self._paid_calls += 1
-        usage["image_count"] = len(msg["images"])
-        usage = {k: usage.get(k) for k in USAGE_KEYS}
+        usage["image_count"] = n_images
+        usage = {k: usage.get(k) for k in (PARTS_USAGE_KEYS if "parts" in msg else USAGE_KEYS)}
         if err:
             return {"text": "", "error": err, "usage": usage, "cached": cached}
         return {"text": text, "cumulative_logprob": None, "log_probs": None, "usage": usage, "cached": cached}
+
+    # -- explicit context cache (eval set: one cache per scan, images first) ------------------------
+    def is_answered(self, msg, max_new_tokens, choices):
+        key_body = build_parts_request(msg["parts"], choices, max_new_tokens, self.media_resolution, self.thinking_level)
+        return self._cache_path(key_body).exists()
+
+    def create_cache(self, prefix_parts):
+        """(cache name, usage, error). Creation bills the prefix as ordinary input tokens."""
+        body = build_cache_request(self.project, self.location, self.model_name, prefix_parts, CACHE_TTL_S)
+        resp, err = self._post(None, body, url=f"{self._base()}/projects/{self.project}/locations/{self.location}/cachedContents")
+        if err:
+            return None, {}, err
+        um = resp.get("usageMetadata", {}) or {}
+        usage = {"prompt_tokens": um.get("totalTokenCount"), "output_tokens": 0}
+        with self._lock:
+            self.spent_usd += self.call_cost_usd(usage)
+        return resp["name"], usage, None
+
+    def delete_cache(self, name):
+        self._post(None, None, url=f"{self._base()}/{name}", http="DELETE")
+
+    def ask_group(self, msgs, max_new_tokens, choices):
+        """Questions that share one image prefix (one scan). With ``explicit_cache`` on and two or more
+        unanswered questions, the prefix goes into a context cache first and is deleted after."""
+        todo = [m for m in msgs if not self.is_answered(m, max_new_tokens, choices)]
+        name = None
+        if self.explicit_cache and len(todo) >= 2 and msgs[0].get("prefix_len"):
+            name, _, err = self.create_cache(list(msgs[0]["parts"][: msgs[0]["prefix_len"]]))
+            if err:
+                return [{"text": "", "error": f"context cache: {err}"} for _ in msgs]
+        try:
+            with ThreadPoolExecutor(max_workers=max(1, self.concurrency)) as ex:
+                return list(ex.map(lambda m: self._one(m, max_new_tokens, choices, name), msgs))
+        finally:
+            if name:
+                self.delete_cache(name)
 
     def infer(self, model, processor, inputs, max_new_tokens, constrained_choices=None):
         msgs = inputs if isinstance(inputs, list) else [inputs]

@@ -62,6 +62,23 @@ def build_request(question, encoded_images, choices=None, max_output_tokens=4096
     return body
 
 
+def build_parts_request(parts, choices=None, max_output_tokens=4096, reasoning_effort=None, image_detail=None):
+    """Chat-completions body from ordered parts ({"type": "text", "text"} / {"type": "image", "data", "mime"}),
+    so slice labels can sit between the images (the eval set's recipes). Same forcing as ``build_request``."""
+    body = build_request("", [], choices, max_output_tokens, reasoning_effort, image_detail)
+    content = []
+    for p in parts:
+        if p["type"] == "text":
+            content.append({"type": "text", "text": str(p["text"])})
+        else:
+            url = {"url": f"data:{p.get('mime', 'image/jpeg')};base64," + base64.b64encode(p["data"]).decode("ascii")}
+            if image_detail:
+                url["detail"] = image_detail
+            content.append({"type": "image_url", "image_url": url})
+    body["messages"] = [{"role": "user", "content": content}]
+    return body
+
+
 def parse_response(status, content_type, text, choices=None):
     """(answer, usage, error, retryable) from one HTTP reply."""
     usage = {k: None for k in USAGE_KEYS if k not in ("image_count", "request_bytes")}
@@ -185,10 +202,18 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         return None, "", f"gave up after {self.max_retries + 1} tries: {last}"
 
     def _one(self, msg, max_new_tokens, choices):
-        if len(msg["images"]) > MAX_IMAGES:
-            return {"text": "", "error": f"{len(msg['images'])} images; Azure takes at most {MAX_IMAGES} per request"}
-        encoded = [encode_image(im, "jpeg", self.jpeg_quality) for im in msg["images"]]
-        body = build_request(msg["question"], encoded, choices, max_new_tokens, self.reasoning_effort, self.image_detail)
+        if "parts" in msg:  # eval-set message: ordered parts, images already encoded by the pack
+            encoded = [p["data"] for p in msg["parts"] if p["type"] == "image"]
+        else:
+            encoded = None
+        n_img = len(encoded) if encoded is not None else len(msg["images"])
+        if n_img > MAX_IMAGES:
+            return {"text": "", "error": f"{n_img} images; Azure takes at most {MAX_IMAGES} per request"}
+        if encoded is not None:
+            body = build_parts_request(msg["parts"], choices, max_new_tokens, self.reasoning_effort, self.image_detail)
+        else:
+            encoded = [encode_image(im, "jpeg", self.jpeg_quality) for im in msg["images"]]
+            body = build_request(msg["question"], encoded, choices, max_new_tokens, self.reasoning_effort, self.image_detail)
         data = json.dumps(body)
         key = hashlib.sha256((self.model_name + "\n" + data).encode()).hexdigest()
         path = self.response_cache / key[:2] / f"{key}.json"
