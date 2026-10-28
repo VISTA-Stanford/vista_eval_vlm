@@ -4,7 +4,7 @@ The EHR twin of `optimizer/died-2yr-ct/`, copied from it 2026-10-21. Spec (appro
 `planning/vista_eval_vlm/2026-10-21-died-2yr-ehr-agentic.md` on the mount
 (`/mnt/su-vista-uscentral1/chaudhari_lab/phil/`). Since 2026-10-27 it is the full-EHR arm of the agent in the eval-set
 spec (`planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md`, work package 2): two forced yes/no answers, balanced
-accuracy, $0.50 a patient, on the seat (Vertex deferred, 2026-10-28). Engine pin: agentic-label-opt main 9aee75f, shared with died-2yr-ct.
+accuracy, $0.50 a patient, on the seat (Vertex an opt-in, 2026-10-28). Engine pin: agentic-label-opt main f784912, shared with died-2yr-ct.
 
 ## The idea
 
@@ -29,7 +29,7 @@ identical patients, and the published v1.7 EHR baselines are scored on the same 
 | Seed program | the plain questions only (`program_agentic/instructions.md`); the fixed wrapper (`agentic.py`) states both questions, the 7-day cutoff, the folder layout, the yes/no answer and the TRAIN death rates (18.5%, 30.6%). No clinical hints (Phil 2026-10-21). Since 2026-10-28 every session also gets `context/patient_data_guide.md` as `record_guide.md` beside the record: where each fact lives in the folder, adapted from the Cohort Explorer's guides, a data map with no prognostic hints (Phil 2026-10-28: the session must be told what it can read and where to look). Its hash is in the prompt tag |
 | Per-patient model | `claude-sonnet-5-5`, $0.50 cap (Phil 2026-10-27) |
 | Optimizer | Opus 5.5, effort high, $3 a session, may write tools; no WebSearch: it asks the engine's search proxy, which refuses patient-specific questions and logs every request (Phil 2026-10-22) |
-| Route | one setting for all sessions, the seat by default (engine `isolation.route`; token at `~/.config/alo/oauth_token`). No Vertex-only service account can be made, so Vertex is future work (Phil 2026-10-28); the code keeps it: `ALO_ROUTE=vertex` mounts only a Vertex-only key at `~/.config/alo/vertex-sa.json` |
+| Route | one setting for all sessions, the seat by default (engine `isolation.route`; token at `~/.config/alo/oauth_token`). `ALO_ROUTE=vertex` puts every session on Vertex holding the machine's `optimizer` login (no service account can be made); that login can read the labels, so the network block is the guard and the cost check runs the engine's after-run audit as the evidence (Phil 2026-10-28) |
 | Rounds | zero-shot (the seed on the 200 VAL pool) + 2 optimizer rounds (`ITERATIONS` 2) |
 | Image | `alo-died-2yr-ehr-optimizer:2.1.295`, its own tag: pandas, pyarrow, duckdb <2, grep/ripgrep; no CT packages |
 | Where | records built on phil-sllm-01 (BigQuery) into an archive on the mount; the run on a new VM, records rehydrated to local disk (`scripts/run_on_vm.sh`) |

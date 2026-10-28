@@ -163,7 +163,7 @@ def program_spec(forbidden):
         stages=("label",), output_patterns=(OUTPUT, FINDINGS), prompt_tag=PROMPT_TAG,
         max_concurrent=config.PROGRAM_MAX_CONCURRENT, timeout_seconds=config.PROGRAM_CALL_TIMEOUT_SECONDS,
         max_budget_usd=config.PROGRAM_CALL_BUDGET_USD, forbidden=forbidden,
-        # On Vertex the sessions use the mounted key; the seat token is read only on the seat route.
+        # On Vertex the sessions use the mounted optimizer login; the seat token is read only on the seat route.
         token_env_name=None if config.ROUTE.is_vertex else config.TOKEN_ENV_NAME,
     )
 

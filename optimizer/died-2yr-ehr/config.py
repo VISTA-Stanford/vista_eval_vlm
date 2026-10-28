@@ -24,7 +24,7 @@ if not (ENGINE_ROOT / "engine" / "driver.py").is_file():
     raise SystemExit(f"no engine at {ENGINE_ROOT}: set AGENTIC_LABEL_OPT to your agentic-label-opt checkout")
 #: The full 40-character engine commit this task was built and tested against
 #: (``git -C $AGENTIC_LABEL_OPT rev-parse HEAD``). Bump it on purpose, after re-running the dry run.
-ENGINE_PIN = "9aee75ffa1fcdbb949f9f639247ec2fef623f757"  # DECIDE (main: Vertex host fix, search proxy, NAT fix, shared route + key check, 2026-10-27)
+ENGINE_PIN = "f7849129c77c9324d7f1e45ee28e6daf077196e2"  # DECIDE (main: shared route accepts the optimizer login, network log saved per pass, after-run audit, 2026-10-28)
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
@@ -136,17 +136,18 @@ CLAUDE_CODE_VERSION = "2.1.307"  # Vertex global verified from this image 2026-1
 OPTIMIZER_IMAGE_TAG = f"alo-{TASK_NAME}-optimizer:{CLAUDE_CODE_VERSION}"
 WORKER_IMAGE_TAG = f"alo-{TASK_NAME}-worker:3.11.0"
 #: The route, one setting for the optimizer, the patient sessions and the search sessions (engine isolation.route).
-#: The seat ("anthropic", the token above) is the default: no Vertex-only service account can be made in the
-#: project, so Vertex is future work (Phil 2026-10-28). ALO_ROUTE=vertex runs one run on Vertex. Vertex bills
+#: The seat ("anthropic", the token above) is the default. ALO_ROUTE=vertex runs one run on Vertex. Vertex bills
 #: the GCP project, not the seat, and reaches Google's API addresses, not api.anthropic.com, so it neither spends
-#: the seat's session limit nor shares the Cloud NAT's 64 ports (Phil 2026-10-21). It mounts only a Vertex-only
-#: service account key (~/.config/alo/vertex-sa.json): no container holds a person's login, which could read the
-#: BigQuery labels (Phil 2026-10-21, kept 2026-10-27).
+#: the seat's session limit nor shares the Cloud NAT's 64 ports (Phil 2026-10-21). No service account can be made,
+#: so on Vertex every session holds the machine's `optimizer` login (engine OPTIMIZER_LOGIN, the file crc and
+#: rad-eval mount) and runs as its owner. That login can read the BigQuery labels: the network block (only the
+#: Vertex model endpoint and Google sign-in) is the guard, and the cost check runs the engine's after-run audit
+#: (scripts/audit_vertex_run.py) as the evidence (Phil 2026-10-28).
 #: Both routes are approved for this de-identified data (Phil 2026-10-17, 10-22).
-from isolation.route import Route, route_name  # noqa: E402  (the engine is on sys.path above)
+from isolation.route import OPTIMIZER_LOGIN, Route, route_name  # noqa: E402  (the engine is on sys.path above)
 
 ROUTE = Route(route_name("anthropic"), vertex_project="som-nero-plevriti-deidbdf",
               vertex_region="global",  # Claude 5.5 is served on global only in this project (probed 2026-10-17)
-              token_env_name=TOKEN_ENV_NAME)  # DECIDE
+              token_env_name=TOKEN_ENV_NAME, vertex_credential=OPTIMIZER_LOGIN)  # DECIDE
 #: Patient data: turns on the engine's patient-data guards (fail-closed run store, Vertex only).
 PATIENT_DATA = False  # DECIDE: de-identified, approved for the subscription route (Phil 2026-10-17), as died-2yr-ct

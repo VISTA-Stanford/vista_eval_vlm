@@ -7,7 +7,8 @@
 #
 # Needs: Docker, the su-vista-uscentral1 mount, uv, git access to both repos, and on the seat route (the default) the
 # Claude token at ~/.config/alo/oauth_token (mode 600; `claude setup-token` makes one); with ALO_ROUTE=vertex, the
-# Vertex-only service account key at ~/.config/alo/vertex-sa.json (mode 600). Settings, all optional, on the same line:
+# machine's optimizer login (/home/optimizer/.config/gcloud/application_default_credentials.json, the file crc and
+# rad-eval mount; never read here, only checked to exist). Settings, all optional, on the same line:
 # RUN_ID (yesno-r1), ITERATIONS (2), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20); SETUP_ONLY=1 stops before the run.
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
@@ -68,9 +69,8 @@ docker info >/dev/null 2>&1 || fail "Docker is not running or this user cannot u
 [ -f "$DATA/pools.json" ] || fail "the data is not readable at $DATA (is the su-vista-uscentral1 mount here?)"
 [ -d "$DATA/archive/tables" ] || fail "no record archive at $DATA/archive (the export has not been run yet)"
 if [ "${ALO_ROUTE:-anthropic}" = vertex ]; then
-    KEY=$HOME/.config/alo/vertex-sa.json
-    [ -f "$KEY" ] || fail "no Vertex-only key at $KEY (or run on the seat: unset ALO_ROUTE)"
-    [ "$(stat -c %a "$KEY")" = 600 ] || fail "$KEY must be mode 600"
+    LOGIN=/home/optimizer/.config/gcloud/application_default_credentials.json
+    [ -f "$LOGIN" ] && [ ! -L "$LOGIN" ] || fail "no optimizer login at $LOGIN (or run on the seat: unset ALO_ROUTE)"
 else
     TOKEN=$HOME/.config/alo/oauth_token
     [ -f "$TOKEN" ] || fail "no Claude token at $TOKEN: run claude setup-token, save it there with mode 600"
