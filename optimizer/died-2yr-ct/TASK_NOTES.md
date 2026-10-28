@@ -16,7 +16,9 @@ engine's search proxy, which refuses patient-specific questions and logs every r
 `~/.config/alo/oauth_token`). No Vertex-only service account can be made, so Vertex is future work (Phil 2026-10-28);
 the code keeps it: `ALO_ROUTE=vertex` mounts only a Vertex-only key at `~/.config/alo/vertex-sa.json`.
 Engine pin: agentic-label-opt main 9aee75f, shared with died-2yr-ehr; Claude Code 2.1.307. The finished run
-`first` (probability, VAL AUROC 0.776) stays as history. Cost check: `bash scripts/cost_check.sh` (paid, ~$5,
+`first` (probability, VAL AUROC 0.776) stays as history. **Real runs** (Phil 2026-10-28): 5 rounds, TRAIN 100 every
+round, VAL 200, in their own work folder (`alo-tasks/died-2yr-ct-yesno`, run `yesno-r1`); the chosen version and
+the seed are then scored once on all 811 VAL patients with `run.py score-val --tag <tag>`. Cost check: `bash scripts/cost_check.sh` (paid, ~$5,
 Phil's go).
 
 ## The idea

@@ -98,7 +98,10 @@ TOKEN_BUDGET: int | None = None
 #: The pools are fixed by build_data.py: 400 TRAIN and 200 VAL patients at the natural death rate.
 #: VAL 200 puts AUROC noise at about +-0.035 (Phil 2026-10-20); balanced accuracy at about +-0.04. Stop and ask before an iteration
 #: projected over $100 (Phil 2026-10-20).
-SCHEDULE: dict | None = {"train_size": "step(30, add=15, every=1, max=90)", "val_size": "constant(200)"}  # DECIDE
+#: TRAIN 100 every round, not a growing schedule: VAL is most of each round's cost, so a bigger TRAIN costs little and
+#: gives the optimizer more cases to learn from. The chosen version is then scored once on all 811 VAL patients
+#: (`run.py score-val`) for the reported number (Phil 2026-10-28).
+SCHEDULE: dict | None = {"train_size": "constant(100)", "val_size": "constant(200)"}  # DECIDE
 if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: handy for a cheap live check
     import json as _json
 
