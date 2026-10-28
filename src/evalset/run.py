@@ -13,6 +13,8 @@ A rerun asks only rows without a parsed answer; API answers also come from the a
 from __future__ import annotations
 
 import argparse
+import functools
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -53,7 +55,9 @@ def messages_for_case(recipe: Recipe, card, row, arm: str, root=None, questions=
 
 
 class APIBackend:
-    """A models.MODEL_REGISTRY adapter (AI Hub, Vertex Gemini) driven per case."""
+    """A models.MODEL_REGISTRY adapter (AI Hub, Vertex Gemini). ``ask_many`` sends calls concurrently;
+    ``is_cached`` says whether a call's answer is already in the adapter's disk cache (so it would not warm the
+    provider's cache); ``per_case`` is set for an explicit-cache model, which is driven one scan at a time."""
 
     def __init__(self, recipe: Recipe, cache_dir: Path, max_spend: float | None):
         from models import MODEL_REGISTRY
@@ -73,15 +77,21 @@ class APIBackend:
         self.adapter.load()
         self.max_new_tokens = int(recipe.setting("max_new_tokens", 4096))
 
+        self.per_case = bool(getattr(self.adapter, "explicit_cache", False))
+
+    @staticmethod
+    def _wire(m):
+        return {"parts": list(m.parts), "prefix_len": m.prefix_len}
+
+    def is_cached(self, m) -> bool:
+        return bool(self.adapter.is_answered(self._wire(m), self.max_new_tokens, CHOICES))
+
+    def ask_many(self, msgs):
+        return self.adapter.infer(None, None, [self._wire(m) for m in msgs], self.max_new_tokens, CHOICES)
+
     def ask_case(self, msgs):
-        wire = [{"parts": list(m.parts), "prefix_len": m.prefix_len} for m in msgs]
-        if hasattr(self.adapter, "ask_group"):
-            return self.adapter.ask_group(wire, self.max_new_tokens, CHOICES)
-        # Prompt caching on the AI Hub is automatic for a repeated prefix: send the first question alone,
-        # then the rest, so the later calls find the images cached.
-        first = self.adapter._one(wire[0], self.max_new_tokens, CHOICES)
-        rest = self.adapter.infer(None, None, wire[1:], self.max_new_tokens, CHOICES) if len(wire) > 1 else []
-        return [first] + rest
+        """One scan's questions through an explicit context cache (``ask_group``)."""
+        return self.adapter.ask_group([self._wire(m) for m in msgs], self.max_new_tokens, CHOICES)
 
 
 #: Gemini 4 Argon, Vertex global, USD per million tokens through 2026-11-30 (doubles from 12-01).
@@ -91,12 +101,17 @@ ARGON_PRICES = {"input": 2.0, "cached": 0.10, "output": 10.0, "long_context_over
 
 # -- rows -------------------------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=512)
+def _image_digest(data: bytes) -> bytes:
+    # A scan's slices are the same bytes objects for every question on it, so each is hashed once.
+    return hashlib.sha256(data).digest()
+
+
 def message_key(m) -> str:
     """Fingerprint of exactly what the model was sent (every text part, every image's hash, in order)."""
-    import hashlib
     h = hashlib.sha256()
     for p in m.parts:
-        h.update(b"T" + p["text"].encode() if p["type"] == "text" else b"I" + hashlib.sha256(p["data"]).digest())
+        h.update(b"T" + p["text"].encode() if p["type"] == "text" else b"I" + _image_digest(p["data"]))
     return h.hexdigest()
 
 
@@ -153,7 +168,6 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
     if backend is None:
         backend = (VLLMBackend(recipe) if recipe.model_type == "vllm"
                    else APIBackend(recipe, Path(root or paths.root()) / "model_cache", max_spend))
-    rows = []
     todo = []
     for _, r in df.iterrows():
         r = r.to_dict()
@@ -161,35 +175,62 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
               if (str(r["case_id"]), q.id, arm) not in done_keys]
         if qm:
             todo.append((r, qm))
-    if hasattr(backend, "ask_many"):
-        # Open models, two batches: every scan's first question, then the rest. vLLM's prefix cache can only
-        # reuse a scan's images once a request holding them has been computed; in one batch the questions on a
-        # scan run side by side and each recomputes the images (the same reason Argon's first question goes alone).
-        firsts = backend.ask_many([qm[0][1] for _, qm in todo]) if todo else []
-        rest_msgs = [m for _, qm in todo for _, m in qm[1:]]
-        rests = iter(backend.ask_many(rest_msgs) if rest_msgs else [])
-        pairs = []
-        for (r, qm), f in zip(todo, firsts):
-            pairs.append((r, qm[0][0], qm[0][1], f))
-            pairs += [(r, q, m, next(rests)) for q, m in qm[1:]]
-    else:
-        pairs = []
-        for r, qm in todo:
-            outs = backend.ask_case([m for _, m in qm])
-            pairs += [(r, q, m, o) for (q, m), o in zip(qm, outs)]
-    rows = [result_row(recipe, step, arm, r, q, o, m) for r, q, m, o in pairs]
     path.parent.mkdir(parents=True, exist_ok=True)
-    log_attempts(path, rows, [o for _, _, _, o in pairs])
-    log_run(path, recipe, step, arm, limit, questions, rows, [o for _, _, _, o in pairs], variant)
-    new = pd.DataFrame(rows)
-    allrows = pd.concat([done, new], ignore_index=True) if len(done) else new
+    chunk = max(1, int(recipe.setting("cache_chunk", 8)))
+    rows, outs_all = [], []
+    for c in range(0, len(todo), chunk):
+        pairs = ask_chunk(backend, todo[c:c + chunk])
+        new_rows = [result_row(recipe, step, arm, r, q, o, m) for r, q, m, o in pairs]
+        log_attempts(path, new_rows, [o for _, _, _, o in pairs])
+        rows += new_rows
+        outs_all += [o for _, _, _, o in pairs]
+        # Saved after every group, so an interrupted run keeps what it has and a rerun asks only the rest.
+        write_answers(path, done, rows)
+    log_run(path, recipe, step, arm, limit, questions, rows, outs_all, variant)
+    allrows = pd.concat([done, pd.DataFrame(rows)], ignore_index=True) if len(done) else pd.DataFrame(rows)
     if allrows.empty:
         raise RuntimeError(f"step {step} {arm}: no cases to ask and none answered before; nothing written")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    write_answers(path, done, rows)
+    return allrows
+
+
+def ask_chunk(backend, todo):
+    """[(row, question, message, output)] for a group of cases, in two waves so every model's cache can reuse
+    each scan's images: first each case's lead question, then all the rest.
+
+    The lead is the case's first question whose answer is not already in the adapter's disk cache (a cached
+    answer comes back without a call, so it would not warm the provider's cache for the others). The rest go
+    once the leads have finished, while the images are still cached: Google's implicit cache (Argon: ~96% of the
+    prompt, 10-28), the AI Hub's prompt cache and vLLM's prefix cache all need an earlier request with the same
+    prefix to have completed. Groups are kept small (recipe setting ``cache_chunk``, default 8) so vLLM's prefix
+    blocks are not evicted between the waves, and so API calls in a wave run concurrently.
+    An explicit-cache model (``per_case``) is driven one scan at a time through its own cache instead."""
+    if getattr(backend, "per_case", False):
+        out = []
+        for r, qm in todo:
+            outs = backend.ask_case([m for _, m in qm])
+            out += [(r, q, m, o) for (q, m), o in zip(qm, outs)]
+        return out
+    cached = getattr(backend, "is_cached", lambda m: False)
+    leads = []
+    for _, qm in todo:
+        k = next((i for i, (_, m) in enumerate(qm) if not cached(m)), 0)
+        leads.append(k)
+    first = backend.ask_many([qm[k][1] for (_, qm), k in zip(todo, leads)]) if todo else []
+    rest_idx = [(ci, qi) for ci, ((_, qm), k) in enumerate(zip(todo, leads)) for qi in range(len(qm)) if qi != k]
+    rest = backend.ask_many([todo[ci][1][qi][1] for ci, qi in rest_idx]) if rest_idx else []
+    got = {(ci, leads[ci]): o for ci, o in enumerate(first)}
+    got.update({key: o for key, o in zip(rest_idx, rest)})
+    return [(r, q, m, got[(ci, qi)]) for ci, (r, qm) in enumerate(todo) for qi, (q, m) in enumerate(qm)]
+
+
+def write_answers(path: Path, done, rows):
+    allrows = pd.concat([done, pd.DataFrame(rows)], ignore_index=True) if len(done) else pd.DataFrame(rows)
+    if allrows.empty:
+        return
     tmp = path.with_suffix(".tmp")
     allrows.to_csv(tmp, index=False)
     tmp.replace(path)
-    return allrows
 
 
 def log_attempts(path: Path, rows, outs):
@@ -242,8 +283,7 @@ def log_run(path: Path, recipe: Recipe, step: int, arm: str, limit, questions, r
     import socket
     import subprocess
     from datetime import datetime, timezone
-    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                            cwd=Path(__file__).parent).stdout.strip()
+    commit = paths.code_commit()
     dirty = bool(subprocess.run(["git", "status", "--porcelain", "--", "."], capture_output=True, text=True,
                                 cwd=Path(__file__).parent).stdout.strip())
     card = CARDS[step]
@@ -270,7 +310,8 @@ class VLLMBackend:
         # template load through Hugging Face, not download_dir, so its cache points at the same folder. A folder
         # that already holds the model loads offline; an empty one is filled once from Hugging Face (gated:
         # needs HF_TOKEN with MedGemma access).
-        os.environ.setdefault("HF_HUB_CACHE", cache)
+        # Overrides any HF_HUB_CACHE already set: the tokenizer must look where the weights check looked.
+        os.environ["HF_HUB_CACHE"] = cache
         if model_in_cache(cache, recipe.model_name):
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
         else:
@@ -285,7 +326,7 @@ class VLLMBackend:
                        # EVALSET_PREFIX_CACHE=0 turns it off, to check cached and uncached runs give the same answers.
                        enable_prefix_caching=os.environ.get("EVALSET_PREFIX_CACHE", "1") != "0",
                        gpu_memory_utilization=0.85, trust_remote_code=True,
-                       download_dir=cache, hf_overrides={"cache_dir": cache})
+                       download_dir=cache)
         self.params = SamplingParams(temperature=float(recipe.setting("temperature", 0.0)),
                                      max_tokens=int(recipe.setting("max_new_tokens", 2000)),
                                      logprobs=int(recipe.setting("logprobs", 20)))
@@ -306,9 +347,22 @@ def model_cache_dir() -> str:
 
 
 def model_in_cache(cache: str, model_name: str) -> bool:
-    """True when the Hugging Face cache folder holds a snapshot of ``model_name`` with its weights."""
+    """True when the Hugging Face cache folder holds a complete snapshot of ``model_name``: every shard its
+    ``model.safetensors.index.json`` names (a half-finished download is not complete), plus ``config.json``."""
     snaps = Path(cache) / ("models--" + model_name.replace("/", "--")) / "snapshots"
-    return any(any(s.glob("*.safetensors")) for s in snaps.glob("*")) if snaps.is_dir() else False
+    if not snaps.is_dir():
+        return False
+    for s in snaps.glob("*"):
+        if not (s / "config.json").exists():
+            continue
+        idx = s / "model.safetensors.index.json"
+        if idx.exists():
+            shards = set(json.loads(idx.read_text()).get("weight_map", {}).values())
+            if shards and all((s / f).exists() for f in shards):
+                return True
+        elif (s / "model.safetensors").exists():
+            return True
+    return False
 
 
 def openai_content(m):

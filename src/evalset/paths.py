@@ -34,3 +34,10 @@ def root() -> Path:
 
 def table(name: str) -> str:
     return f"{PROJECT}.{DATASET}.{name}"
+
+
+def code_commit(where: Path | None = None) -> str:
+    """Short commit of the checkout this code runs from ('' outside git)."""
+    import subprocess
+    return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                          cwd=where or Path(__file__).parent).stdout.strip()

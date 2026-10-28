@@ -92,6 +92,11 @@ def patient_bootstrap(rows: pd.DataFrame, n_boot: int = 1000, seed: int = 0, alp
     """Percentile interval of the macro balanced accuracy over ``rows``' questions (one question: its
     balanced accuracy), resampling patients (``person_id``) with replacement: all of a patient's rows
     move together. Each draw reweights rows by how often their patient was drawn."""
+    if rows["person_id"].isna().any():
+        # A row without a patient cannot be resampled with its patient; better to stop than skew the interval.
+        raise ValueError(f"{int(rows['person_id'].isna().sum())} rows have no person_id; the patient bootstrap needs one")
+    if rows.empty:
+        return float("nan"), float("nan")
     pcode, _ = pd.factorize(rows["person_id"])
     qcode, q_uni = pd.factorize(rows["question_id"])
     label = rows["label"].astype(int).to_numpy()

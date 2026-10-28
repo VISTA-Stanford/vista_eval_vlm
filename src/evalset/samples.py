@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -198,8 +197,7 @@ def save(step: int, df: pd.DataFrame, root: Path | None = None) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     out = root / f"step{step}.parquet"
     df.to_parquet(out, index=False)
-    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                            cwd=Path(__file__).parent).stdout.strip()
+    commit = paths.code_commit()
     meta = {"step": step, "built": date.today().isoformat(), "seed": SEED, "per_answer": PER_ANSWER,
             "code_commit": commit, "counts": counts(step, df)}
     if step == 1:

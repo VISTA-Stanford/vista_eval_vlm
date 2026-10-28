@@ -259,6 +259,12 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         return {"text": answer, "cumulative_logprob": None, "log_probs": None, "usage": usage, "cached": False,
                 "request_key": key, "raw": raw}
 
+    def is_answered(self, msg, max_new_tokens, choices):
+        """True when this eval-set call's answer is already in the disk cache (same key as ``_one``)."""
+        body = build_parts_request(msg["parts"], choices, max_new_tokens, self.reasoning_effort, self.image_detail)
+        key = hashlib.sha256((self.model_name + "\n" + json.dumps(body)).encode()).hexdigest()
+        return (self.response_cache / key[:2] / f"{key}.json").exists()
+
     def infer(self, model, processor, inputs, max_new_tokens, constrained_choices=None):
         msgs = inputs if isinstance(inputs, list) else [inputs]
         with ThreadPoolExecutor(max_workers=max(1, self.concurrency)) as ex:

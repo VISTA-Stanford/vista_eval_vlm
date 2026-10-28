@@ -54,7 +54,7 @@ def encode(rgb_u8, recipe: Recipe) -> bytes:
     return buf.getvalue()
 
 
-def render_scan(recipe: Recipe, n: int, study, series, root: Path | None = None) -> dict:
+def render_scan(recipe: Recipe, n: int, study, series, root: Path | None = None, commit: str | None = None) -> dict:
     """Render one scan into the pack (kept if its manifest is already there). Returns the manifest."""
     out = pack_dir(recipe, n, root) / scan_id(study, series)
     mf = out / "manifest.json"
@@ -76,7 +76,7 @@ def render_scan(recipe: Recipe, n: int, study, series, root: Path | None = None)
         if size is None:
             size = list(Image.open(io.BytesIO(data)).size)
     manifest = {"study": str(study), "series": str(series), "n_slices_in_volume": len(stack),
-                "code_commit": _commit(),
+                "code_commit": commit if commit is not None else paths.code_commit(),
                 "display_indices": display, "voxel_indices": [stack.voxel_index(k) for k in display],
                 "spacing_mm": list(stack.spacing_mm), "windows": list(map(list, windows.RGB_SETS[recipe.windows])),
                 "size": size, "files": files, "sha256": hashes, "render": recipe.render_key(n)}
@@ -84,12 +84,6 @@ def render_scan(recipe: Recipe, n: int, study, series, root: Path | None = None)
     tmp.write_text(json.dumps(manifest, indent=1))
     tmp.replace(mf)  # written last: a scan with a manifest is complete
     return manifest
-
-
-def _commit() -> str:
-    import subprocess
-    return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                          cwd=Path(__file__).parent).stdout.strip()
 
 
 def load(recipe: Recipe, n: int, study, series, root: Path | None = None) -> list[bytes]:
@@ -116,9 +110,9 @@ def scans_for(df, n_scans: int):
 
 
 def _render_one(args):
-    recipe, n, study, series, root = args
+    recipe, n, study, series, root, commit = args
     try:
-        render_scan(recipe, n, study, series, root)
+        render_scan(recipe, n, study, series, root, commit)
         return None
     except Exception as e:  # noqa: BLE001 - one bad volume is reported as a count, not a crash
         return f"{type(e).__name__}"
@@ -128,7 +122,8 @@ def render_many(recipe: Recipe, n: int, pairs, workers: int = 2, root: Path | No
     d = pack_dir(recipe, n, root)
     d.mkdir(parents=True, exist_ok=True)
     (d / "pack.json").write_text(json.dumps({"pack_id": recipe.pack_id(n), "render": recipe.render_key(n)}, indent=1))
-    jobs = [(recipe, n, s, r, root) for s, r in pairs]
+    commit = paths.code_commit()  # once per pack, not once per scan
+    jobs = [(recipe, n, s, r, root, commit) for s, r in pairs]
     with ProcessPoolExecutor(max_workers=max(1, workers)) as ex:
         errs = list(ex.map(_render_one, jobs))
     return {"pack": recipe.pack_id(n), "scans": len(jobs), "failed": sum(e is not None for e in errs),

@@ -23,7 +23,7 @@ def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, 
     """Every (case, question) this invocation asked has a parsed answer. Only those rows are counted, so
     earlier rows in the same answers file (another limit or question set) neither help nor hurt."""
     from evalset.run import recipe_for
-    recipe = recipe_for(recipe_name, arms, variant)[0] if arms else get(recipe_name)
+    recipe = recipe_for(recipe_name, arms, variant)[0]  # refuses --variant without --arms
     ok = True
     for step in steps:
         card = CARDS[step]
