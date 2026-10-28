@@ -13,7 +13,7 @@ no, from that patient's whole
 EHR record up to the prediction time (first treatment - 7 days): every OMOP table, every note, and allow-listed
 registry fields of the index tumour. Same patients, splits and pools as the CT task, so the two compare on
 identical patients, and the published v1.7 EHR baselines are scored on the same VAL pool. Zero-shot first, then
-2 optimizer rounds. Validation numbers only; TEST stays sealed.
+5 optimizer rounds. Validation numbers only; TEST stays sealed.
 
 ## Decisions
 
@@ -30,7 +30,7 @@ identical patients, and the published v1.7 EHR baselines are scored on the same 
 | Per-patient model | `claude-sonnet-5-5`, $0.50 cap (Phil 2026-10-27) |
 | Optimizer | Opus 5.5, effort high, $3 a session, may write tools; no WebSearch: it asks the engine's search proxy, which refuses patient-specific questions and logs every request (Phil 2026-10-22) |
 | Route | one setting for all sessions, the seat by default (engine `isolation.route`; token at `~/.config/alo/oauth_token`). No Vertex-only service account can be made, so Vertex is future work (Phil 2026-10-28); the code keeps it: `ALO_ROUTE=vertex` mounts only a Vertex-only key at `~/.config/alo/vertex-sa.json` |
-| Rounds | zero-shot (the seed on the 200 VAL pool) + 2 optimizer rounds (`ITERATIONS` 2) |
+| Rounds | zero-shot (the seed on the 200 VAL pool) + 5 optimizer rounds (`ITERATIONS` 5), TRAIN 100 every round, VAL 200, run `yesno-r1` in `alo-tasks/died-2yr-ehr-yesno`; then the seed and the chosen version are scored once on all 811 VAL patients with `run.py score-val --tag <tag>` (Phil 2026-10-28, matching the CT task; was 2 rounds with TRAIN 30-90, 2026-10-21) |
 | Image | `alo-died-2yr-ehr-optimizer:2.1.295`, its own tag: pandas, pyarrow, duckdb <2, grep/ripgrep; no CT packages |
 | Where | records built on phil-sllm-01 (BigQuery) into an archive on the mount; the run on a new VM, records rehydrated to local disk (`scripts/run_on_vm.sh`) |
 

@@ -86,7 +86,7 @@ METRIC_NAME = "balanced_accuracy"  # DECIDE
 # The optimizer
 # --------------------------------------------------------------------------------------------------
 OPTIMIZER_MODEL = os.environ.get("OPTIMIZER_MODEL", "claude-opus-5-5")  # DECIDE: Phil 2026-10-20
-ITERATIONS = int(os.environ.get("ITERATIONS", "2"))  # DECIDE: zero-shot + 2 rounds (Phil 2026-10-21)
+ITERATIONS = int(os.environ.get("ITERATIONS", "5"))  # DECIDE: zero-shot + 5 rounds, as the CT task (Phil 2026-10-28; was 2, 2026-10-21)
 OPTIMIZER_SESSION_BUDGET_USD = float(os.environ.get("OPTIMIZER_SESSION_BUDGET_USD", "3.0"))  # DECIDE
 #: Claude Code --effort: at the default a Sonnet optimizer quit in 4-6 turns on recurrence (10-19).
 OPTIMIZER_EFFORT = os.environ.get("OPTIMIZER_EFFORT", "high")  # DECIDE: Phil 2026-10-20
@@ -108,7 +108,10 @@ TOKEN_BUDGET: int | None = None
 #: The pools are the CT task's, copied by build_data.py: 400 TRAIN and 200 VAL patients at the natural death rate.
 #: VAL 200 puts AUROC noise at about +-0.035 (Phil 2026-10-20). Stop and ask before an iteration
 #: projected over $100 (Phil 2026-10-20).
-SCHEDULE: dict | None = {"train_size": "step(30, add=15, every=1, max=90)", "val_size": "constant(200)"}  # DECIDE
+#: TRAIN 100 every round, not a growing schedule: VAL is most of each round's cost, so a bigger TRAIN costs little and
+#: gives the optimizer more cases to learn from. The chosen version is then scored once on all 811 VAL patients
+#: (`run.py score-val`) for the reported number. The same as the CT task (Phil 2026-10-28).
+SCHEDULE: dict | None = {"train_size": "constant(100)", "val_size": "constant(200)"}  # DECIDE
 if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: handy for a cheap live check
     import json as _json
 

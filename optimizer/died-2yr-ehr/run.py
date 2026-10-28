@@ -11,6 +11,7 @@
     python templates/new_task/run.py run --run-id r1  a real, sealed optimization run
     python templates/new_task/run.py report --run-id r1
     python templates/new_task/run.py test --tag program-v3   score ONE chosen version on TEST, once
+    python templates/new_task/run.py score-val --tag program-v3   score one version on all 811 VAL patients
 
 Exit codes for ``run``/``dry-run``: 0 finished, 3 stopped (the reason is printed and in the run
 summary), 2 paused, 1 anything else.
@@ -536,6 +537,32 @@ def cmd_test(args) -> int:
     return 0
 
 
+def cmd_score_val(args) -> int:
+    """Score one chosen version on all of VAL (811 patients), not the 200-patient pool the rounds use: the tighter
+    number to report for the version a run picked. VAL is not sealed, but every look is paid, so each is recorded."""
+    layout = opt.Layout()
+    ledger_path = layout.private / "val_all_ledger.jsonl"
+    earlier = ([e for e in map(json.loads, ledger_path.read_text().splitlines()) if e["tag"] == args.tag]
+               if ledger_path.exists() else [])
+    sha = git(layout.repo, "rev-parse", f"{args.tag}^{{commit}}").strip()
+    tree = layout.versions / f"val-all-{args.tag}"
+    materialize(ad.TaskStore().manifest(), sha, repo_root=layout.repo, dest=tree)
+    opt.stage_files(layout)
+    runner = program_runner(layout, image=images()[1], pin=committed_pins(layout)["program"])
+    with runner:  # a ProgramRunner: one network for the pass, containers removed on exit
+        artifacts = runner.as_runner(run_id=f"val-all-{args.tag}-look{len(earlier) + 1}").run(tree, ad.whole_split("val"))
+    if artifacts.status != "ok":
+        print(f"VAL pass failed: {artifacts.status} {artifacts.error}")
+        return 1
+    score = ad.TaskScorer().score(artifacts, "val", {})
+    entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha,
+             config.METRIC_NAME: score.primary_metric.value, "n": score.breakdown["n"], "look": len(earlier) + 1}
+    with ledger_path.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+    print(json.dumps(entry, indent=2))
+    return 0
+
+
 # ==================================================================================================
 
 
@@ -573,10 +600,13 @@ def main(argv=None) -> int:
     t.add_argument("--tag", required=True)
     t.add_argument("--again", action="store_true")
     t.add_argument("--local", action="store_true", help="run unsealed in this process (only for checking the template)")
+    sv = sub.add_parser("score-val", help="score one chosen version on all of VAL, not the 200-patient pool")
+    sv.add_argument("--tag", required=True)
     args = p.parse_args(argv)
     return {
         "init": cmd_init, "dry-run": cmd_dry_run, "print-prompt": cmd_print_prompt, "build-images": cmd_build_images,
         "pins": cmd_pins, "check-token": cmd_check_token, "run": cmd_run, "report": cmd_report, "test": cmd_test,
+        "score-val": cmd_score_val,
     }[args.cmd](args)
 
 
