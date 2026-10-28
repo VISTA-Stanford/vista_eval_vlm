@@ -5,9 +5,9 @@
 #
 #   git -C ~/code/vista_eval_vlm fetch -q origin && git -C ~/code/vista_eval_vlm show origin/feat/died-2yr-ehr-agentic:optimizer/died-2yr-ehr/scripts/run_on_vm.sh > ~/run_died2yr_ehr.sh && bash ~/run_died2yr_ehr.sh
 #
-# Needs: Docker, the su-vista-uscentral1 mount, uv, git access to both repos, and on the Vertex route (the default) the
-# Vertex-only service account key at ~/.config/alo/vertex-sa.json (mode 600); with ALO_ROUTE=anthropic, the Claude
-# token at ~/.config/alo/oauth_token (mode 600; `claude setup-token` makes one). Settings, all optional, on the same line:
+# Needs: Docker, the su-vista-uscentral1 mount, uv, git access to both repos, and on the seat route (the default) the
+# Claude token at ~/.config/alo/oauth_token (mode 600; `claude setup-token` makes one); with ALO_ROUTE=vertex, the
+# Vertex-only service account key at ~/.config/alo/vertex-sa.json (mode 600). Settings, all optional, on the same line:
 # RUN_ID (first), ITERATIONS (2), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20); SETUP_ONLY=1 stops before the run.
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
@@ -67,9 +67,9 @@ command -v uv >/dev/null || fail "uv is not installed"
 docker info >/dev/null 2>&1 || fail "Docker is not running or this user cannot use it"
 [ -f "$DATA/pools.json" ] || fail "the data is not readable at $DATA (is the su-vista-uscentral1 mount here?)"
 [ -d "$DATA/archive/tables" ] || fail "no record archive at $DATA/archive (the export has not been run yet)"
-if [ "${ALO_ROUTE:-vertex}" = vertex ]; then
+if [ "${ALO_ROUTE:-anthropic}" = vertex ]; then
     KEY=$HOME/.config/alo/vertex-sa.json
-    [ -f "$KEY" ] || fail "no Vertex-only key at $KEY (or run on the seat with ALO_ROUTE=anthropic)"
+    [ -f "$KEY" ] || fail "no Vertex-only key at $KEY (or run on the seat: unset ALO_ROUTE)"
     [ "$(stat -c %a "$KEY")" = 600 ] || fail "$KEY must be mode 600"
 else
     TOKEN=$HOME/.config/alo/oauth_token
@@ -124,7 +124,7 @@ done
 alo build-images >/dev/null || fail "build-images"
 [ -d "$TASK_WORKDIR/repo" ] || alo init || fail "init"
 alo pins --write | tail -1 || fail "pins --write"
-if [ "${ALO_ROUTE:-vertex}" != vertex ]; then
+if [ "${ALO_ROUTE:-anthropic}" != vertex ]; then
     alo check-token | grep -q ": PASS" || fail "check-token did not PASS (try: cd $TASK_DIR && uv run --project $ENGINE_WT python run.py check-token)"
 fi
 out=$(alo dry-run 2>&1) || fail "dry-run exited non-zero"

@@ -133,15 +133,17 @@ TOKEN_FILE = Path(os.environ.get("ALO_TOKEN_FILE", Path.home() / ".config" / "al
 CLAUDE_CODE_VERSION = "2.1.307"  # Vertex global verified from this image 2026-10-21
 OPTIMIZER_IMAGE_TAG = f"alo-{TASK_NAME}-optimizer:{CLAUDE_CODE_VERSION}"
 WORKER_IMAGE_TAG = f"alo-{TASK_NAME}-worker:3.11.0"
-#: The route, one setting for the optimizer, the patient sessions and the search sessions (engine isolation.route;
-#: ALO_ROUTE=anthropic runs one run on the seat instead). Vertex bills the GCP project, not the seat, and reaches
-#: Google's API addresses, not api.anthropic.com, so it neither spends the seat's session limit nor shares the Cloud
-#: NAT's 64 ports (Phil 2026-10-21). It mounts only a Vertex-only service account key (~/.config/alo/vertex-sa.json):
-#: no container holds a person's login, which could read the BigQuery labels (Phil 2026-10-21, kept 2026-10-27).
+#: The route, one setting for the optimizer, the patient sessions and the search sessions (engine isolation.route).
+#: The seat ("anthropic", the token above) is the default: no Vertex-only service account can be made in the
+#: project, so Vertex is future work (Phil 2026-10-28). ALO_ROUTE=vertex runs one run on Vertex. Vertex bills
+#: the GCP project, not the seat, and reaches Google's API addresses, not api.anthropic.com, so it neither spends
+#: the seat's session limit nor shares the Cloud NAT's 64 ports (Phil 2026-10-21). It mounts only a Vertex-only
+#: service account key (~/.config/alo/vertex-sa.json): no container holds a person's login, which could read the
+#: BigQuery labels (Phil 2026-10-21, kept 2026-10-27).
 #: Both routes are approved for this de-identified data (Phil 2026-10-17, 10-22).
 from isolation.route import Route, route_name  # noqa: E402  (the engine is on sys.path above)
 
-ROUTE = Route(route_name("vertex"), vertex_project="som-nero-plevriti-deidbdf",
+ROUTE = Route(route_name("anthropic"), vertex_project="som-nero-plevriti-deidbdf",
               vertex_region="global",  # Claude 5.5 is served on global only in this project (probed 2026-10-17)
               token_env_name=TOKEN_ENV_NAME)  # DECIDE
 #: Patient data: turns on the engine's patient-data guards (fail-closed run store, Vertex only).
