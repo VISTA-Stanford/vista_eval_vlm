@@ -7,8 +7,12 @@ arxiv.org/abs/2604.05081 (Table 13, the chest-CT CT-RATE prompt). Taken from the
   * RGB windows wide -1024..1024 / soft tissue -135..215 / brain 0..80 HU, rounded to uint8;
   * slices encoded as JPEG at PIL's default quality, not resized (the processor makes them 896 px);
   * each image followed by the text "SLICE n" (n counts from 1), the question after all images;
-  * "You are an expert radiologist for chest CT." and the answer line
-    "Answer with 'Final Answer: yes' or 'Final Answer: no'." (Table 13, CT-RATE);
+  * after all the images, "You are an expert radiologist for chest CT." then the question and the
+    answer line "Answer with 'Final Answer: yes' or 'Final Answer: no'." (Table 13, CT-RATE row, written
+    "{{images}} + You are an expert radiologist for chest CT. ... is there <label>? Answer with ...").
+    The report's evaluation prompt is what we copy. The notebook instead opens with an instruction before
+    the slices, but that is its teaching demo ("You are an instructor teaching medical students ..."),
+    not an evaluation prompt;
   * greedy decoding, up to 2,000 new tokens (the notebook's generate call).
 Ours, not Google's: two-scan cards get 42 slices per scan (84 in all, inside the 85 it was trained
 and evaluated on), labelled "PRIOR SLICE n" / "CURRENT SLICE n"; the yes/no token probabilities are

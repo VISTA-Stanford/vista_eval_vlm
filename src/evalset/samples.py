@@ -13,7 +13,8 @@ model and the Claude Code agent read these files, so they all answer about the s
   step 3  progression vs prior: the 400 TEST pairs GPT-6 Astra answered on 10-19 (100 per four-way
           class, so 200 yes / 200 no two-way)
   step 4  board progression: the 334 board cases the rev-5 board CT run answered (scored answer, CT and
-          prior CT; all splits, 45 TEST reported separately)
+          prior CT; all splits, 45 TEST reported separately). One case has no split in the board table: it
+          counts in the all-cases score and in no per-split score
 
     python -m evalset.samples build --steps 1 2 3 4
 

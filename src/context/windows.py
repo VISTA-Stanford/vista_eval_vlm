@@ -1,8 +1,9 @@
 """CT windows: the one home for every Hounsfield window the VLM runs and the agent viewer use.
 
-Replaces three copies: main's MedGemma 3-window colour (``windowing.multi_window_rgb``), radiology
+One implementation for three copies: main's MedGemma 3-window colour (``windowing.multi_window_rgb``), radiology
 progression's lung / soft tissue / bone colour (``windowing.chest_rgb``) and the agent viewer's own
-named windows (``optimizer/died-2yr-ct/program_agentic/tools/view_ct.py``). ``context.windowing``
+named windows (``optimizer/died-2yr-ct/program_agentic/tools/view_ct.py``, on work package 2's branch;
+``window_u8`` reproduces it so the viewer can switch later). ``context.windowing``
 re-exports from here, so existing runs keep byte-identical pixels (``scripts/ct_golden_inputs.py``).
 
 Two conversions to 0-255, kept apart because they round differently:

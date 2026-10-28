@@ -65,7 +65,9 @@ class APIBackend:
             if max_spend is not None:
                 opts["max_spend_usd"] = max_spend
         elif recipe.model_type == "aihub_openai" and max_spend is not None:
-            # The AI Hub adapter caps tokens, not dollars: $10 / M input is the measured Astra rate.
+            # The AI Hub adapter caps tokens, not dollars: every token counted at the $10 / M input rate. Output
+            # is $50 / M, so the cap runs slightly over when answers are long (here: a one-word schema answer
+            # plus low-effort reasoning).
             opts["max_total_tokens"] = int(max_spend / 10.0 * 1e6)
         self.adapter.configure(opts)
         self.adapter.load()

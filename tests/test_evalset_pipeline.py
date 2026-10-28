@@ -254,3 +254,35 @@ def test_run_question_subset(mount):
     fb = FakeBackend(lambda m: "no")
     res = run.run(r, 2, "ct", "sub", backend=fb, questions=["lobe_rul", "pneumonitis"])
     assert sorted(res["question_id"]) == ["lobe_rul", "pneumonitis"] and fb.calls == 2
+
+
+# -- MedGemma's vLLM path, without vLLM: request content and the yes/no token probabilities -----------
+
+def test_openai_content_keeps_notebook_order():
+    m = get("medgemma").build("Answer yes or no.", [(None, [b"\xff\xd8a", b"\xff\xd8b"])])
+    c = run.openai_content(m)
+    assert [x["type"] for x in c] == ["image_url", "text", "image_url", "text", "text"]
+    assert c[1]["text"] == "SLICE 1" and c[3]["text"] == "SLICE 2"
+    assert c[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert c[-1]["text"].endswith("'Final Answer: no'.")
+
+
+class _LP:
+    def __init__(self, tok, lp):
+        self.decoded_token, self.logprob = tok, lp
+
+
+class _Completion:
+    def __init__(self, tokens):
+        # tokens: [(token_id, text, {alt_id: (text, logprob)})]
+        self.token_ids = [t for t, _, _ in tokens]
+        self.logprobs = [{tid: _LP(txt, -0.1), **{a: _LP(at, alp) for a, (at, alp) in alts.items()}}
+                         for tid, txt, alts in tokens]
+
+
+def test_answer_logprobs_reads_the_last_yes_no_token():
+    c = _Completion([(1, "Yes", {}), (2, " Final", {}), (3, " Answer", {}), (4, ":", {}),
+                     (5, " no", {6: (" yes", -2.3)}), (7, "<eos>", {})])
+    got = json.loads(run.answer_logprobs(c))
+    assert got["position"] == 4 and got["top"] == {" no": -0.1, " yes": -2.3}
+    assert run.answer_logprobs(_Completion([(1, "maybe", {})])) is None

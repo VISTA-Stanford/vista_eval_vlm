@@ -8,7 +8,10 @@ bootstrap over patients (all of a patient's rows move together, across questions
 1 / number of answers (0.5 for yes/no) for any answer-blind rule; probes are cut at the threshold that
 maximizes balanced accuracy on VALIDATION, then frozen and applied unchanged to the scored rows.
 
-    python -m evalset.score --step 2 --results <answers.csv> [<answers.csv> ...] --out <table.csv>
+    python -m evalset.score --results <answers.csv> [<answers.csv> ...] --out <table.csv> [--split test]
+
+The probe side (``validation_cut``, ``probe_predictions``) is a library for now; the model-vs-probe table
+is built when the pilot is scored (work package 4).
 """
 
 from __future__ import annotations
