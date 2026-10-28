@@ -233,8 +233,10 @@ class VLLMBackend:
         os.environ.setdefault("HF_HUB_CACHE", cache)
         if model_in_cache(cache, recipe.model_name):
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        elif not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")):
-            raise RuntimeError(f"{recipe.model_name} is not in {cache} and no HF_TOKEN is set to download it")
+        else:
+            from huggingface_hub import get_token  # env HF_TOKEN or a saved `huggingface-cli login`
+            if not get_token():
+                raise RuntimeError(f"{recipe.model_name} is not in {cache} and no Hugging Face token is set to download it")
         from vllm import LLM, SamplingParams
         self.recipe = recipe
         n_max = max(recipe.n_slices, 2 * recipe.n_slices_pair)
