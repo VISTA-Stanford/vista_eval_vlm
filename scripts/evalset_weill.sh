@@ -10,6 +10,8 @@
 # Env: RECIPE (medgemma | astra), RUN (run name), LIMIT (cases per step; unset = the whole sample),
 # STEPS (default "1 2 3 4"), QUESTIONS (space-separated question ids; default all), MAX_SPEND (USD cap, Astra), VISTA_VENV (default .venv for medgemma, .venv-api
 # for astra), CUDA_VISIBLE_DEVICES (MedGemma's GPU, default 0), EVALSET_MOUNT_ROOT (default weill's).
+# EVALSET_MODEL_CACHE: MedGemma's weights folder (default: the mount's shared cache, slow to read; a local
+# folder that already has the model loads offline, an empty one downloads once with HF_TOKEN set).
 # Spec: planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md (on the mount).
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -393,3 +393,13 @@ def test_p_yes_sums_spellings_and_normalises():
                                             " maybe": math.log(0.2)}})
     assert run.p_yes(lp) == pytest.approx(0.2 / 0.8)
     assert run.p_yes(None) is None and run.p_yes(json.dumps({"top": {" maybe": -0.1}})) is None
+
+
+def test_model_in_cache_needs_weights(tmp_path):
+    snap = tmp_path / "models--google--medgemma-1.5-4b-it" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    assert not run.model_in_cache(str(tmp_path), "google/medgemma-1.5-4b-it")
+    (snap / "model-00001-of-00002.safetensors").write_bytes(b"x")
+    assert run.model_in_cache(str(tmp_path), "google/medgemma-1.5-4b-it")
+    assert run.model_in_cache("/mnt/su-vista-uscentral1/vistabench/vlm/model_cache", "google/medgemma-1.5-4b-it") \
+        or not __import__("os").path.isdir("/mnt/su-vista-uscentral1")

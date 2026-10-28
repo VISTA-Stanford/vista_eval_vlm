@@ -226,10 +226,15 @@ class VLLMBackend:
     def __init__(self, recipe: Recipe):
         import os
         cache = model_cache_dir()
-        # Set before importing vLLM (Hugging Face reads these at import). Tokenizer, processor and chat template load through Hugging Face, not download_dir: point its cache
-        # at the same folder and stay offline, so the gated model is never fetched.
+        # Set before importing vLLM (Hugging Face reads these at import). Tokenizer, processor and chat
+        # template load through Hugging Face, not download_dir, so its cache points at the same folder. A folder
+        # that already holds the model loads offline; an empty one is filled once from Hugging Face (gated:
+        # needs HF_TOKEN with MedGemma access).
         os.environ.setdefault("HF_HUB_CACHE", cache)
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        if model_in_cache(cache, recipe.model_name):
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        elif not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")):
+            raise RuntimeError(f"{recipe.model_name} is not in {cache} and no HF_TOKEN is set to download it")
         from vllm import LLM, SamplingParams
         self.recipe = recipe
         n_max = max(recipe.n_slices, 2 * recipe.n_slices_pair)
@@ -250,10 +255,16 @@ class VLLMBackend:
 
 
 def model_cache_dir() -> str:
-    """Weights folder: ``EVALSET_MODEL_CACHE``, else the shared cache on the mount, which already holds
-    MedGemma 1.5 4B (the folder the VLM configs' ``runtime.cache_dir`` names), so weill needs no download."""
+    """Weights folder: ``EVALSET_MODEL_CACHE`` (a local disk is much faster: the mount read CTs at ~11 MB/s
+    on weill and the model is 8.1 GB), else the shared cache on the mount, which holds MedGemma 1.5 4B."""
     import os
     return os.environ.get("EVALSET_MODEL_CACHE") or str(paths.mount_root() / paths.BUCKET / "vistabench/vlm/model_cache")
+
+
+def model_in_cache(cache: str, model_name: str) -> bool:
+    """True when the Hugging Face cache folder holds a snapshot of ``model_name`` with its weights."""
+    snaps = Path(cache) / ("models--" + model_name.replace("/", "--")) / "snapshots"
+    return any(any(s.glob("*.safetensors")) for s in snaps.glob("*")) if snaps.is_dir() else False
 
 
 def openai_content(m):
