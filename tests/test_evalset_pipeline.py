@@ -286,3 +286,77 @@ def test_answer_logprobs_reads_the_last_yes_no_token():
     got = json.loads(run.answer_logprobs(c))
     assert got["position"] == 4 and got["top"] == {" no": -0.1, " yes": -2.3}
     assert run.answer_logprobs(_Completion([(1, "maybe", {})])) is None
+
+
+# -- code-review fixes (2026-10-28) ------------------------------------------------------------------
+
+def test_score_rows_one_macro_per_step():
+    rows = []
+    for step, qs, right in ((1, ("a", "b"), True), (2, ("c", "d", "e"), False)):
+        for p in range(20):
+            for q in qs:
+                lab = p % 2
+                rows.append({"step": step, "recipe": "r", "arm": "ct", "question_id": q, "person_id": str(p),
+                             "label": lab, "pred": lab if right else 1 - lab, "refused": False})
+    t = score.score_rows(pd.DataFrame(rows), n_boot=50)
+    macro = t[t.question_id == "MACRO"].set_index("step")["balanced_accuracy"]
+    assert macro.to_dict() == {1: 1.0, 2: 0.0}
+
+
+def test_weighted_macro_with_unit_weights_equals_plain_macro():
+    rng = np.random.default_rng(3)
+    df = pd.DataFrame({"question_id": rng.choice(["a", "b", "c"], 300), "person_id": rng.integers(0, 60, 300).astype(str),
+                       "label": rng.integers(0, 2, 300)})
+    df["pred"] = [None if r < 0.1 else int(r < 0.6) for r in rng.random(300)]
+    qcode, uni = pd.factorize(df["question_id"])
+    correct = np.array([p is not None and p == t for p, t in zip(df["pred"], df["label"])], dtype=float)
+    got = score._weighted_macro_ba(qcode, df["label"].to_numpy(), correct, np.ones(300), len(uni))
+    assert got == pytest.approx(score.macro_balanced_accuracy(df))
+
+
+def test_disclaimer_next_to_a_readable_answer_is_not_a_refusal():
+    r = get("medgemma")
+    q = CARDS[2].questions[0]
+    row = {"case_id": "1", "person_id": "1", "split": "test", f"label__{q.task}": 1}
+    ok = run.result_row(r, 2, "ct", row, q, {"text": "I cannot provide a diagnosis; consult a radiologist. Final Answer: yes"})
+    no = run.result_row(r, 2, "ct", row, q, {"text": "I'm sorry, I can't interpret CT scans."})
+    assert ok["answer"] == "yes" and not ok["refused"]
+    assert no["answer"] is None and no["refused"]
+
+
+def test_check_counts_only_the_cases_and_questions_asked(mount):
+    from evalset import check
+    root = mount / "evalset"
+    labels = {f"label__{q.task}": 1 for q in CARDS[2].questions}
+    _samples(root, 2, [dict(case_id=f"x{i}", person_id=str(i), split="test", study="a", series="b", **labels)
+                       for i in range(3)])
+    r = get("argon", n_slices=4)
+    packs.render_many(r, 4, [("a", "b")], workers=1)
+    run.run(r, 2, "ct", "c", backend=FakeBackend(lambda m: "yes"))  # all 3 cases x 17 questions
+    assert check.check("argon", "c", [2], None, root=root)
+    assert check.check("argon", "c", [2], 2, root=root)  # fewer cases than the file holds: still a pass
+    assert check.check("argon", "c", [2], 2, questions=["lobe_rul"], root=root)
+    assert not check.check("argon", "missing", [2], 2, root=root)
+
+
+def test_run_with_nothing_to_ask_raises_and_writes_nothing(mount):
+    root = mount / "evalset"
+    _samples(root, 3, [dict(case_id="p", person_id="1", split="test", study="a", series="b", prior_study="c",
+                            prior_series="d", label__radiology_progression=1)])
+    r = get("astra", n_slices_pair=2)
+    packs.render_many(r, 2, [("a", "b"), ("c", "d")], workers=1)
+    with pytest.raises(RuntimeError):
+        run.run(r, 3, "ct", "e", backend=FakeBackend(lambda m: "yes"), questions=["not_a_question"])
+    assert not run.out_path("e", r, 3, "ct", root).exists()
+
+
+def test_gemini_cache_respects_spend_cap(tmp_path):
+    from models.vertex_gemini import VertexGeminiAdapter
+    a = VertexGeminiAdapter("gemini-4-argon", cache_dir=str(tmp_path))
+    a.configure({"explicit_cache": True, "max_spend_usd": 0.0})
+    a.response_cache.mkdir(parents=True)
+    calls = []
+    a._post = lambda *x, **k: calls.append(x) or ({}, None)
+    msgs = [{"parts": _parts(), "prefix_len": 2}, {"parts": _parts()[:2] + [{"type": "text", "text": "B?"}], "prefix_len": 2}]
+    out = a.ask_group(msgs, 100, ["yes", "no"])
+    assert calls == [] and all("spend cap" in o["error"] for o in out)

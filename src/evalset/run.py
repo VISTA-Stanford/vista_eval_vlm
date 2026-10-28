@@ -100,8 +100,10 @@ def result_row(recipe, step, arm, row, q, out):
            "step": step, "question_id": q.id, "task": q.task, "arm": arm, "recipe": recipe.name,
            "model": recipe.model_name, "label": None if label is None or (isinstance(label, float) and math.isnan(label)) else int(label),
            "response_text": text, "answer": parse_answer(text, recipe.answer_form) if not err else None,
-           "refused": is_refusal(text, err), "error": err, "cached": out.get("cached"),
+           # A refusal is a declined answer: disclaimer wording next to a readable yes/no is not one.
+           "refused": False, "error": err, "cached": out.get("cached"),
            "log_probs": out.get("log_probs")}
+    rec["refused"] = rec["answer"] is None and is_refusal(text, err)
     for k, v in usage.items():
         rec[f"usage_{k}"] = v
     return rec
@@ -145,6 +147,8 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
             rows += [result_row(recipe, step, arm, r, q, o) for (q, _), o in zip(qm, outs)]
     new = pd.DataFrame(rows)
     allrows = pd.concat([done, new], ignore_index=True) if len(done) else new
+    if allrows.empty:
+        raise RuntimeError(f"step {step} {arm}: no cases to ask and none answered before; nothing written")
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     allrows.to_csv(tmp, index=False)

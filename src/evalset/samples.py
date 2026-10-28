@@ -126,6 +126,9 @@ def step2(client) -> pd.DataFrame:
         from `{paths.table('per_ct_diagnostic_tasks')}`
         where task in unnest(@tasks) and split = 'test' and image_series_uid is not null""", {"tasks": tasks})
     lab = _pivot(rows, "ct_accession_number", tasks)
+    per_acc = rows.groupby("ct_accession_number")[["image_study_uid", "image_series_uid"]].nunique()
+    if (per_acc > 1).any(axis=None):
+        raise RuntimeError("step 2: an accession maps to more than one CT series; the scan would be ambiguous")
     scan = rows.drop_duplicates("ct_accession_number").set_index("ct_accession_number")
     df = lab.join(scan[["person_id", "split", "image_study_uid", "image_series_uid"]], how="inner")
     df = df.rename(columns={"image_study_uid": "study", "image_series_uid": "series"})
@@ -166,7 +169,7 @@ def step4(_client) -> pd.DataFrame:
         raise RuntimeError(f"step 4: expected the 334 board cases, found {len(a)}")
     a = a.rename(columns={"image_study_uid": "study", "image_series_uid": "series",
                           "prior_image_study_uid": "prior_study", "prior_image_series_uid": "prior_series"})
-    a["label__progression_assessment_answer"] = a["label"].astype(int)
+    a["label__progression_assessment_answer"] = pd.to_numeric(a["label"]).astype(int)
     if not a["label__progression_assessment_answer"].isin([0, 1]).all():
         raise RuntimeError("step 4: a board case without a scored answer")
     a["split"] = a["split"].fillna("")

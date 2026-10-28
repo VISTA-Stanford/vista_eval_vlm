@@ -13,27 +13,35 @@ from collections import Counter
 
 import pandas as pd
 
+from evalset import packs, samples
 from evalset.cards import CARDS
 from evalset.recipes import get
 from evalset.run import CHOICES, out_path
 
 
-def check(recipe_name: str, run: str, steps, limit: int, questions=None) -> bool:
+def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, root=None) -> bool:
+    """Every (case, question) this invocation asked has a parsed answer. Only those rows are counted, so
+    earlier rows in the same answers file (another limit or question set) neither help nor hurt."""
     recipe = get(recipe_name)
     ok = True
     for step in steps:
         card = CARDS[step]
-        n_q = len([q for q in card.questions if not questions or q.id in questions])
-        if n_q == 0:
+        qids = {q.id for q in card.questions if not questions or q.id in questions}
+        if not qids:
             continue
+        cases = samples.load(step, root)
+        if limit:
+            cases = packs.check_cases(cases, step, limit)
+        case_ids = set(cases["case_id"].astype(str))
         for arm in card.arms:
-            want = limit * n_q
-            p = out_path(run, recipe, step, arm)
+            want = len(case_ids) * len(qids)
+            p = out_path(run, recipe, step, arm, root)
             if not p.exists():
                 print(f"FAIL step {step} {arm}: no answers file")
                 ok = False
                 continue
             df = pd.read_csv(p, dtype={"case_id": str})
+            df = df[df["case_id"].isin(case_ids) & df["question_id"].isin(qids)]
             parsed = int(df["answer"].isin(CHOICES).sum())
             tok = {c.replace("usage_", ""): int(pd.to_numeric(df[c], errors="coerce").fillna(0).sum())
                    for c in df.columns if c.startswith("usage_") and "tokens" in c}
@@ -53,7 +61,7 @@ def main() -> int:
     ap.add_argument("--recipe", required=True)
     ap.add_argument("--run", required=True)
     ap.add_argument("--steps", type=int, nargs="+", default=[1, 2, 3, 4])
-    ap.add_argument("--limit", type=int, required=True)
+    ap.add_argument("--limit", type=int, default=None, help="first N cases per step (default: whole sample)")
     ap.add_argument("--questions", nargs="+", default=None)
     a = ap.parse_args()
     ok = check(a.recipe, a.run, a.steps, a.limit, a.questions)

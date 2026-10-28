@@ -257,11 +257,12 @@ class VertexGeminiAdapter(BaseVLMAdapter):
 
     def _one(self, msg, max_new_tokens, choices, cached_content=None):
         if "parts" in msg:
-            body = build_parts_request(msg["parts"], choices, max_new_tokens, self.media_resolution,
-                                       self.thinking_level, cached_content, msg.get("prefix_len", 0))
             # The answer cache keys on the logical request (all parts), not on the cache object's name.
             key_body = build_parts_request(msg["parts"], choices, max_new_tokens, self.media_resolution,
                                            self.thinking_level)
+            body = key_body if not cached_content else build_parts_request(
+                msg["parts"], choices, max_new_tokens, self.media_resolution, self.thinking_level,
+                cached_content, msg.get("prefix_len", 0))
             n_images = sum(1 for p in msg["parts"] if p["type"] == "image")
         else:
             body = build_request(msg["question"], msg["images"], choices, max_new_tokens,
@@ -329,12 +330,19 @@ class VertexGeminiAdapter(BaseVLMAdapter):
     def ask_group(self, msgs, max_new_tokens, choices):
         """Questions that share one image prefix (one scan). With ``explicit_cache`` on and two or more
         unanswered questions, the prefix goes into a context cache first and is deleted after."""
-        todo = [m for m in msgs if not self.is_answered(m, max_new_tokens, choices)]
         name = None
-        if self.explicit_cache and len(todo) >= 2 and msgs[0].get("prefix_len"):
-            name, _, err = self.create_cache(list(msgs[0]["parts"][: msgs[0]["prefix_len"]]))
-            if err:
-                return [{"text": "", "error": f"context cache: {err}"} for _ in msgs]
+        if self.explicit_cache and msgs[0].get("prefix_len"):
+            todo = [m for m in msgs if not self.is_answered(m, max_new_tokens, choices)]
+            if len(todo) >= 2:
+                with self._lock:
+                    over = self.max_spend_usd is not None and self.spent_usd >= float(self.max_spend_usd)
+                if over:
+                    return [{"text": "", "error": f"spend cap ${self.max_spend_usd} reached (spent ${self.spent_usd:.2f})"}
+                            for _ in msgs]
+                # Storage (per token-hour, about 15 minutes here) is not counted in spent_usd.
+                name, _, err = self.create_cache(list(msgs[0]["parts"][: msgs[0]["prefix_len"]]))
+                if err:
+                    return [{"text": "", "error": f"context cache: {err}"} for _ in msgs]
         try:
             with ThreadPoolExecutor(max_workers=max(1, self.concurrency)) as ex:
                 return list(ex.map(lambda m: self._one(m, max_new_tokens, choices, name), msgs))

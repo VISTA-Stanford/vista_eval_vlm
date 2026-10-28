@@ -77,15 +77,33 @@ def macro_balanced_accuracy(rows: pd.DataFrame) -> float:
     return float(np.nanmean(vals)) if vals else float("nan")
 
 
-def patient_bootstrap(rows: pd.DataFrame, stat, n_boot: int = 1000, seed: int = 0, alpha: float = 0.05):
-    """Percentile interval of ``stat(rows)`` resampling patients (``person_id``) with replacement."""
+def _weighted_macro_ba(qcode, label, correct, w, nq):
+    """Mean over questions of balanced accuracy, each row weighted by ``w`` (classes absent -> skipped)."""
+    idx = qcode * 2 + label
+    den = np.bincount(idx, weights=w, minlength=2 * nq).reshape(nq, 2)
+    num = np.bincount(idx, weights=w * correct, minlength=2 * nq).reshape(nq, 2)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rec = np.where(den > 0, num / den, np.nan)
+        ba = np.nanmean(rec, axis=1)
+    return float(np.nanmean(ba)) if np.isfinite(ba).any() else float("nan")
+
+
+def patient_bootstrap(rows: pd.DataFrame, n_boot: int = 1000, seed: int = 0, alpha: float = 0.05):
+    """Percentile interval of the macro balanced accuracy over ``rows``' questions (one question: its
+    balanced accuracy), resampling patients (``person_id``) with replacement: all of a patient's rows
+    move together. Each draw reweights rows by how often their patient was drawn."""
+    pcode, _ = pd.factorize(rows["person_id"])
+    qcode, q_uni = pd.factorize(rows["question_id"])
+    label = rows["label"].astype(int).to_numpy()
+    pred = rows["pred"].to_numpy(dtype=object)
+    correct = np.array([p is not None and not (isinstance(p, float) and np.isnan(p)) and int(p) == t
+                        for p, t in zip(pred, label)], dtype=float)
+    n_p, nq = int(pcode.max()) + 1 if len(pcode) else 0, len(q_uni)
     rng = np.random.default_rng(seed)
-    groups = {p: g for p, g in rows.groupby("person_id", sort=True)}
-    ids = list(groups)
     draws = []
     for _ in range(n_boot):
-        pick = rng.choice(len(ids), len(ids))
-        draws.append(stat(pd.concat([groups[ids[i]] for i in pick], ignore_index=True)))
+        counts = np.bincount(rng.integers(0, n_p, n_p), minlength=n_p).astype(float)
+        draws.append(_weighted_macro_ba(qcode, label, correct, counts[pcode], nq))
     return float(np.nanpercentile(draws, 100 * alpha / 2)), float(np.nanpercentile(draws, 100 * (1 - alpha / 2)))
 
 
@@ -126,23 +144,26 @@ def probe_predictions(per_example: pd.DataFrame, task: str, key: str = "accessio
 # -- tables ---------------------------------------------------------------------------------------
 
 def score_rows(df: pd.DataFrame, n_boot: int = 1000, seed: int = 0) -> pd.DataFrame:
-    """One row per (recipe, arm, question) plus a macro row per (recipe, arm) when there are 2+ questions.
+    """One row per (step, recipe, arm, question) plus a macro row per (step, recipe, arm) when the step
+    has 2+ questions: each step's headline averages its own questions only.
 
-    ``df`` columns: recipe, arm, question_id, person_id, label (0/1), pred (0/1/None), refused (bool)."""
+    ``df`` columns: step, recipe, arm, question_id, person_id, label (0/1), pred (0/1/None), refused (bool)."""
     out = []
-    for (recipe, arm), g in df.groupby(["recipe", "arm"], sort=True):
+    if "step" not in df.columns:
+        df = df.assign(step=0)
+    for (step, recipe, arm), g in df.groupby(["step", "recipe", "arm"], sort=True):
         for qid, q in g.groupby("question_id", sort=True):
             m = forced_answer_metrics(q["label"].astype(int).tolist(), list(q["pred"]), [0, 1])
-            lo, hi = patient_bootstrap(q, lambda r: balanced_accuracy(r["label"].astype(int), r["pred"]), n_boot, seed)
-            out.append({"recipe": recipe, "arm": arm, "question_id": qid, "n": m["n"],
+            lo, hi = patient_bootstrap(q, n_boot, seed)
+            out.append({"step": step, "recipe": recipe, "arm": arm, "question_id": qid, "n": m["n"],
                         "n_yes": int((q["label"] == 1).sum()), "n_no": int((q["label"] == 0).sum()),
                         "balanced_accuracy": m.get("balanced_accuracy"), "ba_lo": lo, "ba_hi": hi,
                         "sensitivity": m.get("sensitivity"), "specificity": m.get("specificity"),
                         "unparseable_rate": float(q["pred"].isna().mean()),
                         "refusal_rate": float(q["refused"].astype(bool).mean()), "chance": 0.5})
         if g["question_id"].nunique() > 1:
-            lo, hi = patient_bootstrap(g, macro_balanced_accuracy, n_boot, seed)
-            out.append({"recipe": recipe, "arm": arm, "question_id": "MACRO", "n": len(g),
+            lo, hi = patient_bootstrap(g, n_boot, seed)
+            out.append({"step": step, "recipe": recipe, "arm": arm, "question_id": "MACRO", "n": len(g),
                         "balanced_accuracy": macro_balanced_accuracy(g), "ba_lo": lo, "ba_hi": hi,
                         "unparseable_rate": float(g["pred"].isna().mean()),
                         "refusal_rate": float(g["refused"].astype(bool).mean()), "chance": 0.5})

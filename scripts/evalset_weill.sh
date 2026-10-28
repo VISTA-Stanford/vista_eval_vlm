@@ -34,7 +34,5 @@ SPEND_ARG=(); [ -n "${MAX_SPEND:-}" ] && SPEND_ARG=(--max-spend "$MAX_SPEND")
 Q_ARG=(); [ -n "${QUESTIONS:-}" ] && read -r -a QS <<< "$QUESTIONS" && Q_ARG=(--questions "${QS[@]}")
 # shellcheck disable=SC2086
 "$PY" -m evalset.run --recipe "$RECIPE" --step $STEPS --run "$RUN" ${LIMIT_ARG[@]+"${LIMIT_ARG[@]}"} ${SPEND_ARG[@]+"${SPEND_ARG[@]}"} ${Q_ARG[@]+"${Q_ARG[@]}"}
-if [ -n "${LIMIT:-}" ]; then
-  # shellcheck disable=SC2086
-  "$PY" -m evalset.check --recipe "$RECIPE" --run "$RUN" --steps $STEPS --limit "$LIMIT" ${Q_ARG[@]+"${Q_ARG[@]}"}
-fi
+# shellcheck disable=SC2086
+"$PY" -m evalset.check --recipe "$RECIPE" --run "$RUN" --steps $STEPS ${LIMIT_ARG[@]+"${LIMIT_ARG[@]}"} ${Q_ARG[@]+"${Q_ARG[@]}"}
