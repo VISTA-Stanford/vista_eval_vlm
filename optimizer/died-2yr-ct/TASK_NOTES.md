@@ -13,9 +13,10 @@ at each horizon, averaged. **Failed session** and **Calibration**: no longer app
 wrong at both horizons; there are no probabilities to calibrate). **Per-patient cap**: $0.50. **Optimizer web search**: off; the optimizer asks the
 engine's search proxy, which refuses patient-specific questions and logs every request (Phil 2026-10-22).
 **Route**: one setting for all sessions, the seat by default (engine `isolation.route`; token at
-`~/.config/alo/oauth_token`). No Vertex-only service account can be made, so Vertex is future work (Phil 2026-10-28);
-the code keeps it: `ALO_ROUTE=vertex` mounts only a Vertex-only key at `~/.config/alo/vertex-sa.json`.
-Engine pin: agentic-label-opt main 9aee75f, shared with died-2yr-ehr; Claude Code 2.1.307. The finished run
+`~/.config/alo/oauth_token`). `ALO_ROUTE=vertex` puts every session on Vertex holding the machine's `optimizer`
+login (no service account can be made); that login can read the labels, so the network block is the guard and the
+cost check runs the engine's after-run audit as the evidence (Phil 2026-10-28).
+Engine pin: agentic-label-opt main f784912, shared with died-2yr-ehr; Claude Code 2.1.307. The finished run
 `first` (probability, VAL AUROC 0.776) stays as history. **Real runs** (Phil 2026-10-28): 5 rounds, TRAIN 100 every
 round, VAL 200, in their own work folder (`alo-tasks/died-2yr-ct-yesno`, run `yesno-r1`); the chosen version and
 the seed are then scored once on all 811 VAL patients with `run.py score-val --tag <tag>`. Cost check: `bash scripts/cost_check.sh` (paid, ~$5,
