@@ -269,6 +269,7 @@ class VertexGeminiAdapter(BaseVLMAdapter):
                                  self.media_resolution, self.thinking_level)
             key_body, n_images = body, len(msg["images"])
         path = self._cache_path(key_body)
+        key = path.stem  # the request hash: links an answer row to its saved reply
         cached = path.exists()
         if cached:
             resp = json.loads(path.read_text())
@@ -281,7 +282,8 @@ class VertexGeminiAdapter(BaseVLMAdapter):
                 mean = self.spent_usd / self._paid_calls if self._paid_calls else 0.25
                 committed = self.spent_usd + (self._inflight + 1) * mean
                 if self.max_spend_usd is not None and committed > float(self.max_spend_usd):
-                    return {"text": "", "error": f"spend cap ${self.max_spend_usd} reached (spent ${self.spent_usd:.2f}, {self._inflight} calls in flight)"}
+                    return {"text": "", "error": f"spend cap ${self.max_spend_usd} reached (spent ${self.spent_usd:.2f}, {self._inflight} calls in flight)",
+                            "request_key": key}
                 self._inflight += 1
             try:
                 resp, err = self._post("generateContent", body)
@@ -289,7 +291,7 @@ class VertexGeminiAdapter(BaseVLMAdapter):
                 with self._lock:
                     self._inflight -= 1
             if err:
-                return {"text": "", "error": err}
+                return {"text": "", "error": err, "request_key": key}
         text, usage, err = parse_response(resp, choices)
         if not cached and err is None:
             # Cache only a readable answer, so an unreadable one is asked again on the next run.
@@ -303,9 +305,11 @@ class VertexGeminiAdapter(BaseVLMAdapter):
                 self._paid_calls += 1
         usage["image_count"] = n_images
         usage = {k: usage.get(k) for k in (PARTS_USAGE_KEYS if "parts" in msg else USAGE_KEYS)}
+        # ``raw`` (the full reply body) and ``request_key`` are for the eval set's attempt log; run_bq ignores them.
         if err:
-            return {"text": "", "error": err, "usage": usage, "cached": cached}
-        return {"text": text, "cumulative_logprob": None, "log_probs": None, "usage": usage, "cached": cached}
+            return {"text": "", "error": err, "usage": usage, "cached": cached, "request_key": key, "raw": resp}
+        return {"text": text, "cumulative_logprob": None, "log_probs": None, "usage": usage, "cached": cached,
+                "request_key": key, "raw": resp}
 
     # -- explicit context cache (eval set: one cache per scan, images first) ------------------------
     def is_answered(self, msg, max_new_tokens, choices):

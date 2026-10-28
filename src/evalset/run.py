@@ -91,7 +91,31 @@ ARGON_PRICES = {"input": 2.0, "cached": 0.10, "output": 10.0, "long_context_over
 
 # -- rows -------------------------------------------------------------------------------------------
 
-def result_row(recipe, step, arm, row, q, out):
+def message_key(m) -> str:
+    """Fingerprint of exactly what the model was sent (every text part, every image's hash, in order)."""
+    import hashlib
+    h = hashlib.sha256()
+    for p in m.parts:
+        h.update(b"T" + p["text"].encode() if p["type"] == "text" else b"I" + hashlib.sha256(p["data"]).digest())
+    return h.hexdigest()
+
+
+def p_yes(log_probs):
+    """P(yes) from the final answer token's top log-probabilities (open models): the yes-token mass over
+    yes + no, each summed over spellings (" yes", "Yes", ...). None when neither appears."""
+    if not isinstance(log_probs, str) or not log_probs:
+        return None
+    top = json.loads(log_probs).get("top", {})
+    mass = {"yes": 0.0, "no": 0.0}
+    for tok, lp in top.items():
+        k = tok.strip().lower().strip("*.'\"")
+        if k in mass:
+            mass[k] += math.exp(lp)
+    tot = mass["yes"] + mass["no"]
+    return mass["yes"] / tot if tot > 0 else None
+
+
+def result_row(recipe, step, arm, row, q, out, m=None):
     text = out.get("text") or ""
     err = out.get("error")
     label = row.get(f"label__{q.task}")
@@ -102,7 +126,8 @@ def result_row(recipe, step, arm, row, q, out):
            "response_text": text, "answer": parse_answer(text, recipe.answer_form) if not err else None,
            # A refusal is a declined answer: disclaimer wording next to a readable yes/no is not one.
            "refused": False, "error": err, "cached": out.get("cached"),
-           "log_probs": out.get("log_probs")}
+           "log_probs": out.get("log_probs"), "p_yes": p_yes(out.get("log_probs")),
+           "message_key": message_key(m) if m is not None else None, "request_key": out.get("request_key")}
     rec["refused"] = rec["answer"] is None and is_refusal(text, err)
     for k, v in usage.items():
         rec[f"usage_{k}"] = v
@@ -139,12 +164,16 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
     if hasattr(backend, "ask_many"):  # open models: one batch over every case (prefix caching inside)
         outs = backend.ask_many([m for _, qm in todo for _, m in qm])
         it = iter(outs)
-        for r, qm in todo:
-            rows += [result_row(recipe, step, arm, r, q, next(it)) for q, _ in qm]
+        pairs = [(r, q, m, next(it)) for r, qm in todo for q, m in qm]
     else:
+        pairs = []
         for r, qm in todo:
             outs = backend.ask_case([m for _, m in qm])
-            rows += [result_row(recipe, step, arm, r, q, o) for (q, _), o in zip(qm, outs)]
+            pairs += [(r, q, m, o) for (q, m), o in zip(qm, outs)]
+    rows = [result_row(recipe, step, arm, r, q, o, m) for r, q, m, o in pairs]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    log_attempts(path, rows, [o for _, _, _, o in pairs])
+    log_run(path, recipe, step, arm, limit, questions, rows)
     new = pd.DataFrame(rows)
     allrows = pd.concat([done, new], ignore_index=True) if len(done) else new
     if allrows.empty:
@@ -154,6 +183,38 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
     allrows.to_csv(tmp, index=False)
     tmp.replace(path)
     return allrows
+
+
+def log_attempts(path: Path, rows, outs):
+    """Append every attempt, failed ones included, with the model's full reply body, to
+    ``step<N>_<arm>.attempts.jsonl``. Never rewritten: the answers file keeps the latest readable answer
+    per question, this log keeps everything ever asked."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with path.with_suffix(".attempts.jsonl").open("a", encoding="utf-8") as f:
+        for rec, o in zip(rows, outs):
+            f.write(json.dumps({**rec, "time": now, "raw": o.get("raw")}, default=str) + "\n")
+
+
+def log_run(path: Path, recipe: Recipe, step: int, arm: str, limit, questions, rows):
+    """Append one line per invocation to ``step<N>_<arm>.runs.jsonl``: when, where, which code, the full
+    recipe, the image pack, what was asked and how many answers were read."""
+    import dataclasses
+    import socket
+    import subprocess
+    from datetime import datetime, timezone
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                            cwd=Path(__file__).parent).stdout.strip()
+    dirty = bool(subprocess.run(["git", "status", "--porcelain", "--", "."], capture_output=True, text=True,
+                                cwd=Path(__file__).parent).stdout.strip())
+    card = CARDS[step]
+    rec = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "host": socket.gethostname(),
+           "commit": commit, "uncommitted_changes": dirty, "step": step, "arm": arm, "limit": limit,
+           "questions": questions, "recipe": dataclasses.asdict(recipe),
+           "pack": recipe.pack_id(recipe.slices_per_scan(len(card.scan_names))) if arm == "ct" else None,
+           "n_asked": len(rows), "n_parsed": sum(r["answer"] in CHOICES for r in rows)}
+    with path.with_suffix(".runs.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, default=str) + "\n")
 
 
 # -- open models (vLLM, weill) ------------------------------------------------------------------------

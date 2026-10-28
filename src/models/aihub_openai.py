@@ -220,11 +220,13 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         if path.exists():
             rec = json.loads(path.read_text())
             return {"text": rec["answer"], "cumulative_logprob": None, "log_probs": None,
-                    "usage": {k: rec["usage"].get(k) for k in USAGE_KEYS}, "cached": True}
+                    "usage": {k: rec["usage"].get(k) for k in USAGE_KEYS}, "cached": True,
+                    "request_key": key, "raw": rec.get("raw")}
         with self._lock:
             if self.max_total_tokens is not None and self.tokens_used >= int(self.max_total_tokens):
-                return {"text": "", "error": f"token cap {self.max_total_tokens} reached ({self.tokens_used} used)"}
-        answer, usage, err = None, {}, None
+                return {"text": "", "error": f"token cap {self.max_total_tokens} reached ({self.tokens_used} used)",
+                        "request_key": key}
+        answer, usage, err, text = None, {}, None, None
         t0 = time.monotonic()  # wall time for this scan, retries included
         for attempt in range(self.max_retries + 1):
             status, ctype, text = self._post(data)
@@ -242,15 +244,20 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         usage = {k: usage.get(k) for k in USAGE_KEYS}
         with self._lock:
             self.tokens_used += int(usage.get("total_tokens") or 0)
+        try:  # the full reply body, kept for re-reading later (eval-set attempt log and the cache)
+            raw = json.loads(text) if text else None
+        except (json.JSONDecodeError, TypeError):
+            raw = (text or "")[:20000]
         if err:
             if "rejected" in err:
                 err += f" — request was {len(data):,} bytes"
-            return {"text": "", "error": err, "usage": usage, "cached": False}
+            return {"text": "", "error": err, "usage": usage, "cached": False, "request_key": key, "raw": raw}
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"answer": answer, "usage": usage, "model": self.model_name}))
+        tmp.write_text(json.dumps({"answer": answer, "usage": usage, "model": self.model_name, "raw": raw}))
         tmp.replace(path)
-        return {"text": answer, "cumulative_logprob": None, "log_probs": None, "usage": usage, "cached": False}
+        return {"text": answer, "cumulative_logprob": None, "log_probs": None, "usage": usage, "cached": False,
+                "request_key": key, "raw": raw}
 
     def infer(self, model, processor, inputs, max_new_tokens, constrained_choices=None):
         msgs = inputs if isinstance(inputs, list) else [inputs]

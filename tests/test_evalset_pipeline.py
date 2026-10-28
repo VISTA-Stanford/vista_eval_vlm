@@ -360,3 +360,36 @@ def test_gemini_cache_respects_spend_cap(tmp_path):
     msgs = [{"parts": _parts(), "prefix_len": 2}, {"parts": _parts()[:2] + [{"type": "text", "text": "B?"}], "prefix_len": 2}]
     out = a.ask_group(msgs, 100, ["yes", "no"])
     assert calls == [] and all("spend cap" in o["error"] for o in out)
+
+
+# -- raw results kept for rescoring (2026-10-28) -------------------------------------------------------
+
+def test_every_attempt_is_logged_and_the_run_recorded(mount):
+    root = mount / "evalset"
+    _samples(root, 3, [dict(case_id="p", person_id="1", split="test", study="a", series="b", prior_study="c",
+                            prior_series="d", label__radiology_progression=1)])
+    r = get("astra", n_slices_pair=2)
+    packs.render_many(r, 2, [("a", "b"), ("c", "d")], workers=1)
+
+    class Raw(FakeBackend):
+        def ask_case(self, msgs):
+            return [{**o, "raw": {"body": o["text"]}, "request_key": "k"} for o in super().ask_case(msgs)]
+    run.run(r, 3, "ct", "raw", backend=Raw(lambda m: "maybe"))   # unreadable -> asked again next time
+    res = run.run(r, 3, "ct", "raw", backend=Raw(lambda m: "yes"))
+    p = run.out_path("raw", r, 3, "ct", root)
+    attempts = [json.loads(x) for x in p.with_suffix(".attempts.jsonl").read_text().splitlines()]
+    assert [a["response_text"] for a in attempts] == ["maybe", "yes"]
+    assert attempts[0]["raw"] == {"body": "maybe"} and attempts[0]["answer"] is None
+    assert attempts[0]["message_key"] == attempts[1]["message_key"] == res.iloc[0]["message_key"]
+    assert res.iloc[0]["answer"] == "yes" and res.iloc[0]["request_key"] == "k" and len(res) == 1
+    runs = [json.loads(x) for x in p.with_suffix(".runs.jsonl").read_text().splitlines()]
+    assert len(runs) == 2 and runs[1]["n_parsed"] == 1 and runs[0]["n_parsed"] == 0
+    assert runs[0]["pack"] == r.pack_id(2) and runs[0]["recipe"]["name"] == "astra" and runs[0]["commit"]
+
+
+def test_p_yes_sums_spellings_and_normalises():
+    import math
+    lp = json.dumps({"position": 3, "top": {" no": math.log(0.6), " yes": math.log(0.15), "Yes": math.log(0.05),
+                                            " maybe": math.log(0.2)}})
+    assert run.p_yes(lp) == pytest.approx(0.2 / 0.8)
+    assert run.p_yes(None) is None and run.p_yes(json.dumps({"top": {" maybe": -0.1}})) is None
