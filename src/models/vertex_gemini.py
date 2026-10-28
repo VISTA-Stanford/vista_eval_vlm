@@ -348,8 +348,17 @@ class VertexGeminiAdapter(BaseVLMAdapter):
                 if err:
                     return [{"text": "", "error": f"context cache: {err}"} for _ in msgs]
         try:
+            if name is None and len(msgs) > 1 and msgs[0].get("prefix_len"):
+                # No explicit cache: Google's implicit cache serves the shared images to later questions only once
+                # an earlier request with that prefix has finished, so the first question goes alone. Measured
+                # 10-28 on Argon: questions 2-4 read ~53k of 55k prompt tokens from cache; sent all at once, none.
+                first = self._one(msgs[0], max_new_tokens, choices, None)
+                rest = msgs[1:]
+            else:
+                first, rest = None, msgs
             with ThreadPoolExecutor(max_workers=max(1, self.concurrency)) as ex:
-                return list(ex.map(lambda m: self._one(m, max_new_tokens, choices, name), msgs))
+                out = list(ex.map(lambda m: self._one(m, max_new_tokens, choices, name), rest))
+            return ([first] if first is not None else []) + out
         finally:
             if name:
                 self.delete_cache(name)

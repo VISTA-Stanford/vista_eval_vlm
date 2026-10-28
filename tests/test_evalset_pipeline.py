@@ -403,3 +403,32 @@ def test_model_in_cache_needs_weights(tmp_path):
     assert run.model_in_cache(str(tmp_path), "google/medgemma-1.5-4b-it")
     assert run.model_in_cache("/mnt/su-vista-uscentral1/vistabench/vlm/model_cache", "google/medgemma-1.5-4b-it") \
         or not __import__("os").path.isdir("/mnt/su-vista-uscentral1")
+
+
+def test_gemini_sends_a_scans_first_question_alone_without_explicit_cache(tmp_path):
+    """Implicit caching needs the prefix to exist before the rest arrive (measured on Argon 10-28)."""
+    import threading
+    import time as _t
+    from models.vertex_gemini import VertexGeminiAdapter
+    a = VertexGeminiAdapter("gemini-4-argon", cache_dir=str(tmp_path))
+    a.configure({"explicit_cache": False, "concurrency": 8})
+    a.response_cache.mkdir(parents=True)
+    log, lock = [], threading.Lock()
+
+    def fake_post(method, body, url=None, http="POST"):
+        q = body["contents"][0]["parts"][-1]["text"]
+        with lock:
+            log.append(("start", q))
+        _t.sleep(0.05)
+        with lock:
+            log.append(("done", q))
+        return {"candidates": [{"content": {"parts": [{"text": "yes"}]}}], "usageMetadata": {}}, None
+    a._post = fake_post
+    msgs = []
+    for q in ("A?", "B?", "C?"):
+        p = _parts()
+        p[-1] = {"type": "text", "text": q}
+        msgs.append({"parts": p, "prefix_len": 2})
+    out = a.ask_group(msgs, 100, ["yes", "no"])
+    assert [o["text"] for o in out] == ["yes", "yes", "yes"]
+    assert log[0] == ("start", "A?") and log[1] == ("done", "A?")  # the rest only start after the first finished

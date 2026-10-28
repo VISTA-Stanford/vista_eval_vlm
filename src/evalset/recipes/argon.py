@@ -10,8 +10,10 @@ and Google's media-resolution and image-understanding pages:
 Windows: MedGemma's set (guidance, cross-model points). JPEG at quality 95.
 
 No explicit context cache: Vertex answers "Model `gemini-4-argon` does not support explicit context
-caching" (HTTP 400, measured 2026-10-28 from phil-sllm-01, $0), and implicit caching did not fire on
-10-27. Each question is a full call. The adapter's cache path stays for models that support it.
+caching" (HTTP 400, measured 2026-10-28, $0; Google's docs: not supported "for Gemini 4 Argon and onward").
+Google's implicit cache does work once the first question on a scan has finished: questions 2-4 then read
+~53k of 55k prompt tokens from cache (measured 10-28, $0.14 for 4 calls). The adapter sends each scan's
+first question alone, then the rest (``VertexGeminiAdapter.ask_group``). Sent all at once, none hit.
 """
 
 from .base import Recipe
