@@ -76,6 +76,7 @@ def render_scan(recipe: Recipe, n: int, study, series, root: Path | None = None)
         if size is None:
             size = list(Image.open(io.BytesIO(data)).size)
     manifest = {"study": str(study), "series": str(series), "n_slices_in_volume": len(stack),
+                "code_commit": _commit(),
                 "display_indices": display, "voxel_indices": [stack.voxel_index(k) for k in display],
                 "spacing_mm": list(stack.spacing_mm), "windows": list(map(list, windows.RGB_SETS[recipe.windows])),
                 "size": size, "files": files, "sha256": hashes, "render": recipe.render_key(n)}
@@ -83,6 +84,12 @@ def render_scan(recipe: Recipe, n: int, study, series, root: Path | None = None)
     tmp.write_text(json.dumps(manifest, indent=1))
     tmp.replace(mf)  # written last: a scan with a manifest is complete
     return manifest
+
+
+def _commit() -> str:
+    import subprocess
+    return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                          cwd=Path(__file__).parent).stdout.strip()
 
 
 def load(recipe: Recipe, n: int, study, series, root: Path | None = None) -> list[bytes]:
@@ -138,9 +145,12 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None, help="first N cases of the step (check runs)")
     ap.add_argument("--n-slices", type=int, default=None, help="override the recipe's slice count")
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--arms", default=None, help="arms YAML (see evalset.arms); with --variant")
+    ap.add_argument("--variant", default=None)
     args = ap.parse_args()
     os.environ.setdefault("OMP_NUM_THREADS", "1")
-    recipe = get(args.recipe)
+    from evalset.run import recipe_for
+    recipe, _ = recipe_for(args.recipe, args.arms, args.variant)
     n_scans = len(CARDS[args.step].scan_names)
     n = args.n_slices or recipe.slices_per_scan(n_scans)
     df = samples.load(args.step)

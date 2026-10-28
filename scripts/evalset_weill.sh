@@ -10,6 +10,7 @@
 # Env: RECIPE (medgemma | astra), RUN (run name), LIMIT (cases per step; unset = the whole sample),
 # STEPS (default "1 2 3 4"), QUESTIONS (space-separated question ids; default all), MAX_SPEND (USD cap, Astra), VISTA_VENV (default .venv for medgemma, .venv-api
 # for astra), CUDA_VISIBLE_DEVICES (MedGemma's GPU, default 0), EVALSET_MOUNT_ROOT (default weill's).
+# ARMS + VARIANT: a recipe variant from an arms YAML (src/evalset/arms.py), e.g. ARMS=../configs/evalset/x.yaml.
 # EVALSET_MODEL_CACHE: MedGemma's weights folder (default: the mount's shared cache, slow to read; a local
 # folder that already has the model loads offline, an empty one downloads once with HF_TOKEN set).
 # Spec: planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md (on the mount).
@@ -34,7 +35,8 @@ cd src
 LIMIT_ARG=(); [ -n "${LIMIT:-}" ] && LIMIT_ARG=(--limit "$LIMIT")
 SPEND_ARG=(); [ -n "${MAX_SPEND:-}" ] && SPEND_ARG=(--max-spend "$MAX_SPEND")
 Q_ARG=(); [ -n "${QUESTIONS:-}" ] && read -r -a QS <<< "$QUESTIONS" && Q_ARG=(--questions "${QS[@]}")
+V_ARG=(); [ -n "${ARMS:-}" ] && V_ARG=(--arms "$ARMS" --variant "${VARIANT:?set VARIANT with ARMS}")
 # shellcheck disable=SC2086
-"$PY" -m evalset.run --recipe "$RECIPE" --step $STEPS --run "$RUN" ${LIMIT_ARG[@]+"${LIMIT_ARG[@]}"} ${SPEND_ARG[@]+"${SPEND_ARG[@]}"} ${Q_ARG[@]+"${Q_ARG[@]}"}
+"$PY" -m evalset.run --recipe "$RECIPE" --step $STEPS --run "$RUN" ${LIMIT_ARG[@]+"${LIMIT_ARG[@]}"} ${SPEND_ARG[@]+"${SPEND_ARG[@]}"} ${Q_ARG[@]+"${Q_ARG[@]}"} ${V_ARG[@]+"${V_ARG[@]}"}
 # shellcheck disable=SC2086
-"$PY" -m evalset.check --recipe "$RECIPE" --run "$RUN" --steps $STEPS ${LIMIT_ARG[@]+"${LIMIT_ARG[@]}"} ${Q_ARG[@]+"${Q_ARG[@]}"}
+"$PY" -m evalset.check --recipe "$RECIPE" --run "$RUN" --steps $STEPS ${LIMIT_ARG[@]+"${LIMIT_ARG[@]}"} ${Q_ARG[@]+"${Q_ARG[@]}"} ${V_ARG[@]+"${V_ARG[@]}"}

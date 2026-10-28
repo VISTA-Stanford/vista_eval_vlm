@@ -453,3 +453,49 @@ def test_open_model_batches_first_questions_then_the_rest(mount):
     marks = {"lobe_rul": "right upper lobe", "lobe_rml": "right middle lobe", "pneumonitis": "pneumonitis"}
     for _, row in res.iterrows():  # every answer sits on the question that produced it
         assert marks[row["question_id"]] in row["response_text"]
+
+
+# -- arms files and version records (2026-10-28) -------------------------------------------------------
+
+def test_arms_variant_overrides_and_names_output(tmp_path):
+    from evalset import arms
+    f = tmp_path / "a.yaml"
+    f.write_text("variants:\n  a25:\n    recipe: argon\n    n_slices: 25\n    settings: {thinking_level: medium}\n"
+                 "  bad:\n    n_slicez: 3\n")
+    over, prov = arms.load(f, "a25")
+    r = arms.apply(get("argon"), "a25", over)
+    assert r.name == "argon__a25" and r.n_slices == 25 and r.n_slices_pair == 25
+    assert r.setting("thinking_level") == "medium" and r.setting("media_resolution") == "MEDIA_RESOLUTION_HIGH"
+    assert r.pack_id(25) == get("argon").pack_id(25)  # same pixels as any 25-slice frontier render
+    assert prov["variant"] == "a25" and len(prov["arms_sha256"]) == 64
+    with pytest.raises(ValueError):
+        arms.load(f, "bad")
+    with pytest.raises(ValueError):
+        arms.apply(get("astra"), "a25", over)
+    with pytest.raises(KeyError):
+        arms.load(f, "nope")
+
+
+def test_run_record_names_variant_versions_and_model(mount):
+    from evalset import arms
+    root = mount / "evalset"
+    _samples(root, 3, [dict(case_id="p", person_id="1", split="test", study="a", series="b", prior_study="c",
+                            prior_series="d", label__radiology_progression=0)])
+    f = mount / "arms.yaml"
+    f.write_text("variants:\n  two:\n    n_slices_pair: 2\n")
+    over, prov = arms.load(f, "two")
+    r = arms.apply(get("argon"), "two", over)
+    packs.render_many(r, 2, [("a", "b"), ("c", "d")], workers=1)
+
+    class B(FakeBackend):
+        def ask_case(self, msgs):
+            return [{**o, "raw": {"modelVersion": "gemini-4-argon-001"}} for o in super().ask_case(msgs)]
+    run.run(r, 3, "ct", "v", backend=B(lambda m: "no"), variant=prov)
+    p = run.out_path("v", r, 3, "ct", root)
+    assert p.parent.name == "argon__two" and p.exists()
+    rec = json.loads(p.with_suffix(".runs.jsonl").read_text().splitlines()[-1])
+    assert rec["variant"]["variant"] == "two" and rec["variant"]["overrides"] == {"n_slices_pair": 2}
+    assert rec["model_revision"] == {"reported": ["gemini-4-argon-001"]}
+    assert "numpy" in rec["environment"]["packages"] and rec["recipe"]["n_slices_pair"] == 2
+    m = json.loads((packs.pack_dir(r, 2) / packs.scan_id("a", "b") / "manifest.json").read_text())
+    assert m["code_commit"]

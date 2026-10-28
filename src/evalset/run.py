@@ -139,7 +139,7 @@ def out_path(run: str, recipe: Recipe, step: int, arm: str, root=None) -> Path:
 
 
 def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = None,
-        max_spend: float | None = None, backend=None, root=None, questions=None) -> pd.DataFrame:
+        max_spend: float | None = None, backend=None, root=None, questions=None, variant=None) -> pd.DataFrame:
     card = CARDS[step]
     df = samples.load(step, root)
     if limit:
@@ -180,7 +180,7 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
     rows = [result_row(recipe, step, arm, r, q, o, m) for r, q, m, o in pairs]
     path.parent.mkdir(parents=True, exist_ok=True)
     log_attempts(path, rows, [o for _, _, _, o in pairs])
-    log_run(path, recipe, step, arm, limit, questions, rows)
+    log_run(path, recipe, step, arm, limit, questions, rows, [o for _, _, _, o in pairs], variant)
     new = pd.DataFrame(rows)
     allrows = pd.concat([done, new], ignore_index=True) if len(done) else new
     if allrows.empty:
@@ -203,9 +203,41 @@ def log_attempts(path: Path, rows, outs):
             f.write(json.dumps({**rec, "time": now, "raw": o.get("raw")}, default=str) + "\n")
 
 
-def log_run(path: Path, recipe: Recipe, step: int, arm: str, limit, questions, rows):
-    """Append one line per invocation to ``step<N>_<arm>.runs.jsonl``: when, where, which code, the full
-    recipe, the image pack, what was asked and how many answers were read."""
+def environment() -> dict:
+    """Python and the versions of the packages that shape inputs or calls (missing ones are skipped)."""
+    import platform
+    from importlib import metadata
+    pkgs = {}
+    for name in ("vllm", "transformers", "torch", "numpy", "pillow", "nibabel", "pandas", "requests",
+                 "google-auth", "huggingface-hub"):
+        try:
+            pkgs[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            pass
+    return {"python": platform.python_version(), "packages": pkgs}
+
+
+def model_revision(recipe: Recipe, outs) -> dict:
+    """What the provider says it ran: Gemini's ``modelVersion`` / the AI Hub's ``model`` from the saved replies
+    (distinct values in this invocation), or, for open models, the weights snapshot folder in the cache."""
+    if recipe.model_type == "vllm":
+        snaps = Path(model_cache_dir()) / ("models--" + recipe.model_name.replace("/", "--")) / "snapshots"
+        return {"weights_snapshots": sorted(p.name for p in snaps.glob("*")) if snaps.is_dir() else [],
+                "weights_folder": model_cache_dir()}
+    seen = set()
+    for o in outs or []:
+        raw = o.get("raw")
+        if isinstance(raw, dict):
+            v = raw.get("modelVersion") or raw.get("model")
+            if v:
+                seen.add(str(v))
+    return {"reported": sorted(seen)}
+
+
+def log_run(path: Path, recipe: Recipe, step: int, arm: str, limit, questions, rows, outs=None, variant=None):
+    """Append one line per invocation to ``step<N>_<arm>.runs.jsonl``: when, where, which code and package
+    versions, the full recipe (and arms-file variant, if any), the model version reported, the image pack, what
+    was asked and how many answers were read."""
     import dataclasses
     import socket
     import subprocess
@@ -219,7 +251,8 @@ def log_run(path: Path, recipe: Recipe, step: int, arm: str, limit, questions, r
            "commit": commit, "uncommitted_changes": dirty, "step": step, "arm": arm, "limit": limit,
            "questions": questions, "recipe": dataclasses.asdict(recipe),
            "pack": recipe.pack_id(recipe.slices_per_scan(len(card.scan_names))) if arm == "ct" else None,
-           "n_asked": len(rows), "n_parsed": sum(r["answer"] in CHOICES for r in rows)}
+           "n_asked": len(rows), "n_parsed": sum(r["answer"] in CHOICES for r in rows),
+           "variant": variant, "environment": environment(), "model_revision": model_revision(recipe, outs)}
     with path.with_suffix(".runs.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, default=str) + "\n")
 
@@ -305,6 +338,18 @@ def answer_logprobs(completion):
     return None
 
 
+def recipe_for(name: str, arms_file=None, variant=None):
+    """(recipe, provenance) for the CLI: the registry recipe, or one variant of it from an arms file."""
+    recipe = get(name)
+    if bool(arms_file) != bool(variant):
+        raise SystemExit("--arms and --variant go together")
+    if not arms_file:
+        return recipe, None
+    from evalset import arms
+    over, prov = arms.load(arms_file, variant)
+    return arms.apply(recipe, variant, over), prov
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--recipe", required=True)
@@ -314,8 +359,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--max-spend", type=float, default=None, help="USD cap for this invocation (API models)")
     ap.add_argument("--questions", nargs="+", default=None, help="question ids to ask (default: all on each card)")
+    ap.add_argument("--arms", default=None, help="arms YAML (see evalset.arms); with --variant")
+    ap.add_argument("--variant", default=None, help="variant name in the arms file")
     args = ap.parse_args()
-    recipe = get(args.recipe)
+    recipe, variant = recipe_for(args.recipe, args.arms, args.variant)
     # One backend for every step: weights load once, and the spend cap covers the whole invocation.
     backend = (VLLMBackend(recipe) if recipe.model_type == "vllm"
                else APIBackend(recipe, paths.root() / "model_cache", args.max_spend))
@@ -323,7 +370,8 @@ def main() -> int:
         if args.questions and not any(q.id in args.questions for q in CARDS[step].questions):
             continue
         for arm in ([args.arm] if args.arm else list(CARDS[step].arms)):
-            res = run(recipe, step, arm, args.run, args.limit, args.max_spend, backend, questions=args.questions)
+            res = run(recipe, step, arm, args.run, args.limit, args.max_spend, backend, questions=args.questions,
+                      variant=variant)
             n_ok = int(res["answer"].isin(CHOICES).sum())
             print(f"{recipe.name} step {step} {arm}: {n_ok}/{len(res)} parsed -> {out_path(args.run, recipe, step, arm)}")
     return 0

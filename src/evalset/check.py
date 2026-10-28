@@ -19,10 +19,11 @@ from evalset.recipes import get
 from evalset.run import CHOICES, out_path
 
 
-def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, root=None) -> bool:
+def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, root=None, arms=None, variant=None) -> bool:
     """Every (case, question) this invocation asked has a parsed answer. Only those rows are counted, so
     earlier rows in the same answers file (another limit or question set) neither help nor hurt."""
-    recipe = get(recipe_name)
+    from evalset.run import recipe_for
+    recipe = recipe_for(recipe_name, arms, variant)[0] if arms else get(recipe_name)
     ok = True
     for step in steps:
         card = CARDS[step]
@@ -63,8 +64,10 @@ def main() -> int:
     ap.add_argument("--steps", type=int, nargs="+", default=[1, 2, 3, 4])
     ap.add_argument("--limit", type=int, default=None, help="first N cases per step (default: whole sample)")
     ap.add_argument("--questions", nargs="+", default=None)
+    ap.add_argument("--arms", default=None)
+    ap.add_argument("--variant", default=None)
     a = ap.parse_args()
-    ok = check(a.recipe, a.run, a.steps, a.limit, a.questions)
+    ok = check(a.recipe, a.run, a.steps, a.limit, a.questions, arms=a.arms, variant=a.variant)
     print("ALL PARSED" if ok else "NOT ALL PARSED")
     return 0 if ok else 1
 
