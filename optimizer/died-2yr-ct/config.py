@@ -107,7 +107,9 @@ if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: handy for
 # --------------------------------------------------------------------------------------------------
 # Where everything a run writes goes. Outside the repo, so nothing a run writes is ever committed.
 # --------------------------------------------------------------------------------------------------
-WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / TASK_NAME)).resolve()
+#: Its own folder for the yes/no version: the old folder (alo-tasks/<task>) holds the probability-era runs and its
+#: program-v0 is the probability seed, so reusing it would start a new run from the wrong instructions (2026-10-28).
+WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / f"{TASK_NAME}-yesno")).resolve()
 
 # --------------------------------------------------------------------------------------------------
 # Sealing: which model route and which images. docs/guide/decisions.md, "Which models it can use".
