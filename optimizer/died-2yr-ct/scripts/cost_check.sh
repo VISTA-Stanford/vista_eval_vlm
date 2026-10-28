@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The 5+5 cost check for died-2yr-ct: one iteration (the seed on 5 TRAIN patients, one optimizer round, the new
 # version on 5 VAL patients) in a fresh throwaway work folder, never the real one. Paid: about $5, on the task's route
-# (Vertex by default; ALO_ROUTE=anthropic for the seat). Needs Phil's go. Judges itself with scripts/cost_report.py.
+# (the seat by default; ALO_ROUTE=vertex for Vertex). Needs Phil's go. Judges itself with scripts/cost_report.py.
 #
 #   bash optimizer/died-2yr-ct/scripts/cost_check.sh
 #

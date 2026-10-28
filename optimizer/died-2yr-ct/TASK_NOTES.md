@@ -12,8 +12,9 @@ anything but exactly yes or no, or a failed session, is wrong at both. **Gold**:
 at each horizon, averaged. **Failed session** and **Calibration**: no longer apply (a failed or unreadable answer is
 wrong at both horizons; there are no probabilities to calibrate). **Per-patient cap**: $0.50. **Optimizer web search**: off; the optimizer asks the
 engine's search proxy, which refuses patient-specific questions and logs every request (Phil 2026-10-22).
-**Route**: one setting for all sessions, Vertex by default (engine `isolation.route`; `ALO_ROUTE=anthropic` for the
-seat), mounting only a Vertex-only service account key at `~/.config/alo/vertex-sa.json`; waits on that key.
+**Route**: one setting for all sessions, the seat by default (engine `isolation.route`; token at
+`~/.config/alo/oauth_token`). No Vertex-only service account can be made, so Vertex is future work (Phil 2026-10-28);
+the code keeps it: `ALO_ROUTE=vertex` mounts only a Vertex-only key at `~/.config/alo/vertex-sa.json`.
 Engine pin: agentic-label-opt main 9aee75f, shared with died-2yr-ehr; Claude Code 2.1.307. The finished run
 `first` (probability, VAL AUROC 0.776) stays as history. Cost check: `bash scripts/cost_check.sh` (paid, ~$5,
 Phil's go).
