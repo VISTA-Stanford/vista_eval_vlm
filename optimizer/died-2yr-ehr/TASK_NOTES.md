@@ -2,11 +2,14 @@
 
 The EHR twin of `optimizer/died-2yr-ct/`, copied from it 2026-10-21. Spec (approved 2026-10-21):
 `planning/vista_eval_vlm/2026-10-21-died-2yr-ehr-agentic.md` on the mount
-(`/mnt/su-vista-uscentral1/chaudhari_lab/phil/`). Engine pin as died-2yr-ct (7a13ddb, `feat/optimizer-websearch`).
+(`/mnt/su-vista-uscentral1/chaudhari_lab/phil/`). Since 2026-10-27 it is the full-EHR arm of the agent in the eval-set
+spec (`planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md`, work package 2): two forced yes/no answers, balanced
+accuracy, $0.50 a patient, on Vertex. Engine pin: agentic-label-opt main 9aee75f, shared with died-2yr-ct.
 
 ## The idea
 
-A Claude Code session per patient predicts vista_bench v1.7 `died_any_cause_2_yr` from that patient's whole
+A Claude Code session per patient answers vista_bench v1.7 `died_any_cause_1_yr` and `died_any_cause_2_yr`, yes or
+no, from that patient's whole
 EHR record up to the prediction time (first treatment - 7 days): every OMOP table, every note, and allow-listed
 registry fields of the index tumour. Same patients, splits and pools as the CT task, so the two compare on
 identical patients, and the published v1.7 EHR baselines are scored on the same VAL pool. Zero-shot first, then
@@ -20,9 +23,13 @@ identical patients, and the published v1.7 EHR baselines are scored on the same 
 | Input | OMOP tables person, observation_period, visit_occurrence, visit_detail, condition_occurrence, procedure_occurrence, drug_exposure, drug_era, device_exposure, episode, image_occurrence, measurement, observation, note; `notes.txt`; registry tables of the index tumour; `meta.json`. All cut at the cutoff by the shared exporter; death table dropped; end dates clipped; registry-typed measurements (type 32879) dropped |
 | Cutoff | vista_bench `embed_time` = first treatment date - 7 days |
 | Registry | index tumour only, picked as the label picks it (all 5,549 found and matching the label's diagnosis date, 2026-10-21). Columns: `registry_allowlist.yaml`, from the 2026-10-21 audit with Phil's decisions |
-| Seed program | the plain question only (`program_agentic/instructions.md`); the fixed wrapper (`agentic.py`) states the question, the 7-day cutoff, the folder layout, a probability answer and the 30.6% TRAIN death rate. No clinical hints (Phil 2026-10-21) |
-| Per-patient model | `claude-sonnet-5-5`, $0.40 cap, failed patient = 0.5 (as CT) |
-| Optimizer | as CT: Opus 5.5, effort high, $3 a session, WebSearch on, may write tools |
+| Answer | two forced yes/no answers in one session, death within 1 year and within 2 years of diagnosis; anything but exactly yes or no, or a failed session, is wrong at both (Phil 2026-10-27, eval-set spec) |
+| Gold | `label` (2 years) and `label_1yr` (1 year, same patient and scan, added by the CT task's `build_data.py horizons` 2026-10-27; old files in `splits-2yr-only/`). TRAIN 718 died by 1 year, 470 in year 2; VAL pool 35 and 63 |
+| Score | balanced accuracy at each horizon, averaged over the two (was AUROC on a probability until 2026-10-27) |
+| Seed program | the plain questions only (`program_agentic/instructions.md`); the fixed wrapper (`agentic.py`) states both questions, the 7-day cutoff, the folder layout, the yes/no answer and the TRAIN death rates (18.5%, 30.6%). No clinical hints (Phil 2026-10-21) |
+| Per-patient model | `claude-sonnet-5-5`, $0.50 cap (Phil 2026-10-27) |
+| Optimizer | Opus 5.5, effort high, $3 a session, may write tools; no WebSearch: it asks the engine's search proxy, which refuses patient-specific questions and logs every request (Phil 2026-10-22) |
+| Route | one setting for all sessions, Vertex by default (engine `isolation.route`; `ALO_ROUTE=anthropic` for the seat), mounting only a Vertex-only service account key at `~/.config/alo/vertex-sa.json` (Phil 2026-10-21, kept 10-27). Waits on that key |
 | Rounds | zero-shot (the seed on the 200 VAL pool) + 2 optimizer rounds (`ITERATIONS` 2) |
 | Image | `alo-died-2yr-ehr-optimizer:2.1.295`, its own tag: pandas, pyarrow, duckdb <2, grep/ripgrep; no CT packages |
 | Where | records built on phil-sllm-01 (BigQuery) into an archive on the mount; the run on a new VM, records rehydrated to local disk (`scripts/run_on_vm.sh`) |
@@ -50,8 +57,9 @@ identical patients, and the published v1.7 EHR baselines are scored on the same 
     TASK_DATA_DIR=/tmp/synth uv run --project $AGENTIC_LABEL_OPT python run.py dry-run
     python scripts/score_baselines.py reproduce      published clinical_pretx VAL AUROC, to 3 decimals
     python scripts/score_baselines.py score --ids pool
+    bash scripts/cost_check.sh                       PAID (~$5, Phil's go): 5+5 patients, one iteration, judged
 
-## Reference scores (v1.7 linear probes, VAL)
+## Reference scores (v1.7 linear probes, VAL AUROC; not comparable with the task's balanced accuracy)
 
 Reproduction: clinical_pretx 0.7766 published on all 1,124 VAL patients with a label, recomputed 0.7766.
 
