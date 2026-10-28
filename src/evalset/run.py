@@ -161,10 +161,17 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
               if (str(r["case_id"]), q.id, arm) not in done_keys]
         if qm:
             todo.append((r, qm))
-    if hasattr(backend, "ask_many"):  # open models: one batch over every case (prefix caching inside)
-        outs = backend.ask_many([m for _, qm in todo for _, m in qm])
-        it = iter(outs)
-        pairs = [(r, q, m, next(it)) for r, qm in todo for q, m in qm]
+    if hasattr(backend, "ask_many"):
+        # Open models, two batches: every scan's first question, then the rest. vLLM's prefix cache can only
+        # reuse a scan's images once a request holding them has been computed; in one batch the questions on a
+        # scan run side by side and each recomputes the images (the same reason Argon's first question goes alone).
+        firsts = backend.ask_many([qm[0][1] for _, qm in todo]) if todo else []
+        rest_msgs = [m for _, qm in todo for _, m in qm[1:]]
+        rests = iter(backend.ask_many(rest_msgs) if rest_msgs else [])
+        pairs = []
+        for (r, qm), f in zip(todo, firsts):
+            pairs.append((r, qm[0][0], qm[0][1], f))
+            pairs += [(r, q, m, next(rests)) for q, m in qm[1:]]
     else:
         pairs = []
         for r, qm in todo:
@@ -241,7 +248,9 @@ class VLLMBackend:
         self.recipe = recipe
         n_max = max(recipe.n_slices, 2 * recipe.n_slices_pair)
         self.llm = LLM(model=recipe.model_name, dtype="bfloat16", max_model_len=int(recipe.setting("max_model_len")),
-                       limit_mm_per_prompt={"image": n_max}, enable_prefix_caching=True,
+                       limit_mm_per_prompt={"image": n_max},
+                       # EVALSET_PREFIX_CACHE=0 turns it off, to check cached and uncached runs give the same answers.
+                       enable_prefix_caching=os.environ.get("EVALSET_PREFIX_CACHE", "1") != "0",
                        gpu_memory_utilization=0.85, trust_remote_code=True,
                        download_dir=cache, hf_overrides={"cache_dir": cache})
         self.params = SamplingParams(temperature=float(recipe.setting("temperature", 0.0)),

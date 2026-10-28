@@ -432,3 +432,24 @@ def test_gemini_sends_a_scans_first_question_alone_without_explicit_cache(tmp_pa
     out = a.ask_group(msgs, 100, ["yes", "no"])
     assert [o["text"] for o in out] == ["yes", "yes", "yes"]
     assert log[0] == ("start", "A?") and log[1] == ("done", "A?")  # the rest only start after the first finished
+
+
+def test_open_model_batches_first_questions_then_the_rest(mount):
+    root = mount / "evalset"
+    labels = {f"label__{q.task}": 1 for q in CARDS[2].questions}
+    _samples(root, 2, [dict(case_id=f"x{i}", person_id=str(i), split="test", study="a", series="b", **labels)
+                       for i in range(2)])
+    r = get("medgemma", n_slices=3)
+    packs.render_many(r, 3, [("a", "b")], workers=1)
+    batches = []
+
+    class Open:
+        def ask_many(self, msgs):
+            batches.append([m.question.split("Question: ")[1][:30] for m in msgs])
+            return [{"text": m.question.split("Question: ")[1][:120] + " Final Answer: no"} for m in msgs]
+    res = run.run(r, 2, "ct", "two", backend=Open(), questions=["lobe_rul", "lobe_rml", "pneumonitis"])
+    assert [len(b) for b in batches] == [2, 4]  # 2 scans' first questions, then 2 x 2 others
+    assert len(res) == 6 and set(res["answer"]) == {"no"}
+    marks = {"lobe_rul": "right upper lobe", "lobe_rml": "right middle lobe", "pneumonitis": "pneumonitis"}
+    for _, row in res.iterrows():  # every answer sits on the question that produced it
+        assert marks[row["question_id"]] in row["response_text"]
