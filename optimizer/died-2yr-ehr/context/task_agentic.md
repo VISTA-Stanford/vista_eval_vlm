@@ -33,6 +33,11 @@ What the session has, as a read-only folder `record/`:
   the workup or treatment, every outcome, follow-up and later-line field. A dated field whose date is after
   the cutoff is blank.
 - `meta.json`: the patient's opaque id and the cutoff date.
+- Beside the record, `record_guide.md`: a fixed map of where each kind of fact lives in the folder (which
+  registry field holds clinical stage, metastases at diagnosis, biomarkers and the first-course codes, how
+  those codes read, how notes link to imaging, which tables are mostly flowsheet rows, which sources mislead).
+  The wrapper tells every session to read it first; you can't edit it, and your instructions can refer to it.
+  Its full text is the appendix at the end of this brief.
 - Python 3.11 with pandas, pyarrow and duckdb; grep and ripgrep; Read, Write, Edit, Glob, Grep and Bash. No
   network, no other patient, no internet lookups, no subagents.
 

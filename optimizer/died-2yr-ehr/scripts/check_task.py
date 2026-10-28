@@ -104,6 +104,11 @@ def cmd_check() -> int:
         everything = {p.name for p in Path(tmp).rglob("*")}
         report("staging copies exactly the patient's record files", names == want, f"{len(names)} files")
         report("staged files are read-only", ro)
+        guide = Path(tmp) / agentic.GUIDE
+        report("the data guide sits beside the record, read-only, byte-identical to context/patient_data_guide.md",
+               guide.is_file() and guide.read_bytes() == agentic.GUIDE_SRC.read_bytes()
+               and not guide.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+               and {p.name for p in Path(tmp).iterdir()} == {agentic.RECORD, agentic.GUIDE})
         report("nothing named registry_dates, and no side-file content path, in the session folder",
                "registry_dates" not in everything and not any("registry_dates" in str(p) for p in Path(tmp).rglob("*")),
                f"side folder present beside patients/: {bool(side)}")

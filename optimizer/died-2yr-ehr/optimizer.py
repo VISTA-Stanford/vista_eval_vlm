@@ -267,5 +267,10 @@ def stage_files(layout: Layout) -> None:
     layout.worker_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(HERE / "worker.py", layout.worker_dir / "worker.py")
     layout.inputs.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(config.TASK_BRIEF, layout.inputs / op.TASK_BRIEF_NAME)
+    brief = config.TASK_BRIEF.read_text(encoding="utf-8")
+    if config.AGENTIC:
+        # The optimizer reads the same data map every session gets, verbatim, at the end of its brief.
+        from agentic import GUIDE, GUIDE_SRC
+        brief += f"\n\n---\n\n# Appendix: `{GUIDE}`, as every session sees it\n\n" + GUIDE_SRC.read_text(encoding="utf-8")
+    (layout.inputs / op.TASK_BRIEF_NAME).write_text(brief, encoding="utf-8")
 

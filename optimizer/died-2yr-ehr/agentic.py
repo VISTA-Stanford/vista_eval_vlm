@@ -13,6 +13,7 @@ True/False, or None when unreadable), so the scorer, the mistake builder and ``r
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -22,9 +23,15 @@ from adapters import patient_dir, rows_for
 
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
+#: Where each kind of fact lives in a patient's folder, adapted from the Cohort Explorer's guides (Phil 2026-10-28:
+#: the session must be told what it can read and where to look). Fixed, like the wrapper: staged read-only beside
+#: the record for every call, so no optimized version can drop it. The optimizer's brief points at the same file.
+GUIDE = "record_guide.md"
+GUIDE_SRC = Path(__file__).resolve().parent / "context" / "patient_data_guide.md"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever you change
-#: ``prompt`` below, or a pass run under the old wording is served again.
-PROMPT_TAG = "died-2yr-ehr-v2-yesno"
+#: ``prompt`` below, or a pass run under the old wording is served again. The guide's hash is part of it, so an
+#: edit to the guide also stops old passes being served.
+PROMPT_TAG = f"died-2yr-ehr-v3-guide-{hashlib.sha256(GUIDE_SRC.read_bytes()).hexdigest()[:10]}"
 #: The session's reasoning is not kept in its transcript (thinking blocks arrive empty), so it writes what it
 #: saw; the optimizer reads it beside the transcript for TRAIN mistakes.
 FINDINGS = "findings.md"
@@ -87,6 +94,8 @@ def program_spec(forbidden):
         for f in record_files(patient_dir(call.payload["id"])):
             shutil.copy2(f, dest / f.name)
             (dest / f.name).chmod(0o444)
+        shutil.copy2(GUIDE_SRC, Path(folder) / GUIDE)
+        (Path(folder) / GUIDE).chmod(0o444)
 
     def prompt(call, stage_name, paths, pass_id):
         # The per-call wrapper: not optimized. Container paths only. The facts every version needs (the question,
@@ -110,6 +119,9 @@ def program_spec(forbidden):
             f"this cancer, limited to the fields allowed at that cutoff.\n"
             f"- meta.json: the patient's opaque id and the cutoff date.\n"
             f"python3 has pandas, pyarrow and duckdb for the parquet files.\n\n"
+            f"Read {paths.call}/{GUIDE} before the record: it says what each file holds, where each kind of fact "
+            f"(stage, histology, biomarkers, treatment, imaging and reports, labs, smoking, visits) lives, how the "
+            f"codes read, and which sources mislead.\n\n"
             f"Scratch files go in /tmp. Before answering, write {paths.call}/{FINDINGS}: "
             f"a short note of what you looked at and what you found that bears on the answer. Use no names, dates "
             f"or other identifiers in it. Then write {paths.call}/{OUTPUT} containing exactly one JSON object on "
