@@ -1,0 +1,13 @@
+# Example arms file for the eval set (src/evalset/arms.py). Each variant overrides fields of one model recipe;
+# its answers go to runs/<run>/<recipe>__<variant>/, and the file's sha256 and the overrides are saved in every
+# run record. Render the variant's images first if its slice count is new (run from src/):
+#   python -m evalset.packs render --recipe argon --step 2 --limit 5 --arms ../configs/evalset/example_arms.yaml --variant argon_25
+#   python -m evalset.run --recipe argon --step 2 --run pilot1 --limit 5 --arms ../configs/evalset/example_arms.yaml --variant argon_25
+variants:
+  argon_25:
+    recipe: argon
+    n_slices: 25
+    n_slices_pair: 12
+  astra_effort_medium:
+    recipe: astra
+    settings: {reasoning_effort: medium}
