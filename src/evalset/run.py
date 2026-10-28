@@ -224,12 +224,19 @@ class VLLMBackend:
     top token log-probabilities kept at the position of the final yes/no."""
 
     def __init__(self, recipe: Recipe):
+        import os
+        cache = model_cache_dir()
+        # Set before importing vLLM (Hugging Face reads these at import). Tokenizer, processor and chat template load through Hugging Face, not download_dir: point its cache
+        # at the same folder and stay offline, so the gated model is never fetched.
+        os.environ.setdefault("HF_HUB_CACHE", cache)
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
         from vllm import LLM, SamplingParams
         self.recipe = recipe
         n_max = max(recipe.n_slices, 2 * recipe.n_slices_pair)
         self.llm = LLM(model=recipe.model_name, dtype="bfloat16", max_model_len=int(recipe.setting("max_model_len")),
                        limit_mm_per_prompt={"image": n_max}, enable_prefix_caching=True,
-                       gpu_memory_utilization=0.85, trust_remote_code=True)
+                       gpu_memory_utilization=0.85, trust_remote_code=True,
+                       download_dir=cache, hf_overrides={"cache_dir": cache})
         self.params = SamplingParams(temperature=float(recipe.setting("temperature", 0.0)),
                                      max_tokens=int(recipe.setting("max_new_tokens", 2000)),
                                      logprobs=int(recipe.setting("logprobs", 20)))
@@ -240,6 +247,13 @@ class VLLMBackend:
         return [{"text": o.outputs[0].text, "log_probs": answer_logprobs(o.outputs[0]), "usage":
                  {"prompt_tokens": len(o.prompt_token_ids or []), "output_tokens": len(o.outputs[0].token_ids)}}
                 for o in outs]
+
+
+def model_cache_dir() -> str:
+    """Weights folder: ``EVALSET_MODEL_CACHE``, else the shared cache on the mount, which already holds
+    MedGemma 1.5 4B (the folder the VLM configs' ``runtime.cache_dir`` names), so weill needs no download."""
+    import os
+    return os.environ.get("EVALSET_MODEL_CACHE") or str(paths.mount_root() / paths.BUCKET / "vistabench/vlm/model_cache")
 
 
 def openai_content(m):
