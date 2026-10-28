@@ -3,6 +3,21 @@
 Set up with agentic-label-opt's `/new-labeling-task` (branch `fix/new-labeling-task-dogfood`), 2026-10-20;
 engine pin 36dd87c on `feat/optimizer-websearch`. Every answer below is Phil's unless marked as a default.
 
+**Since 2026-10-27** it is the CT arm of the agent in the eval-set spec
+(`planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md`, work package 2), and these rows of the table below are
+replaced: **Answer**: two forced yes/no answers in one session, death within 1 year and within 2 years of diagnosis;
+anything but exactly yes or no, or a failed session, is wrong at both. **Gold**: `label` (2 years) and `label_1yr`
+(`died_any_cause_1_yr`, same patient and scan, added by `scripts/build_data.py horizons`; old files in
+`splits-2yr-only/`); TRAIN 718 died by 1 year and 470 in year 2, VAL pool 35 and 63. **Metric**: balanced accuracy
+at each horizon, averaged. **Failed session** and **Calibration**: no longer apply (a failed or unreadable answer is
+wrong at both horizons; there are no probabilities to calibrate). **Per-patient cap**: $0.50. **Optimizer web search**: off; the optimizer asks the
+engine's search proxy, which refuses patient-specific questions and logs every request (Phil 2026-10-22).
+**Route**: one setting for all sessions, Vertex by default (engine `isolation.route`; `ALO_ROUTE=anthropic` for the
+seat), mounting only a Vertex-only service account key at `~/.config/alo/vertex-sa.json`; waits on that key.
+Engine pin: agentic-label-opt main 9aee75f, shared with died-2yr-ehr; Claude Code 2.1.307. The finished run
+`first` (probability, VAL AUROC 0.776) stays as history. Cost check: `bash scripts/cost_check.sh` (paid, ~$5,
+Phil's go).
+
 ## The idea
 
 A Claude Code session per patient predicts vista_bench v1.7 `died_any_cause_2_yr` from that patient's CT
