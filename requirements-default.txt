@@ -162,7 +162,7 @@ psutil==7.1.3
 ptyprocess==0.7.0
 pure-eval==0.2.3
 py-cpuinfo==9.0.0
-pyarrow
+pyarrow<20  # pyarrow 20+ needs NumPy 2; numpy is pinned to 1.26.4 above (weill vLLM env, 2026-10-28)
 pybase64==1.4.2
 pycountry==24.6.1
 pycparser==2.23
