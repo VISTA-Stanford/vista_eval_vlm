@@ -99,7 +99,8 @@ def greedy_cover(labels: pd.DataFrame, k: int, seed: int) -> list:
     return sorted(chosen)
 
 
-def step1(client) -> pd.DataFrame:
+def _step1_pool(client) -> pd.DataFrame:
+    """Every TEST patient eligible for step 1 (both labels scored, CT on the mount, a summary)."""
     tasks = [q.task for q in CARDS[1].questions]
     rows = _query(client, f"""select person_id, split, task, label, image_study_uid, image_series_uid, compact_summary
         from `{paths.table('progression_recurrence_survival_1yr_2yr_3yr_4yr_5yr')}`
@@ -113,13 +114,18 @@ def step1(client) -> pd.DataFrame:
     df = df[df[[f"label__{t}" for t in tasks]].notna().all(axis=1) & df["study"].notna() & df["series"].notna()]
     df = df[df["summary"].notna() & (df["summary"].astype(str).str.strip() != "")]
     df = df[[_on_mount(a, b) for a, b in zip(df["study"], df["series"])]]
+    return df.reset_index()
+
+
+def step1(client) -> pd.DataFrame:
     from vista_run.run_bq import per_class_sample
-    pool = df.reset_index().assign(label=lambda d: d["label__died_any_cause_2_yr"].astype(int))
+    pool = _step1_pool(client).assign(label=lambda d: d["label__died_any_cause_2_yr"].astype(int))
     out = per_class_sample(pool, "person_id", PER_ANSWER, SEED).drop(columns="label")
     return out.assign(case_id=out["person_id"].astype(str))
 
 
-def step2(client) -> pd.DataFrame:
+def _step2_table(client) -> pd.DataFrame:
+    """Every TEST scan with at least one of the 17 items labelled, indexed by accession (mount not yet checked)."""
     tasks = [q.task for q in CARDS[2].questions]
     rows = _query(client, f"""select person_id, split, task, label, ct_accession_number, image_study_uid, image_series_uid
         from `{paths.table('per_ct_diagnostic_tasks')}`
@@ -131,6 +137,12 @@ def step2(client) -> pd.DataFrame:
     scan = rows.drop_duplicates("ct_accession_number").set_index("ct_accession_number")
     df = lab.join(scan[["person_id", "split", "image_study_uid", "image_series_uid"]], how="inner")
     df = df.rename(columns={"image_study_uid": "study", "image_series_uid": "series"})
+    return df[df[[f"label__{t}" for t in tasks]].notna().any(axis=1)]
+
+
+def step2(client) -> pd.DataFrame:
+    tasks = [q.task for q in CARDS[2].questions]
+    df = _step2_table(client)
     keep = greedy_cover(df[[f"label__{t}" for t in tasks]], PER_ANSWER, SEED)
     df = df.loc[keep]
     missing = [k for k, a, b in zip(df.index, df["study"], df["series"]) if not _on_mount(a, b)]
@@ -140,7 +152,7 @@ def step2(client) -> pd.DataFrame:
     return df.assign(case_id=df["ct_accession_number"].astype(str))
 
 
-def step3(_client) -> pd.DataFrame:
+def step3(client) -> pd.DataFrame:
     src = paths.mount_root() / paths.BUCKET / ASTRA_400
     a = pd.read_csv(src, dtype={"ct_accession_number": str, "image_study_uid": str, "image_series_uid": str,
                                 "prior_image_study_uid": str, "prior_image_series_uid": str})
@@ -151,6 +163,17 @@ def step3(_client) -> pd.DataFrame:
                           "prior_image_study_uid": "prior_study", "prior_image_series_uid": "prior_series"})
     a["label__radiology_progression_4way"] = a["label"].astype(int)
     a["label__radiology_progression"] = a["label"].astype(int).map(TWO_WAY)
+    # Priors from the task table, the scan each label was read against (as the whole-TEST list does). The Astra
+    # file's priors came from the shared prior link on 10-19; 1 of the 400 differs (10-29 check).
+    pri = _query(client, f"""select ct_accession_number, prior_image_study_uid, prior_image_series_uid, prior_gap_days
+        from `{paths.table('radiology_progression_tasks')}` where task = 'radiology_progression'""")
+    pri = pri.drop_duplicates("ct_accession_number").set_index(pri.drop_duplicates("ct_accession_number")["ct_accession_number"].astype(str))
+    k = a["ct_accession_number"].astype(str)
+    if not k.isin(pri.index).all():
+        raise RuntimeError("step 3: some Astra pairs are no longer in the task table")
+    a["prior_study"] = k.map(pri["prior_image_study_uid"]).values
+    a["prior_series"] = k.map(pri["prior_image_series_uid"]).values
+    a["prior_gap_days"] = k.map(pri["prior_gap_days"]).values
     for s, r in (("study", "series"), ("prior_study", "prior_series")):
         if not all(_on_mount(x, y) for x, y in zip(a[s], a[r])):
             raise RuntimeError(f"step 3: some {s} NIfTIs are not on the mount")
@@ -181,7 +204,57 @@ def step4(_client) -> pd.DataFrame:
     return a[cols].assign(case_id=a["person_id"]).reset_index(drop=True)
 
 
+def step1_test(client) -> pd.DataFrame:
+    """Whole TEST split for step 1: every eligible patient (860 on 10-28)."""
+    df = _step1_pool(client)
+    return df.assign(case_id=df["person_id"].astype(str))
+
+
+def step2_test(client) -> pd.DataFrame:
+    """Whole TEST split for step 2: every labelled scan whose NIfTI is on the mount (missing ones counted)."""
+    df = _step2_table(client)
+    on = [_on_mount(a, b) for a, b in zip(df["study"], df["series"])]
+    print(f"    step 2 test: {len(df)} labelled scans, {len(df) - sum(on)} without a NIfTI on the mount (dropped)")
+    df = df[on].reset_index()
+    return df.assign(case_id=df["ct_accession_number"].astype(str))
+
+
+def step3_test(client) -> pd.DataFrame:
+    """Whole TEST split for step 3: every scored scan with its prior (the task table's own prior columns), both
+    NIfTIs on the mount (missing ones counted)."""
+    rows = _query(client, f"""select person_id, split, label, ct_accession_number, image_study_uid, image_series_uid,
+          prior_image_study_uid, prior_image_series_uid, prior_gap_days
+        from `{paths.table('radiology_progression_tasks')}`
+        where task = 'radiology_progression' and split = 'test' and label in (0, 1, 2, 3)
+          and image_series_uid is not null and prior_image_series_uid is not null""")
+    if rows["ct_accession_number"].duplicated().any():
+        raise RuntimeError("step 3 test: more than one row per accession")
+    a = rows.rename(columns={"image_study_uid": "study", "image_series_uid": "series",
+                             "prior_image_study_uid": "prior_study", "prior_image_series_uid": "prior_series"})
+    on = [_on_mount(x, y) and _on_mount(p, q) for x, y, p, q in zip(a["study"], a["series"], a["prior_study"], a["prior_series"])]
+    print(f"    step 3 test: {len(a)} pairs, {len(a) - sum(on)} with a NIfTI missing on the mount (dropped)")
+    a = a[on].copy()
+    a["label__radiology_progression_4way"] = a["label"].astype(int)
+    a["label__radiology_progression"] = a["label"].astype(int).map(TWO_WAY)
+    a["ct_accession_number"] = a["ct_accession_number"].astype(str)
+    return a.drop(columns="label").assign(case_id=a["ct_accession_number"]).reset_index(drop=True)
+
+
+def step4_test(client) -> pd.DataFrame:
+    """Whole TEST split for step 4: the TEST cases among the 334 (the sample already holds every board case)."""
+    df = step4(client)
+    return df[df["split"] == "test"].reset_index(drop=True)
+
+
 BUILDERS = {1: step1, 2: step2, 3: step3, 4: step4}
+#: ``which="test"``: the whole TEST split, the second stage after the samples (spec, Scale).
+TEST_BUILDERS = {1: step1_test, 2: step2_test, 3: step3_test, 4: step4_test}
+
+
+def _name(step: int, which: str) -> str:
+    if which not in ("sample", "test"):
+        raise ValueError(f"which must be 'sample' or 'test', not {which!r}")
+    return f"step{step}" if which == "sample" else f"step{step}_test"
 
 
 def counts(step: int, df: pd.DataFrame) -> dict:
@@ -192,33 +265,34 @@ def counts(step: int, df: pd.DataFrame) -> dict:
     return out
 
 
-def save(step: int, df: pd.DataFrame, root: Path | None = None) -> Path:
+def save(step: int, df: pd.DataFrame, root: Path | None = None, which: str = "sample") -> Path:
     root = Path(root or paths.root()) / "samples"
     root.mkdir(parents=True, exist_ok=True)
-    out = root / f"step{step}.parquet"
+    out = root / f"{_name(step, which)}.parquet"
     df.to_parquet(out, index=False)
     commit = paths.code_commit()
-    meta = {"step": step, "built": date.today().isoformat(), "seed": SEED, "per_answer": PER_ANSWER,
+    meta = {"step": step, "which": which, "built": date.today().isoformat(), "seed": SEED, "per_answer": PER_ANSWER,
             "code_commit": commit, "counts": counts(step, df)}
-    if step == 1:
+    if step == 1 and which == "sample":
         meta["note"] = STEP1_NOTE
-    (root / f"step{step}.json").write_text(json.dumps(meta, indent=1))
+    (root / f"{_name(step, which)}.json").write_text(json.dumps(meta, indent=1))
     return out
 
 
-def load(step: int, root: Path | None = None) -> pd.DataFrame:
-    return pd.read_parquet(Path(root or paths.root()) / "samples" / f"step{step}.parquet")
+def load(step: int, root: Path | None = None, which: str = "sample") -> pd.DataFrame:
+    return pd.read_parquet(Path(root or paths.root()) / "samples" / f"{_name(step, which)}.parquet")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["build"])
     ap.add_argument("--steps", type=int, nargs="+", default=[1, 2, 3, 4])
+    ap.add_argument("--which", choices=["sample", "test"], default="sample")
     args = ap.parse_args()
     client = _bq()
     for s in args.steps:
-        df = BUILDERS[s](client)
-        out = save(s, df)
+        df = (BUILDERS if args.which == "sample" else TEST_BUILDERS)[s](client)
+        out = save(s, df, which=args.which)
         print(f"step {s}: {json.dumps(counts(s, df))} -> {out}")
     return 0
 

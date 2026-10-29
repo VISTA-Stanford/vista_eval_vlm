@@ -154,9 +154,10 @@ def out_path(run: str, recipe: Recipe, step: int, arm: str, root=None) -> Path:
 
 
 def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = None,
-        max_spend: float | None = None, backend=None, root=None, questions=None, variant=None) -> pd.DataFrame:
+        max_spend: float | None = None, backend=None, root=None, questions=None, variant=None,
+        which: str = "sample") -> pd.DataFrame:
     card = CARDS[step]
-    df = samples.load(step, root)
+    df = samples.load(step, root, which)
     if limit:
         df = packs.check_cases(df, step, limit)
     path = out_path(run_name, recipe, step, arm, root)
@@ -415,6 +416,8 @@ def main() -> int:
     ap.add_argument("--questions", nargs="+", default=None, help="question ids to ask (default: all on each card)")
     ap.add_argument("--arms", default=None, help="arms YAML (see evalset.arms); with --variant")
     ap.add_argument("--variant", default=None, help="variant name in the arms file")
+    ap.add_argument("--which", choices=["sample", "test"], default="sample",
+                    help="the step's sample (default) or its whole TEST split")
     args = ap.parse_args()
     recipe, variant = recipe_for(args.recipe, args.arms, args.variant)
     # One backend for every step: weights load once, and the spend cap covers the whole invocation.
@@ -425,7 +428,7 @@ def main() -> int:
             continue
         for arm in ([args.arm] if args.arm else list(CARDS[step].arms)):
             res = run(recipe, step, arm, args.run, args.limit, args.max_spend, backend, questions=args.questions,
-                      variant=variant)
+                      variant=variant, which=args.which)
             n_ok = int(res["answer"].isin(CHOICES).sum())
             print(f"{recipe.name} step {step} {arm}: {n_ok}/{len(res)} parsed -> {out_path(args.run, recipe, step, arm)}")
     return 0

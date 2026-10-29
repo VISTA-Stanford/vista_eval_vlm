@@ -544,3 +544,20 @@ def test_check_refuses_variant_without_arms(mount):
     from evalset import check
     with pytest.raises(SystemExit):
         check.check("argon", "x", [2], 1, variant="argon_25")
+
+
+def test_which_selects_sample_or_whole_test_file(mount):
+    from evalset import samples as sm
+    root = mount / "evalset"
+    labels = {f"label__{q.task}": 1 for q in CARDS[2].questions}
+    _samples(root, 2, [dict(case_id="s", person_id="1", split="test", study="a", series="b", **labels)])
+    pd.DataFrame([dict(case_id=f"t{i}", person_id=str(i), split="test", study="a", series="b", **labels)
+                  for i in range(3)]).to_parquet(root / "samples" / "step2_test.parquet", index=False)
+    assert list(sm.load(2, root)["case_id"]) == ["s"]
+    assert list(sm.load(2, root, "test")["case_id"]) == ["t0", "t1", "t2"]
+    with pytest.raises(ValueError):
+        sm.load(2, root, "everything")
+    r = get("argon", n_slices=4)
+    packs.render_many(r, 4, [("a", "b")], workers=1)
+    res = run.run(r, 2, "ct", "wt", backend=FakeBackend(lambda m: "no"), questions=["lobe_rul"], which="test")
+    assert sorted(res["case_id"]) == ["t0", "t1", "t2"]

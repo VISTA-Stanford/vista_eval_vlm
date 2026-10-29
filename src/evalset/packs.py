@@ -142,13 +142,14 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--arms", default=None, help="arms YAML (see evalset.arms); with --variant")
     ap.add_argument("--variant", default=None)
+    ap.add_argument("--which", choices=["sample", "test"], default="sample")
     args = ap.parse_args()
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     from evalset.run import recipe_for
     recipe, _ = recipe_for(args.recipe, args.arms, args.variant)
     n_scans = len(CARDS[args.step].scan_names)
     n = args.n_slices or recipe.slices_per_scan(n_scans)
-    df = samples.load(args.step)
+    df = samples.load(args.step, which=args.which)
     if args.limit:
         df = check_cases(df, args.step, args.limit)
     print(json.dumps(render_many(recipe, n, scans_for(df, n_scans), args.workers)))

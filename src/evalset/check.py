@@ -19,7 +19,8 @@ from evalset.recipes import get
 from evalset.run import CHOICES, out_path
 
 
-def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, root=None, arms=None, variant=None) -> bool:
+def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, root=None, arms=None, variant=None,
+          which: str = "sample") -> bool:
     """Every (case, question) this invocation asked has a parsed answer. Only those rows are counted, so
     earlier rows in the same answers file (another limit or question set) neither help nor hurt."""
     from evalset.run import recipe_for
@@ -30,7 +31,7 @@ def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, 
         qids = {q.id for q in card.questions if not questions or q.id in questions}
         if not qids:
             continue
-        cases = samples.load(step, root)
+        cases = samples.load(step, root, which)
         if limit:
             cases = packs.check_cases(cases, step, limit)
         case_ids = set(cases["case_id"].astype(str))
@@ -66,8 +67,9 @@ def main() -> int:
     ap.add_argument("--questions", nargs="+", default=None)
     ap.add_argument("--arms", default=None)
     ap.add_argument("--variant", default=None)
+    ap.add_argument("--which", choices=["sample", "test"], default="sample")
     a = ap.parse_args()
-    ok = check(a.recipe, a.run, a.steps, a.limit, a.questions, arms=a.arms, variant=a.variant)
+    ok = check(a.recipe, a.run, a.steps, a.limit, a.questions, arms=a.arms, variant=a.variant, which=a.which)
     print("ALL PARSED" if ok else "NOT ALL PARSED")
     return 0 if ok else 1
 
