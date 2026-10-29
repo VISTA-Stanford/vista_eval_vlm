@@ -24,7 +24,7 @@ if not (ENGINE_ROOT / "engine" / "driver.py").is_file():
     raise SystemExit(f"no engine at {ENGINE_ROOT}: set AGENTIC_LABEL_OPT to your agentic-label-opt checkout")
 #: The full 40-character engine commit this task was built and tested against
 #: (``git -C $AGENTIC_LABEL_OPT rev-parse HEAD``). Bump it on purpose, after re-running the dry run.
-ENGINE_PIN = "9aee75ffa1fcdbb949f9f639247ec2fef623f757"  # DECIDE (main: Vertex host fix, search proxy, NAT fix, shared route + key check, 2026-10-27)
+ENGINE_PIN = "f837651c2d7ef8485564ecd836ff51e39c96cf9d"  # DECIDE (fix/seat-limit-pause on 9aee75f + the CT scan fixes: a seat usage-limit refusal pauses and reruns, 2026-10-29)
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
@@ -48,6 +48,13 @@ MOUNT_DATA_DIR = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-
 #: The optimizer never sees this folder (optimizer.forbidden lists it). It sees TRAIN only through its
 #: mistakes, and VAL only as a score.
 DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", Path.home() / "data" / "died-2yr-ehr-v1_7"))
+#: Tuomo's patient summary as an extra input beside the record (Phil 2026-10-29: test v1 + summary once on the
+#: 200-patient VAL pool against v1's 0.739; a full run only if it helps). One LLM summary per patient dated exactly
+#: at this task's cutoff (llm_labels.text_llm_summary, rich text), pulled by scripts/pull_summaries.py into
+#: SUMMARY_DIR/<id>.txt. Off by default, so the yesno-r1 setup is unchanged. Under DATA_DIR, so the optimizer never
+#: sees it.
+WITH_SUMMARY = os.environ.get("WITH_SUMMARY", "0") == "1"  # DECIDE
+SUMMARY_DIR = DATA_DIR / "summaries"
 #: The CT task's data and id map (id -> person_id): this task reuses its ids, labels, splits and pools.
 CT_DATA_DIR = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ct-v1_7")
 ID_MAP_DIR = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ct-v1_7-private")

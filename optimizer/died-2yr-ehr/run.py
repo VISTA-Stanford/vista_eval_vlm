@@ -539,24 +539,37 @@ def cmd_test(args) -> int:
 
 def cmd_score_val(args) -> int:
     """Score one chosen version on all of VAL (811 patients), not the 200-patient pool the rounds use: the tighter
-    number to report for the version a run picked. VAL is not sealed, but every look is paid, so each is recorded."""
+    number to report for the version a run picked. VAL is not sealed, but every look is paid, so each is recorded.
+    ``--pool`` scores the 200-patient pool instead, to compare an input arm (WITH_SUMMARY=1) with a run's own VAL
+    number for the same version on the same patients (Phil 2026-10-29)."""
     layout = opt.Layout()
+    token, _source = load_token()  # also puts a file-only token where the sessions' runner reads it
+    if not config.ROUTE.is_vertex and not token:
+        print(NO_TOKEN.format(file=config.TOKEN_FILE, env=config.TOKEN_ENV_NAME))
+        return 1
     ledger_path = layout.private / "val_all_ledger.jsonl"
-    earlier = ([e for e in map(json.loads, ledger_path.read_text().splitlines()) if e["tag"] == args.tag]
+    arm = "summary" if config.WITH_SUMMARY else "record"
+    scope = "pool200" if args.pool else "all"
+    earlier = ([e for e in map(json.loads, ledger_path.read_text().splitlines())
+                if e["tag"] == args.tag and e.get("arm", "record") == arm and e.get("scope", "all") == scope]
                if ledger_path.exists() else [])
     sha = git(layout.repo, "rev-parse", f"{args.tag}^{{commit}}").strip()
-    tree = layout.versions / f"val-all-{args.tag}"
+    name = f"val-{scope}-{arm}-{args.tag}" if (args.pool or config.WITH_SUMMARY) else f"val-all-{args.tag}"
+    tree = layout.versions / name
     materialize(ad.TaskStore().manifest(), sha, repo_root=layout.repo, dest=tree)
     opt.stage_files(layout)
     runner = program_runner(layout, image=images()[1], pin=committed_pins(layout)["program"])
     with runner:  # a ProgramRunner: one network for the pass, containers removed on exit
-        artifacts = runner.as_runner(run_id=f"val-all-{args.tag}-look{len(earlier) + 1}").run(tree, ad.whole_split("val"))
+        inputs = (ad.TaskSource(layout.batches).stage(sorted(ad.pools()["val"]), "val", f"{name}-ids")
+                  if args.pool else ad.whole_split("val"))
+        artifacts = runner.as_runner(run_id=f"{name}-look{len(earlier) + 1}").run(tree, inputs)
     if artifacts.status != "ok":
         print(f"VAL pass failed: {artifacts.status} {artifacts.error}")
         return 1
     score = ad.TaskScorer().score(artifacts, "val", {})
     entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha,
-             config.METRIC_NAME: score.primary_metric.value, "n": score.breakdown["n"], "look": len(earlier) + 1}
+             config.METRIC_NAME: score.primary_metric.value, "n": score.breakdown["n"], "look": len(earlier) + 1,
+             "arm": arm, "scope": scope}
     with ledger_path.open("a") as f:
         f.write(json.dumps(entry) + "\n")
     print(json.dumps(entry, indent=2))
@@ -602,6 +615,7 @@ def main(argv=None) -> int:
     t.add_argument("--local", action="store_true", help="run unsealed in this process (only for checking the template)")
     sv = sub.add_parser("score-val", help="score one chosen version on all of VAL, not the 200-patient pool")
     sv.add_argument("--tag", required=True)
+    sv.add_argument("--pool", action="store_true", help="the 200-patient VAL pool the rounds use, not all of VAL")
     args = p.parse_args(argv)
     return {
         "init": cmd_init, "dry-run": cmd_dry_run, "print-prompt": cmd_print_prompt, "build-images": cmd_build_images,

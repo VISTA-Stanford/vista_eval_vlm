@@ -31,7 +31,10 @@ GUIDE_SRC = Path(__file__).resolve().parent / "context" / "patient_data_guide.md
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever you change
 #: ``prompt`` below, or a pass run under the old wording is served again. The guide's hash is part of it, so an
 #: edit to the guide also stops old passes being served.
-PROMPT_TAG = f"died-2yr-ehr-v3-guide-{hashlib.sha256(GUIDE_SRC.read_bytes()).hexdigest()[:10]}"
+PROMPT_TAG = (f"died-2yr-ehr-v3-guide-{hashlib.sha256(GUIDE_SRC.read_bytes()).hexdigest()[:10]}"
+              + ("-summary-v1" if config.WITH_SUMMARY else ""))
+#: The patient summary's name in the session's record folder (config.WITH_SUMMARY only).
+SUMMARY = "summary.txt"
 #: The session's reasoning is not kept in its transcript (thinking blocks arrive empty), so it writes what it
 #: saw; the optimizer reads it beside the transcript for TRAIN mistakes.
 FINDINGS = "findings.md"
@@ -94,6 +97,10 @@ def program_spec(forbidden):
         for f in record_files(patient_dir(call.payload["id"])):
             shutil.copy2(f, dest / f.name)
             (dest / f.name).chmod(0o444)
+        if config.WITH_SUMMARY:
+            # Raises when a patient has no summary: the arm is only meaningful if every patient gets one.
+            shutil.copy2(config.SUMMARY_DIR / f"{call.payload['id']}.txt", dest / SUMMARY)
+            (dest / SUMMARY).chmod(0o444)
         shutil.copy2(GUIDE_SRC, Path(folder) / GUIDE)
         (Path(folder) / GUIDE).chmod(0o444)
 
@@ -118,6 +125,9 @@ def program_spec(forbidden):
             f"- {', '.join(f'registry_{t}.parquet' for t in REGISTRY_TABLES)}: the cancer registry's record of "
             f"this cancer, limited to the fields allowed at that cutoff.\n"
             f"- meta.json: the patient's opaque id and the cutoff date.\n"
+            + (f"- {SUMMARY}: a summary of this record written earlier by a language model from the same record, "
+               f"cut at the same day. It can be wrong or leave things out; check what matters in the record.\n"
+               if config.WITH_SUMMARY else "") +
             f"python3 has pandas, pyarrow and duckdb for the parquet files.\n\n"
             f"Read {paths.call}/{GUIDE} before the record: it says what each file holds, where each kind of fact "
             f"(stage, histology, biomarkers, treatment, imaging and reports, labs, smoking, visits) lives, how the "

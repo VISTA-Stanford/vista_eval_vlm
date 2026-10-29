@@ -272,5 +272,12 @@ def stage_files(layout: Layout) -> None:
         # The optimizer reads the same data map every session gets, verbatim, at the end of its brief.
         from agentic import GUIDE, GUIDE_SRC
         brief += f"\n\n---\n\n# Appendix: `{GUIDE}`, as every session sees it\n\n" + GUIDE_SRC.read_text(encoding="utf-8")
+    if config.WITH_SUMMARY:
+        brief += (
+            "\n\n---\n\n# This run: each record also holds `summary.txt`\n\n"
+            "Every session's record folder also holds `summary.txt`: a summary of the same record, written earlier "
+            "by a language model and dated at the same cutoff. It can be wrong or leave things out. Your program may "
+            "use it however helps (read it first, trust it, check it against the record, or ignore it). A TRAIN "
+            "mistake's copy is `<id>-summary.txt`, beside its other record files.\n")
     (layout.inputs / op.TASK_BRIEF_NAME).write_text(brief, encoding="utf-8")
 

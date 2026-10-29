@@ -29,7 +29,9 @@ ITERATIONS=${ITERATIONS:-5}  # Phil 2026-10-28, as the CT task
 MAX_RESUMES=${MAX_RESUMES:-20}
 export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-3}
 export AGENTIC_LABEL_OPT=$ENGINE_WT
-export TASK_WORKDIR=$HOME/.cache/alo-tasks/died-2yr-ehr-yesno  # the old folder holds the probability-era seed (config.WORKDIR)
+export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/died-2yr-ehr-yesno}  # the old folder holds the probability-era seed (config.WORKDIR)
+# WITH_SUMMARY=1: each record also holds the patient summary (config.WITH_SUMMARY); give it its own TASK_WORKDIR.
+export WITH_SUMMARY=${WITH_SUMMARY:-0}
 RESULTS=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/$(hostname)/$RUN_ID
 LOG=$TASK_WORKDIR/$RUN_ID-run.log
 
@@ -114,6 +116,13 @@ n=$(find "$TASK_DATA_DIR/patients" -mindepth 1 -maxdepth 1 -type d | wc -l)
 [ "$n" -eq 5549 ] || fail "expected 5549 patient folders in $TASK_DATA_DIR/patients, found $n"
 cmp -s "$DATA/pools.json" "$TASK_DATA_DIR/pools.json" || fail "local pools.json differs from the mount's"
 echo "records: $n patients in $TASK_DATA_DIR"
+if [ "$WITH_SUMMARY" = 1 ]; then
+    (cd "$TASK_DIR" && uv run -q --no-project --with "duckdb<2" python -B scripts/pull_summaries.py --local-only) >/dev/null \
+        || fail "copying the summaries from the mount"
+    python3 -I -c "import json,os,sys; d=os.environ['TASK_DATA_DIR']; p=json.load(open(d+'/pools.json')); m=[i for k in ('train','val') for i in p[k] if not os.path.isfile(f'{d}/summaries/{i}.txt')]; sys.exit(f'{len(m)} pool patients have no summary' if m else 0)" \
+        || fail "summaries missing for pool patients"
+    echo "summaries: every TRAIN and VAL pool patient has one"
+fi
 
 # Images, this machine's pins, the token, and the $0 dry run. A rebuild replaces the image under the same tag, so
 # a run of this task already going on this machine would lose its pinned image (it did, 2026-10-20): refuse.
