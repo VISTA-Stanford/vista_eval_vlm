@@ -7,7 +7,9 @@ From the per-model guidance (planning/vista_eval_vlm/session/2026-10-26-per-mode
   * reasoning effort "low", the cheapest legal setting (the pilot compares "medium");
   * native 512 px (896 px costs 3x the tokens; the pilot can test it).
 Windows: MedGemma's set, so every model sees the same pixels (guidance, cross-model points).
-JPEG at quality 95, as the AI Hub adapter already sends.
+Lossless PNG at native 512 px (Phil 10-28): JPEG's colour sub-sampling blurred the three windows by ~5-7 grey
+levels; PNG sends exact pixels for the same tokens. Measured 10-28 from weill: a 50-slice PNG request (22.0 MB) was
+accepted, 15,816 prompt tokens, the same as JPEG.
 """
 
 from .base import Recipe
@@ -20,8 +22,8 @@ RECIPE = Recipe(
     n_slices_pair=25,
     windows="medgemma",
     size=None,
-    image_format="jpeg",
-    jpeg_quality=95,
+    image_format="png",
+    jpeg_quality=None,
     label_style="before",
     answer_form="schema",
     max_images=50,

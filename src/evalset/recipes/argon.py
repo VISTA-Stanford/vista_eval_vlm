@@ -7,7 +7,9 @@ and Google's media-resolution and image-understanding pages:
   * media resolution set to high explicitly (Google's recommendation for images with small detail);
   * a response schema forces "yes" or "no"; temperature is ignored by the model, thinking "low";
   * 50 slices for one scan, 25 + 25 for two: the same counts as Astra, the common ceiling.
-Windows: MedGemma's set (guidance, cross-model points). JPEG at quality 95.
+Windows: MedGemma's set (guidance, cross-model points). Lossless PNG at native 512 px (Phil 10-28): JPEG's colour
+sub-sampling blurred the three windows by ~5-7 grey levels; a 50-slice PNG request (22.0 MB) was accepted on 10-28,
+55,019 prompt tokens, the same as JPEG.
 
 No explicit context cache: Vertex answers "Model `gemini-4-argon` does not support explicit context
 caching" (HTTP 400, measured 2026-10-28, $0; Google's docs: not supported "for Gemini 4 Argon and onward").
@@ -26,8 +28,8 @@ RECIPE = Recipe(
     n_slices_pair=25,
     windows="medgemma",
     size=None,
-    image_format="jpeg",
-    jpeg_quality=95,
+    image_format="png",
+    jpeg_quality=None,
     label_style="before",
     answer_form="schema",
     settings=(("media_resolution", "MEDIA_RESOLUTION_HIGH"), ("thinking_level", "low"),

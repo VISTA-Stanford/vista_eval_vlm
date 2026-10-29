@@ -39,7 +39,7 @@ def test_pack_renders_head_first_and_checks_hashes(mount):
     last = np.asarray(Image.open(io.BytesIO(imgs[-1])))
     assert first[..., 0].mean() > 250 and last[..., 0].mean() < 5  # head slice first
     d = packs.pack_dir(r, 50) / packs.scan_id("a", "b")
-    (d / "001.jpg").write_bytes(b"tampered")
+    (d / m["files"][1]).write_bytes(b"tampered")
     with pytest.raises(ValueError):
         packs.load(r, 50, "a", "b")
 

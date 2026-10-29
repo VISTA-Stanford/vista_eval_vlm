@@ -103,3 +103,11 @@ def test_pack_ids_shared_only_when_pixels_match():
     assert a.pack_id(50) == g.pack_id(50)  # same render settings -> one pack for both
     assert a.pack_id(50) != m.pack_id(50)  # MedGemma: PIL-default JPEG quality
     assert a.pack_id(50) != a.pack_id(25)
+
+
+def test_frontier_recipes_send_lossless_png():
+    for name in ("astra", "argon"):
+        r = recipes.get(name)
+        assert r.image_format == "png" and r.jpeg_quality is None
+        assert r.build("Answer yes or no.", [(None, [b"x"])]).parts[1]["mime"] == "image/png"
+    assert recipes.get("medgemma").image_format == "jpeg"  # Google's published recipe
