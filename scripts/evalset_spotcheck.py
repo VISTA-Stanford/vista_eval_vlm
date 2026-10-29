@@ -3,7 +3,8 @@ and check it, without calling any model.
 
 For every recipe x step x arm (one check-run case each, from the image packs already on the mount):
   * images per call match the recipe (fewer only when the scan has fewer slices), labels in the recipe's
-    style and order (prior scan first), every image a decodable RGB JPEG at the expected size;
+    style and order (prior scan first), every image a decodable RGB image in the recipe's format (JPEG or PNG)
+    at the expected size;
   * slices run head to feet (the stored index falls), the spine sits in the lower half of a mid slice, the first
     sent image re-renders byte for byte from the NIfTI, and it is much closer to that render than to its mirror;
     the JPEG error per window channel is reported (information, not a check);
@@ -76,7 +77,8 @@ def image_checks(recipe, card, row, step):
         pil = [Image.open(io.BytesIO(b)) for b in imgs]
         sizes = {p.size for p in pil}
         fmts = {(p.format, p.mode) for p in pil}
-        check(f"{tag}: images {sorted(fmts)} at {sorted(sizes)}", fmts == {("JPEG", "RGB")} and len(sizes) == 1)
+        check(f"{tag}: images {sorted(fmts)} at {sorted(sizes)}",
+              fmts == {(recipe.image_format.upper(), "RGB")} and len(sizes) == 1)
         stack = nifti.AxialStack.open(nifti.ct_path(study, series, mount_root=paths.mount_root()))
         k0 = m["display_indices"][0]
         fresh = windows.rgb_u8(stack[k0], recipe.windows).astype(float)
