@@ -140,15 +140,27 @@ def _step2_table(client) -> pd.DataFrame:
     return df[df[[f"label__{t}" for t in tasks]].notna().any(axis=1)]
 
 
+#: Step 2 for v1 (Phil 10-29): a simple random 1,000 TEST scans, drawn once and kept fixed for every model.
+STEP2_N = 1000
+STEP2_SEED = 20261029
+
+
 def step2(client) -> pd.DataFrame:
-    tasks = [q.task for q in CARDS[2].questions]
-    df = _step2_table(client)
-    keep = greedy_cover(df[[f"label__{t}" for t in tasks]], PER_ANSWER, SEED)
-    df = df.loc[keep]
+    """A simple random STEP2_N of the labelled TEST scans (seed STEP2_SEED), every label column kept."""
+    df = _step2_table(client).sort_index()
+    df = df.sample(n=STEP2_N, random_state=STEP2_SEED)
     missing = [k for k, a, b in zip(df.index, df["study"], df["series"]) if not _on_mount(a, b)]
     if missing:
         raise RuntimeError(f"step 2: {len(missing)} chosen scans have no NIfTI on the mount")
-    df = df.reset_index()
+    df = df.sort_index().reset_index()
+    return df.assign(case_id=df["ct_accession_number"].astype(str))
+
+
+def step2_greedy_526(client) -> pd.DataFrame:
+    """The 10-28 step-2 sample (every answer of all 17 items at >=100), superseded 10-29; kept for reference."""
+    tasks = [q.task for q in CARDS[2].questions]
+    df = _step2_table(client)
+    df = df.loc[greedy_cover(df[[f"label__{t}" for t in tasks]], PER_ANSWER, SEED)].reset_index()
     return df.assign(case_id=df["ct_accession_number"].astype(str))
 
 
@@ -265,14 +277,33 @@ def counts(step: int, df: pd.DataFrame) -> dict:
     return out
 
 
-def save(step: int, df: pd.DataFrame, root: Path | None = None, which: str = "sample") -> Path:
+def case_hash(df: pd.DataFrame) -> str:
+    """sha256 of the sorted case ids: names the case set, independent of file encoding."""
+    import hashlib
+    return hashlib.sha256("\n".join(sorted(df["case_id"].astype(str))).encode()).hexdigest()
+
+
+def save(step: int, df: pd.DataFrame, root: Path | None = None, which: str = "sample", force: bool = False) -> Path:
+    """Write the step's file. A file that already exists with a different case set is never replaced unless
+    ``force``: samples are fixed once drawn (Phil 10-29, "keep those 1k fixed")."""
     root = Path(root or paths.root()) / "samples"
     root.mkdir(parents=True, exist_ok=True)
     out = root / f"{_name(step, which)}.parquet"
+    if out.exists() and not force:
+        old = pd.read_parquet(out)
+        if case_hash(old) != case_hash(df):
+            raise RuntimeError(f"{out} exists with a different case set; samples are fixed once drawn (force to replace)")
     df.to_parquet(out, index=False)
     commit = paths.code_commit()
-    meta = {"step": step, "which": which, "built": date.today().isoformat(), "seed": SEED, "per_answer": PER_ANSWER,
-            "code_commit": commit, "counts": counts(step, df)}
+    import hashlib
+    meta = {"step": step, "which": which, "built": date.today().isoformat(), "code_commit": commit,
+            "case_set_sha256": case_hash(df), "file_sha256": hashlib.sha256(out.read_bytes()).hexdigest(),
+            "counts": counts(step, df)}
+    if step == 2 and which == "sample":
+        meta.update({"rule": f"simple random {STEP2_N} of the labelled TEST scans with a NIfTI on the mount",
+                     "seed": STEP2_SEED, "pool": "per_ct_diagnostic_tasks TEST, any of the 17 items labelled"})
+    elif which == "sample":
+        meta.update({"seed": SEED, "per_answer": PER_ANSWER})
     if step == 1 and which == "sample":
         meta["note"] = STEP1_NOTE
     (root / f"{_name(step, which)}.json").write_text(json.dumps(meta, indent=1))
@@ -288,11 +319,12 @@ def main() -> int:
     ap.add_argument("cmd", choices=["build"])
     ap.add_argument("--steps", type=int, nargs="+", default=[1, 2, 3, 4])
     ap.add_argument("--which", choices=["sample", "test"], default="sample")
+    ap.add_argument("--force", action="store_true", help="replace an existing file with a different case set")
     args = ap.parse_args()
     client = _bq()
     for s in args.steps:
         df = (BUILDERS if args.which == "sample" else TEST_BUILDERS)[s](client)
-        out = save(s, df, which=args.which)
+        out = save(s, df, which=args.which, force=args.force)
         print(f"step {s}: {json.dumps(counts(s, df))} -> {out}")
     return 0
 

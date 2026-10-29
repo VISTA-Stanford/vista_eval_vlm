@@ -54,15 +54,18 @@ def encode(rgb_u8, recipe: Recipe) -> bytes:
     return buf.getvalue()
 
 
-def render_scan(recipe: Recipe, n: int, study, series, root: Path | None = None, commit: str | None = None) -> dict:
-    """Render one scan into the pack (kept if its manifest is already there). Returns the manifest."""
+def render_scan(recipe: Recipe, n: int, study, series, root: Path | None = None, commit: str | None = None,
+                stack=None) -> dict:
+    """Render one scan into the pack (kept if its manifest is already there). Returns the manifest. ``stack``: an
+    already opened ``nifti.AxialStack`` for this scan, so several packs can share one read of the volume."""
     out = pack_dir(recipe, n, root) / scan_id(study, series)
     mf = out / "manifest.json"
     if mf.is_file():
         return json.loads(mf.read_text())
     if recipe.orientation != "radiological":
         raise ValueError("packs render radiology display only")
-    stack = nifti.AxialStack.open(nifti.ct_path(study, series, mount_root=paths.mount_root()))
+    if stack is None:
+        stack = nifti.AxialStack.open(nifti.ct_path(study, series, mount_root=paths.mount_root()))
     display = slices.CT_SELECTORS[recipe.sampler](len(stack), n)
     out.mkdir(parents=True, exist_ok=True)
     ext = "jpg" if recipe.image_format == "jpeg" else "png"
@@ -110,24 +113,36 @@ def scans_for(df, n_scans: int):
 
 
 def _render_one(args):
-    recipe, n, study, series, root, commit = args
+    targets, study, series, root, commit = args
     try:
-        render_scan(recipe, n, study, series, root, commit)
+        todo = [(r, n) for r, n in targets
+                if not (pack_dir(r, n, root) / scan_id(study, series) / "manifest.json").is_file()]
+        if todo:
+            # One read of the volume (the slow part, over gcsfuse) for every pack still missing this scan.
+            stack = nifti.AxialStack.open(nifti.ct_path(study, series, mount_root=paths.mount_root()))
+            for r, n in todo:
+                render_scan(r, n, study, series, root, commit, stack)
         return None
     except Exception as e:  # noqa: BLE001 - one bad volume is reported as a count, not a crash
         return f"{type(e).__name__}"
 
 
 def render_many(recipe: Recipe, n: int, pairs, workers: int = 2, root: Path | None = None) -> dict:
-    d = pack_dir(recipe, n, root)
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "pack.json").write_text(json.dumps({"pack_id": recipe.pack_id(n), "render": recipe.render_key(n)}, indent=1))
-    commit = paths.code_commit()  # once per pack, not once per scan
-    jobs = [(recipe, n, s, r, root, commit) for s, r in pairs]
+    return render_many_multi([(recipe, n)], pairs, workers, root)
+
+
+def render_many_multi(targets, pairs, workers: int = 2, root: Path | None = None) -> dict:
+    """Render every scan in ``pairs`` into each (recipe, slice count) pack in ``targets``, reading each volume once."""
+    for r, n in targets:
+        d = pack_dir(r, n, root)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "pack.json").write_text(json.dumps({"pack_id": r.pack_id(n), "render": r.render_key(n)}, indent=1))
+    commit = paths.code_commit()  # once per invocation, not once per scan
+    jobs = [(targets, s, r, root, commit) for s, r in pairs]
     with ProcessPoolExecutor(max_workers=max(1, workers)) as ex:
         errs = list(ex.map(_render_one, jobs))
-    return {"pack": recipe.pack_id(n), "scans": len(jobs), "failed": sum(e is not None for e in errs),
-            "errors": sorted({e for e in errs if e})}
+    return {"packs": [r.pack_id(n) for r, n in targets], "scans": len(jobs),
+            "failed": sum(e is not None for e in errs), "errors": sorted({e for e in errs if e})}
 
 
 def main() -> int:
@@ -135,7 +150,7 @@ def main() -> int:
     from evalset.cards import CARDS
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["render"])
-    ap.add_argument("--recipe", required=True)
+    ap.add_argument("--recipe", required=True, help="a recipe, or several comma-separated (one read per scan)")
     ap.add_argument("--step", type=int, required=True)
     ap.add_argument("--limit", type=int, default=None, help="first N cases of the step (check runs)")
     ap.add_argument("--n-slices", type=int, default=None, help="override the recipe's slice count")
@@ -146,13 +161,15 @@ def main() -> int:
     args = ap.parse_args()
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     from evalset.run import recipe_for
-    recipe, _ = recipe_for(args.recipe, args.arms, args.variant)
     n_scans = len(CARDS[args.step].scan_names)
-    n = args.n_slices or recipe.slices_per_scan(n_scans)
+    targets = []
+    for name in args.recipe.split(","):
+        recipe, _ = recipe_for(name.strip(), args.arms, args.variant)
+        targets.append((recipe, args.n_slices or recipe.slices_per_scan(n_scans)))
     df = samples.load(args.step, which=args.which)
     if args.limit:
         df = check_cases(df, args.step, args.limit)
-    print(json.dumps(render_many(recipe, n, scans_for(df, n_scans), args.workers)))
+    print(json.dumps(render_many_multi(targets, scans_for(df, n_scans), args.workers)))
     return 0
 
 

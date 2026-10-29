@@ -28,7 +28,9 @@ def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, 
     ok = True
     for step in steps:
         card = CARDS[step]
-        qids = {q.id for q in card.questions if not questions or q.id in questions}
+        from evalset.cards import default_questions
+        qs = default_questions(step, questions)
+        qids = {q.id for q in card.questions if not qs or q.id in qs}
         if not qids:
             continue
         cases = samples.load(step, root, which)

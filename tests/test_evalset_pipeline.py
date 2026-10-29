@@ -80,14 +80,15 @@ def test_run_writes_every_question_and_resumes(mount):
     r = get("argon", n_slices=4)
     packs.render_many(r, 4, [("a", "b")], workers=1)
     fb = FakeBackend(lambda m: "yes" if "lobe" in m.question else "no")
-    res = run.run(r, 2, "ct", "t", backend=fb)
+    every = [q.id for q in CARDS[2].questions]
+    res = run.run(r, 2, "ct", "t", backend=fb, questions=every)
     assert len(res) == 34 and fb.calls == 34
     assert set(res["answer"]) == {"yes", "no"}
     assert res["label"].isna().sum() == 1  # the unlabelled pneumonitis row is kept, unscored
     one = res[(res.case_id == "x1") & (res.question_id == "lobe_rul")].iloc[0]
     assert one["recipe"] == "argon" and one["task"] == "per_ct_lung_lobe_rul"
     fb2 = FakeBackend(lambda m: "yes")
-    res2 = run.run(r, 2, "ct", "t", backend=fb2)
+    res2 = run.run(r, 2, "ct", "t", backend=fb2, questions=every)
     assert fb2.calls == 0 and len(res2) == 34
 
 
@@ -561,3 +562,47 @@ def test_which_selects_sample_or_whole_test_file(mount):
     packs.render_many(r, 4, [("a", "b")], workers=1)
     res = run.run(r, 2, "ct", "wt", backend=FakeBackend(lambda m: "no"), questions=["lobe_rul"], which="test")
     assert sorted(res["case_id"]) == ["t0", "t1", "t2"]
+
+
+
+def test_step2_defaults_to_the_five_v1_findings(mount):
+    from evalset.cards import DEFAULT_QUESTIONS, default_questions
+    assert default_questions(2) == ["lesion_lungs", "lobe_rul", "pneumonitis", "lesion_liver", "lesion_lymph_nodes"]
+    assert default_questions(1) is None and default_questions(2, ["lobe_rml"]) == ["lobe_rml"]
+    assert all(any(q.id == d for q in CARDS[2].questions) for d in DEFAULT_QUESTIONS[2])
+    root = mount / "evalset"
+    labels = {f"label__{q.task}": 1 for q in CARDS[2].questions}
+    _samples(root, 2, [dict(case_id="x", person_id="1", split="test", study="a", series="b", **labels)])
+    r = get("argon", n_slices=4)
+    packs.render_many(r, 4, [("a", "b")], workers=1)
+    res = run.run(r, 2, "ct", "five", backend=FakeBackend(lambda m: "no"))
+    assert sorted(res["question_id"]) == sorted(DEFAULT_QUESTIONS[2])
+
+
+def test_saved_samples_are_never_silently_redrawn(tmp_path):
+    from evalset import samples as sm
+    a = pd.DataFrame({"case_id": ["1", "2"], "split": ["test", "test"]})
+    labels = {f"label__{q.task}": 0 for q in CARDS[3].questions}
+    a = a.assign(**labels)
+    sm.save(3, a, root=tmp_path)
+    sm.save(3, a, root=tmp_path)  # same cases: fine
+    b = a.assign(case_id=["1", "3"])
+    with pytest.raises(RuntimeError):
+        sm.save(3, b, root=tmp_path)
+    sm.save(3, b, root=tmp_path, force=True)
+    meta = json.loads((tmp_path / "samples" / "step3.json").read_text())
+    assert meta["case_set_sha256"] == sm.case_hash(b) and len(meta["file_sha256"]) == 64
+
+
+def test_render_many_multi_writes_each_pack_from_one_read(mount, monkeypatch):
+    opened = []
+    real = nifti.AxialStack.open
+    monkeypatch.setattr(nifti.AxialStack, "open", classmethod(lambda cls, p: opened.append(p) or real(p)))
+    mg, ar = get("medgemma", n_slices=3), get("argon", n_slices=3)
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.setattr(packs, "ProcessPoolExecutor", ThreadPoolExecutor)  # keep the patched reader in-process
+    out = packs.render_many_multi([(mg, 3), (ar, 3)], [("a", "b")], workers=1)
+    assert out["failed"] == 0 and len(opened) == 1
+    assert packs.load(mg, 3, "a", "b") and packs.load(ar, 3, "a", "b")
+    packs.render_many_multi([(mg, 3), (ar, 3)], [("a", "b")], workers=1)
+    assert len(opened) == 1  # both already rendered: nothing re-read

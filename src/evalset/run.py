@@ -157,6 +157,8 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
         max_spend: float | None = None, backend=None, root=None, questions=None, variant=None,
         which: str = "sample") -> pd.DataFrame:
     card = CARDS[step]
+    from evalset.cards import default_questions
+    questions = default_questions(step, questions)
     df = samples.load(step, root, which)
     if limit:
         df = packs.check_cases(df, step, limit)
@@ -424,7 +426,9 @@ def main() -> int:
     backend = (VLLMBackend(recipe) if recipe.model_type == "vllm"
                else APIBackend(recipe, paths.root() / "model_cache", args.max_spend))
     for step in args.step:
-        if args.questions and not any(q.id in args.questions for q in CARDS[step].questions):
+        from evalset.cards import default_questions
+        qs = default_questions(step, args.questions)
+        if qs and not any(q.id in qs for q in CARDS[step].questions):
             continue
         for arm in ([args.arm] if args.arm else list(CARDS[step].arms)):
             res = run(recipe, step, arm, args.run, args.limit, args.max_spend, backend, questions=args.questions,
