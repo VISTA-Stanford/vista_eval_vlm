@@ -308,6 +308,15 @@ def _trace_files(artifacts: RunArtifacts, call_id: str) -> list[Path]:
 
 
 
+def _copy_over(src: Path, dest: Path) -> None:
+    """Copy ``src`` to ``dest``, overwriting ``dest`` even if a prior run left it read-only.
+    A resume re-runs the TRAIN pass and re-copies the session trace files, which are mode 0444:
+    ``shutil.copy2`` cannot reopen an existing 0444 ``dest`` for writing, so remove it first."""
+    if dest.exists():
+        dest.unlink()
+    shutil.copy2(src, dest)
+
+
 def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult], MistakeCorpus]:
     """The loop calls this after each TRAIN pass. It writes every TRAIN patient of the pass (gold at each horizon,
     the session's yes/no answers and one-line reason), marking as a mistake each one wrong at either horizon or
@@ -331,12 +340,12 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
             if mistake:
                 for f in sorted(patient_dir(i).iterdir()):
                     dest = records / f"{i}-{f.name}"
-                    shutil.copy2(f, dest)
+                    _copy_over(f, dest)
                     files.append(str(dest))
                 log = Path(a["findings_log"]) if a.get("findings_log") else None
                 for f in _trace_files(artifacts, i) + ([log] if log and log.is_file() else []):
                     dest = records / f"{i}-trace-{f.name}"
-                    shutil.copy2(f, dest)
+                    _copy_over(f, dest)
                     traces.append(str(dest))
             entries.append({"id": i,
                             **{f"gold_{key}": rows[i][field] for key, field, _w in HORIZONS},
