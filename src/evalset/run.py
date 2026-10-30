@@ -81,6 +81,8 @@ class APIBackend:
 
     @staticmethod
     def _wire(m):
+        if m.system:
+            raise ValueError("API recipes take no system message; put the line in the persona instead")
         return {"parts": list(m.parts), "prefix_len": m.prefix_len}
 
     def is_cached(self, m) -> bool:
@@ -108,8 +110,11 @@ def _image_digest(data: bytes) -> bytes:
 
 
 def message_key(m) -> str:
-    """Fingerprint of exactly what the model was sent (every text part, every image's hash, in order)."""
+    """Fingerprint of exactly what the model was sent (the system message if any, every text part, every image's
+    hash, in order). Calls without a system message keep the key they always had."""
     h = hashlib.sha256()
+    if getattr(m, "system", ""):
+        h.update(b"S" + m.system.encode())
     for p in m.parts:
         h.update(b"T" + p["text"].encode() if p["type"] == "text" else b"I" + _image_digest(p["data"]))
     return h.hexdigest()
@@ -337,7 +342,10 @@ class VLLMBackend:
                                      logprobs=int(recipe.setting("logprobs", 20)))
 
     def ask_many(self, msgs):
-        convs = [[{"role": "user", "content": openai_content(m)}] for m in msgs]
+        # A system message goes first; MedGemma's chat template folds it into the start of the user turn, before
+        # the images, as Google's quick-start notebook sends "SYSTEM INSTRUCTION: think silently if needed."
+        convs = [([{"role": "system", "content": m.system}] if m.system else [])
+                 + [{"role": "user", "content": openai_content(m)}] for m in msgs]
         outs = self.llm.chat(convs, self.params, use_tqdm=True)
         return [{"text": o.outputs[0].text, "log_probs": answer_logprobs(o.outputs[0]), "usage":
                  {"prompt_tokens": len(o.prompt_token_ids or []), "output_tokens": len(o.outputs[0].token_ids)}}

@@ -15,6 +15,8 @@ model and the Claude Code agent read these files, so they all answer about the s
   step 4  board progression: the 334 board cases the rev-5 board CT run answered (scored answer, CT and
           prior CT; all splits, 45 TEST reported separately). One case has no split in the board table: it
           counts in the all-cases score and in no per-split score
+  step 5  positive control (IV contrast, female sex): scans of the step-2 sample, balanced on contrast, answer
+          keys from each series' DICOM header on the mount (no BigQuery)
 
     python -m evalset.samples build --steps 1 2 3 4
 
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -258,7 +261,67 @@ def step4_test(client) -> pd.DataFrame:
     return df[df["split"] == "test"].reset_index(drop=True)
 
 
-BUILDERS = {1: step1, 2: step2, 3: step3, 4: step4}
+#: Step 5 control (spec 2026-10-30-medgemma-fair-eval): one-slice DICOM header per series, ``{study}__{series}.dcm``.
+DICOM_HEADERS = "chaudhari_lab/ct_data/ct_scans/vista/dicom_metadata"
+STEP5_SEED = 20261030
+STEP5_RULE = ("step-2 sample scans whose study description and contrast-agent field agree; every scan without contrast, "
+              "the same number with (seeded); female from PatientSex")
+
+
+def contrast_from_description(desc) -> float:
+    """1 / 0 from a study description that says with / without IV contrast; NaN when it says both or neither."""
+    d = re.sub(r"\s+", " ", str(desc or "").upper())
+    if re.search(r"\bW(ITH)? AND WO\b|WITH AND WITHOUT", d):
+        return np.nan  # two-phase study: the stored series could be either
+    if re.search(r"\bWO\b|WITHOUT", d):
+        return 0.0
+    if re.search(r"\bW\b|\bWITH\b", d):
+        return 1.0
+    return np.nan
+
+
+def contrast_from_agent(agent) -> float:
+    """1 from a named iodinated agent (Isovue, Omnipaque and their misspellings) or 'APPLIED' / 'CE'; 0 from an
+    empty field, 'NONE', 'UNDEFINED' or water alone ('H20', 'H2O'); NaN otherwise."""
+    a = str(agent or "").upper().strip()
+    if re.search(r"ISO|IOS|OMNI", a) or a in ("APPLIED", "CE"):
+        return 1.0
+    if a in ("", "NONE", "UNDEFINED", "H20", "H2O"):
+        return 0.0
+    return np.nan
+
+
+def _header_fields(study, series) -> dict:
+    import pydicom
+    p = paths.mount_root() / paths.BUCKET / DICOM_HEADERS / f"{study}__{series}.dcm"
+    h = pydicom.dcmread(p, stop_before_pixels=True)
+    return {"desc": str(h.get("StudyDescription", "")), "agent": str(h.get("ContrastBolusAgent", "")),
+            "sex": str(h.get("PatientSex", ""))}
+
+
+def step5_labels(base: pd.DataFrame, read=_header_fields, workers: int = 32) -> pd.DataFrame:
+    """``base`` with ``label__meta_iv_contrast`` (NaN unless description and agent agree) and ``label__meta_female``."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(workers) as ex:
+        h = pd.DataFrame(list(ex.map(read, base["study"], base["series"])), index=base.index)
+    d, a = h["desc"].map(contrast_from_description), h["agent"].map(contrast_from_agent)
+    sex = h["sex"].str.upper().str.strip().map({"F": 1.0, "M": 0.0})
+    return base.assign(label__meta_iv_contrast=d.where(d == a), label__meta_female=sex)
+
+
+def step5(_client, read=_header_fields) -> pd.DataFrame:
+    """Every step-2 sample scan without contrast and as many with (seeded), both labels from the DICOM header."""
+    cols = ["case_id", "person_id", "split", "ct_accession_number", "study", "series"]
+    df = step5_labels(load(2)[cols], read)
+    neg = df[df["label__meta_iv_contrast"] == 0]
+    pos = df[df["label__meta_iv_contrast"] == 1].sort_values("case_id")
+    if len(pos) < len(neg):
+        raise RuntimeError(f"step 5: {len(pos)} scans with contrast, fewer than the {len(neg)} without")
+    pos = pos.sample(n=len(neg), random_state=STEP5_SEED)
+    return pd.concat([neg, pos]).sort_values("case_id").reset_index(drop=True)
+
+
+BUILDERS = {1: step1, 2: step2, 3: step3, 4: step4, 5: step5}
 #: ``which="test"``: the whole TEST split, the second stage after the samples (spec, Scale).
 TEST_BUILDERS = {1: step1_test, 2: step2_test, 3: step3_test, 4: step4_test}
 
@@ -302,6 +365,8 @@ def save(step: int, df: pd.DataFrame, root: Path | None = None, which: str = "sa
     if step == 2 and which == "sample":
         meta.update({"rule": f"simple random {STEP2_N} of the labelled TEST scans with a NIfTI on the mount",
                      "seed": STEP2_SEED, "pool": "per_ct_diagnostic_tasks TEST, any of the 17 items labelled"})
+    elif step == 5:
+        meta.update({"rule": STEP5_RULE, "seed": STEP5_SEED, "pool": "samples/step2.parquet", "headers": DICOM_HEADERS})
     elif which == "sample":
         meta.update({"seed": SEED, "per_answer": PER_ANSWER})
     if step == 1 and which == "sample":
@@ -321,7 +386,8 @@ def main() -> int:
     ap.add_argument("--which", choices=["sample", "test"], default="sample")
     ap.add_argument("--force", action="store_true", help="replace an existing file with a different case set")
     args = ap.parse_args()
-    client = _bq()
+    # Step 5 reads DICOM headers only, so it builds without BigQuery.
+    client = _bq() if any(s != 5 for s in args.steps) else None
     for s in args.steps:
         df = (BUILDERS if args.which == "sample" else TEST_BUILDERS)[s](client)
         out = save(s, df, which=args.which, force=args.force)

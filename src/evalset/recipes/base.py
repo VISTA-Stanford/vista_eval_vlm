@@ -24,6 +24,7 @@ class Message:
     """One call: ``parts`` in order; the first ``prefix_len`` parts are the cacheable images + labels."""
     parts: tuple
     prefix_len: int
+    system: str = ""   # system message, sent ahead of the user turn ("" = none)
 
     @property
     def images(self):
@@ -51,6 +52,7 @@ class Recipe:
     answer_form: str = "schema"      # "schema": forced {"answer": yes|no}; "final_answer": free text
     persona: str = ""                # line put before the card text (CT arms only)
     answer_line: str = ""            # replaces the card's "Answer yes or no." when set
+    system: str = ""                 # system message (open models only); the chat template places it
     max_images: int | None = None
     settings: tuple = ()             # model call settings, as (key, value) pairs: effort, decoding...
 
@@ -104,7 +106,7 @@ class Recipe:
             raise ValueError(f"{self.name}: {n_img} images, cap is {self.max_images}")
         prefix = len(parts)
         parts.append({"type": "text", "text": self.wrap_text(card_text, bool(scans))})
-        return Message(parts=tuple(parts), prefix_len=prefix)
+        return Message(parts=tuple(parts), prefix_len=prefix, system=self.system)
 
     def setting(self, key, default=None):
         return dict(self.settings).get(key, default)
