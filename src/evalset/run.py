@@ -328,7 +328,9 @@ class VLLMBackend:
                        limit_mm_per_prompt={"image": n_max},
                        # EVALSET_PREFIX_CACHE=0 turns it off, to check cached and uncached runs give the same answers.
                        enable_prefix_caching=os.environ.get("EVALSET_PREFIX_CACHE", "1") != "0",
-                       gpu_memory_utilization=0.85, trust_remote_code=True,
+                       # EVALSET_GPU_MEMORY_UTIL lowers vLLM's share to fit beside another job on a shared GPU.
+                       gpu_memory_utilization=float(os.environ.get("EVALSET_GPU_MEMORY_UTIL", "0.85")),
+                       trust_remote_code=True,
                        download_dir=cache)
         self.params = SamplingParams(temperature=float(recipe.setting("temperature", 0.0)),
                                      max_tokens=int(recipe.setting("max_new_tokens", 2000)),

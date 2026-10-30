@@ -12,6 +12,7 @@
 # for astra), CUDA_VISIBLE_DEVICES (MedGemma's GPU, default 0), EVALSET_MOUNT_ROOT (default weill's).
 # WHICH: 'sample' (default) or 'test' (the step's whole TEST split; its own go per run).
 # ARMS + VARIANT: a recipe variant from an arms YAML (src/evalset/arms.py), e.g. ARMS=../configs/evalset/x.yaml.
+# EVALSET_GPU_MEMORY_UTIL: vLLM's share of the GPU (default 0.85; lower it to share a GPU with another job).
 # EVALSET_MODEL_CACHE: MedGemma's weights folder (default: the mount's shared cache, slow to read; a local
 # folder that already has the model loads offline, an empty one downloads once with HF_TOKEN set).
 # Spec: planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md (on the mount).
