@@ -8,7 +8,8 @@
 # Needs: Docker, the su-vista-uscentral1 mount, uv, git access to both repos, and on the seat route (the default) the
 # Claude token at ~/.config/alo/oauth_token (mode 600; `claude setup-token` makes one); with ALO_ROUTE=vertex, the
 # Vertex-only service account key at ~/.config/alo/vertex-sa.json (mode 600). Settings, all optional, on the same line:
-# RUN_ID (yesno-r1), ITERATIONS (5), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20); SETUP_ONLY=1 stops before the run.
+# RUN_ID (yesno-r1), ITERATIONS (5), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20), START (a version tag to start a new run
+# from, e.g. program-v5; default the newest good version), TASK_SCHEDULE (JSON, e.g. a bigger TRAIN); SETUP_ONLY=1 stops before the run.
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
 # baselines scored on the same VAL pool (baselines_val_pool.json).
@@ -52,7 +53,7 @@ if [ "${1:-}" = "--loop" ]; then
     [ -f "$TASK_WORKDIR/private/runs/$RUN_ID/run_summary.json" ] && mode=(--resume)
     while :; do
         echo "=== $(date -u +%FT%TZ) run $RUN_ID ${mode[*]:-fresh} (resume $attempt of $MAX_RESUMES)"
-        alo run --run-id "$RUN_ID" --iterations "$ITERATIONS" "${mode[@]}" 2>&1 | tee "$TASK_WORKDIR/last-pass.log" || true
+        alo run --run-id "$RUN_ID" --iterations "$ITERATIONS" ${START:+--start "$START"} "${mode[@]}" 2>&1 | tee "$TASK_WORKDIR/last-pass.log" || true
         publish
         if grep -q "^FINISHED" "$TASK_WORKDIR/last-pass.log"; then echo "FINISHED"; exit 0; fi
         if grep -q "STOPPED (proxy_died)" "$TASK_WORKDIR/last-pass.log" && [ "$attempt" -lt "$MAX_RESUMES" ]; then
@@ -147,5 +148,5 @@ mkdir -p "$RESULTS"
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: run not started)"; exit 0; fi
 mkdir -p "$TASK_WORKDIR"
 cp "$TASK_DIR/scripts/run_on_vm.sh" "$TASK_WORKDIR/run_on_vm.sh"
-setsid nohup env RUN_ID="$RUN_ID" ITERATIONS="$ITERATIONS" MAX_RESUMES="$MAX_RESUMES" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
+setsid nohup env RUN_ID="$RUN_ID" ITERATIONS="$ITERATIONS" MAX_RESUMES="$MAX_RESUMES" START="${START:-}" TASK_SCHEDULE="${TASK_SCHEDULE:-}" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
 echo "SETUP PASS: run $RUN_ID started detached ($PROGRAM_MAX_CONCURRENT at a time); log $LOG; results to $RESULTS"

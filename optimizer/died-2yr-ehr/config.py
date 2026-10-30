@@ -24,7 +24,7 @@ if not (ENGINE_ROOT / "engine" / "driver.py").is_file():
     raise SystemExit(f"no engine at {ENGINE_ROOT}: set AGENTIC_LABEL_OPT to your agentic-label-opt checkout")
 #: The full 40-character engine commit this task was built and tested against
 #: (``git -C $AGENTIC_LABEL_OPT rev-parse HEAD``). Bump it on purpose, after re-running the dry run.
-ENGINE_PIN = "f837651c2d7ef8485564ecd836ff51e39c96cf9d"  # DECIDE (fix/seat-limit-pause on 9aee75f + the CT scan fixes: a seat usage-limit refusal pauses and reruns, 2026-10-29)
+ENGINE_PIN = "cec8b8200b66f628a41e95893dce6d7737371cad"  # DECIDE (fix/seat-limit-pause: seat-limit pause + search answers with a same-line preamble kept, not filed as refused, 2026-10-30)
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
@@ -103,7 +103,7 @@ OPTIMIZER_TIMEOUT_SECONDS = 2700
 #: patient-specific. Spec planning/agentic-label-opt/2026-10-22-search-proxy.md.
 OPTIMIZER_WEB_SEARCH = False  # DECIDE
 SEARCH_PROXY = True  # DECIDE
-SEARCH_REQUESTS_PER_ROUND = 6
+SEARCH_REQUESTS_PER_ROUND = 1000  # DECIDE: no practical cap (Phil 2026-10-30; was 6, and the optimizer asked only 4 in 6 rounds)
 #: Pass ``attempting_step_back: true`` in the change note to try a big change that is undone if VAL drops
 #: by more than this. 0.0 means any drop.
 STEP_BACK_REVERT_TOLERANCE = 0.0

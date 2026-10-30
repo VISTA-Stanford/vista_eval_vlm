@@ -98,7 +98,9 @@ You cannot search the internet yourself: you can ask the search assistant descri
 which sees only your question and the shared findings file, never a record. Ask what predicts 1- and 2-year death
 in thoracic cancer, how strong each factor is, and the death rates by stage, histology and performance status.
 Questions must be general: no ids, no values copied from a record, no note text; such a question is refused. Read
-the findings file before asking, and record in your notebook what you learned.
+the findings file before asking, and record in your notebook what you learned. Use it: there is no practical
+limit on questions, ask as many as help. An answer takes a few minutes, so send your questions early in the round
+and work on the mistakes while they are answered.
 
 ## What is noise
 
