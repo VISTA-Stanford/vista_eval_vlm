@@ -36,7 +36,7 @@ DEFAULT_BASE = "https://aihubapi.stanfordhealthcare.org/azure-openai/deployments
 DEFAULT_API_VERSION = "2025-04-01-preview"
 MAX_IMAGES = 50  # Azure: "maximum allowed: 50" (probed 10-15)
 _RETRY_STATUS = {408, 429, 500, 502, 503, 504}
-USAGE_KEYS = ("prompt_tokens", "cached_prompt_tokens", "output_tokens", "thinking_tokens",
+USAGE_KEYS = ("prompt_tokens", "cached_prompt_tokens", "cache_write_tokens", "output_tokens", "thinking_tokens",
               "total_tokens", "image_count", "request_bytes", "seconds")
 
 
@@ -62,9 +62,14 @@ def build_request(question, encoded_images, choices=None, max_output_tokens=4096
     return body
 
 
-def build_parts_request(parts, choices=None, max_output_tokens=4096, reasoning_effort=None, image_detail=None):
+def build_parts_request(parts, choices=None, max_output_tokens=4096, reasoning_effort=None, image_detail=None,
+                        cache_breakpoint=False, cache_key=None):
     """Chat-completions body from ordered parts ({"type": "text", "text"} / {"type": "image", "data", "mime"}),
-    so slice labels can sit between the images (the eval set's recipes). Same forcing as ``build_request``."""
+    so slice labels can sit between the images (the eval set's recipes). Same forcing as ``build_request``.
+
+    ``cache_breakpoint`` marks the last image as the end of the reusable prefix (GPT-5.6+ prompt-cache breakpoints),
+    so a scan's other questions read its images from the cache whatever their question text; ``cache_key`` sets
+    ``prompt_cache_key`` so those calls are routed to the same cache (Azure prompt-caching guide, 2026-08)."""
     body = build_request("", [], choices, max_output_tokens, reasoning_effort, image_detail)
     content = []
     for p in parts:
@@ -75,8 +80,23 @@ def build_parts_request(parts, choices=None, max_output_tokens=4096, reasoning_e
             if image_detail:
                 url["detail"] = image_detail
             content.append({"type": "image_url", "image_url": url})
+    if cache_breakpoint:
+        last = max((i for i, c in enumerate(content) if c["type"] == "image_url"), default=None)
+        if last is not None:
+            content[last]["prompt_cache_breakpoint"] = {"mode": "explicit"}
     body["messages"] = [{"role": "user", "content": content}]
+    if cache_key:
+        body["prompt_cache_key"] = cache_key
     return body
+
+
+def scan_cache_key(parts) -> str:
+    """A routing key shared by every call on the same images: a hash of the image bytes (no identifiers)."""
+    h = hashlib.sha256()
+    for p in parts:
+        if p["type"] == "image":
+            h.update(p["data"])
+    return "scan-" + h.hexdigest()[:24]
 
 
 def parse_response(status, content_type, text, choices=None):
@@ -93,6 +113,7 @@ def parse_response(status, content_type, text, choices=None):
     u = body.get("usage") or {}
     usage = {"prompt_tokens": u.get("prompt_tokens"),
              "cached_prompt_tokens": (u.get("prompt_tokens_details") or {}).get("cached_tokens"),
+             "cache_write_tokens": (u.get("prompt_tokens_details") or {}).get("cache_write_tokens"),
              "output_tokens": u.get("completion_tokens"),
              "thinking_tokens": (u.get("completion_tokens_details") or {}).get("reasoning_tokens"),
              "total_tokens": u.get("total_tokens")}
@@ -144,6 +165,8 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         self.key_file = "~/.config/vista/aihub.env"
         self.reasoning_effort = None
         self.image_detail = None
+        self.cache_breakpoint = False  # recipe setting: explicit prompt-cache breakpoint after the last image
+        self.prompt_cache_key = False  # recipe setting: route a scan's calls together (key = hash of its images)
         self.jpeg_quality = 95
         self.concurrency = 1
         self.max_retries = 6
@@ -162,6 +185,13 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         for k in ("jpeg_quality", "concurrency", "max_retries", "timeout_s"):
             setattr(self, k, int(opts.get(k, getattr(self, k))))
         self.max_total_tokens = opts.get("max_total_tokens", self.max_total_tokens)
+        for k in ("cache_breakpoint", "prompt_cache_key"):
+            setattr(self, k, bool(opts.get(k, getattr(self, k))))
+
+    def _parts_body(self, msg, max_new_tokens, choices):
+        return build_parts_request(msg["parts"], choices, max_new_tokens, self.reasoning_effort, self.image_detail,
+                                   cache_breakpoint=self.cache_breakpoint,
+                                   cache_key=scan_cache_key(msg["parts"]) if self.prompt_cache_key else None)
 
     def load(self):
         self._key = read_key(self.key_file)
@@ -210,7 +240,7 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         if n_img > MAX_IMAGES:
             return {"text": "", "error": f"{n_img} images; Azure takes at most {MAX_IMAGES} per request"}
         if encoded is not None:
-            body = build_parts_request(msg["parts"], choices, max_new_tokens, self.reasoning_effort, self.image_detail)
+            body = self._parts_body(msg, max_new_tokens, choices)
         else:
             encoded = [encode_image(im, "jpeg", self.jpeg_quality) for im in msg["images"]]
             body = build_request(msg["question"], encoded, choices, max_new_tokens, self.reasoning_effort, self.image_detail)
@@ -261,7 +291,7 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
 
     def is_answered(self, msg, max_new_tokens, choices):
         """True when this eval-set call's answer is already in the disk cache (same key as ``_one``)."""
-        body = build_parts_request(msg["parts"], choices, max_new_tokens, self.reasoning_effort, self.image_detail)
+        body = self._parts_body(msg, max_new_tokens, choices)
         key = hashlib.sha256((self.model_name + "\n" + json.dumps(body)).encode()).hexdigest()
         return (self.response_cache / key[:2] / f"{key}.json").exists()
 

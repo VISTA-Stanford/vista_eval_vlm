@@ -247,6 +247,18 @@ def test_aihub_parts_request_keeps_label_order():
     assert b["reasoning_effort"] == "low"
 
 
+def test_aihub_cache_breakpoint_and_key():
+    from models.aihub_openai import build_parts_request, scan_cache_key
+    plain = build_parts_request(_parts(), ["yes", "no"], 50, "low")
+    assert "prompt_cache_key" not in plain and all("prompt_cache_breakpoint" not in c for c in plain["messages"][0]["content"])
+    other_q = _parts()[:-1] + [{"type": "text", "text": "Another question?"}]
+    b = build_parts_request(_parts(), ["yes", "no"], 50, "low", cache_breakpoint=True, cache_key=scan_cache_key(_parts()))
+    content = b["messages"][0]["content"]
+    assert [i for i, c in enumerate(content) if "prompt_cache_breakpoint" in c] == [1]  # the last image
+    assert b["prompt_cache_key"] == scan_cache_key(other_q)  # same images, same key, whatever the question
+    assert scan_cache_key(_parts()) != scan_cache_key([{"type": "image", "data": b"other"}])
+
+
 def test_run_question_subset(mount):
     root = mount / "evalset"
     labels = {f"label__{q.task}": 0 for q in CARDS[2].questions}
