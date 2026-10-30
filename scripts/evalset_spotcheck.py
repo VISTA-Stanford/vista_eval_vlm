@@ -90,7 +90,7 @@ def image_checks(recipe, card, row, step):
             err, err_mirror = float(per_ch.mean()), float(np.abs(fresh[:, ::-1] - sent).mean())
             check(f"{tag}: orientation — sent image is closer to the render than to its mirror ({err:.1f} vs {err_mirror:.1f})",
                   err < err_mirror / 2)
-            JPEG_ERR[recipe.name].append(per_ch.round(1).tolist())
+            JPEG_ERR.setdefault(recipe.name, []).append(per_ch.round(1).tolist())
         mid = stack[m["display_indices"][len(m["display_indices"]) // 2]]
         f = spine_row_fraction(mid)
         check(f"{tag}: spine in lower half of mid slice (row fraction {f:.2f})", f > 0.5)
@@ -99,32 +99,48 @@ def image_checks(recipe, card, row, step):
 def wire_checks(recipe, msg, step, arm):
     tag = f"{recipe.name} step {step} {arm}"
     parts = list(msg.parts)
+    reason = bool(recipe.setting("reason_field"))
+    intro = 1 if recipe.intro and msg.images else 0
     if recipe.model_type == "vertex_gemini":
         from models.vertex_gemini import build_parts_request
         b = build_parts_request(parts, run.CHOICES, int(recipe.setting("max_new_tokens", 8192)),
-                                recipe.setting("media_resolution"), recipe.setting("thinking_level"))
+                                recipe.setting("media_resolution"), recipe.setting("thinking_level"), reason_field=reason)
         kinds = [next(iter(p)) for p in b["contents"][0]["parts"]]
         g = b["generationConfig"]
-        ok = kinds[-1] == "text" and g["responseSchema"]["enum"] == ["yes", "no"] and \
+        rs = g["responseSchema"]
+        enum = rs["properties"]["answer"]["enum"] if reason else rs["enum"]
+        shape = rs.get("propertyOrdering") == ["reasoning", "answer"] if reason else g["responseMimeType"] == "text/x.enum"
+        ok = kinds[-1] == "text" and enum == ["yes", "no"] and shape and \
             g.get("mediaResolution") == recipe.setting("media_resolution") and \
             g.get("thinkingConfig", {}).get("thinkingLevel") == recipe.setting("thinking_level")
-        check(f"{tag}: Vertex body — {kinds.count('inlineData')} images, question last, yes/no enum, "
+        schema = "JSON {reasoning, answer: yes|no}" if reason else "enum yes/no"
+        check(f"{tag}: Vertex body — {kinds.count('inlineData')} images, question last, {schema}, "
               f"{g.get('mediaResolution')}, thinking {g.get('thinkingConfig', {}).get('thinkingLevel')}", ok)
-        return {"provider": "Vertex generateContent", "parts": f"{kinds.count('text') - 1} labels + {kinds.count('inlineData')} images, then question",
-                "generationConfig": {k: v for k, v in g.items() if k != "responseSchema"} | {"responseSchema": "enum yes/no"}}
+        return {"provider": "Vertex generateContent",
+                "parts": ("intro + " if intro else "") + f"{kinds.count('text') - 1 - intro} labels + {kinds.count('inlineData')} images, then question",
+                "generationConfig": {k: v for k, v in g.items() if k != "responseSchema"} | {"responseSchema": schema}}
     if recipe.model_type == "aihub_openai":
         from models.aihub_openai import build_parts_request
         b = build_parts_request(parts, run.CHOICES, int(recipe.setting("max_new_tokens", 4096)),
-                                recipe.setting("reasoning_effort"))
+                                recipe.setting("reasoning_effort"), cache_breakpoint=bool(recipe.setting("cache_breakpoint")),
+                                reason_field=reason)
         c = b["messages"][0]["content"]
         n_img = sum(x["type"] == "image_url" for x in c)
-        props = b["response_format"]["json_schema"]["schema"]["properties"]["answer"]["enum"]
-        ok = c[-1]["type"] == "text" and props == ["yes", "no"] and n_img <= 50 and \
+        sch = b["response_format"]["json_schema"]["schema"]
+        props = sch["properties"]["answer"]["enum"]
+        order = list(sch["properties"]) == (["reasoning", "answer"] if reason else ["answer"])
+        # The breakpoint, when on, sits on the last image (an intro line before the images doesn't move it).
+        bp = [i for i, x in enumerate(c) if "prompt_cache_breakpoint" in x]
+        last_img = max(i for i, x in enumerate(c) if x["type"] == "image_url") if n_img else None
+        bp_ok = bp == [last_img] if recipe.setting("cache_breakpoint") and n_img else not bp
+        ok = c[-1]["type"] == "text" and props == ["yes", "no"] and order and bp_ok and n_img <= 50 and \
             b.get("reasoning_effort") == recipe.setting("reasoning_effort")
-        check(f"{tag}: AI Hub body — {n_img} images (cap 50), question last, strict schema yes/no, effort {b.get('reasoning_effort')}", ok)
-        return {"provider": "AI Hub chat/completions", "parts": f"{n_img} labels + {n_img} images, then question",
+        schema = "strict JSON schema {reasoning, answer: yes|no}" if reason else "strict JSON schema {answer: yes|no}"
+        check(f"{tag}: AI Hub body — {n_img} images (cap 50), question last, {schema}, effort {b.get('reasoning_effort')}, "
+              f"breakpoint {'on last image' if bp else 'off'}", ok)
+        return {"provider": "AI Hub chat/completions", "parts": ("intro + " if intro else "") + f"{n_img} labels + {n_img} images, then question",
                 "settings": {"reasoning_effort": b.get("reasoning_effort"), "max_completion_tokens": b["max_completion_tokens"],
-                             "response_format": "strict JSON schema {answer: yes|no}"}}
+                             "response_format": schema}}
     c = run.openai_content(msg)
     kinds = [x["type"] for x in c]
     ok = kinds[-1] == "text" and all(kinds[i] == "image_url" and kinds[i + 1] == "text" for i in range(0, len(kinds) - 1, 2))
@@ -137,10 +153,22 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--run", default="check5")
+    ap.add_argument("--arms", default=None, help="arms YAML: check only --variant's recipe, with its overrides")
+    ap.add_argument("--variant", default=None)
+    ap.add_argument("--steps", type=int, nargs="+", default=None, help="steps to check (default: every card)")
     args = ap.parse_args()
+    recipes = RECIPES
+    if args.arms or args.variant:
+        from evalset import arms
+        over, _ = arms.load(args.arms, args.variant)
+        if not over.get("recipe"):
+            raise SystemExit(f"variant {args.variant!r} must name its recipe")
+        recipes = {over["recipe"]: arms.apply(RECIPES[over["recipe"]], args.variant, over)}
     examples, tokens = {}, {}
-    for rname, recipe in RECIPES.items():
+    for rname, recipe in recipes.items():
         for step, card in CARDS.items():
+            if args.steps and step not in args.steps:
+                continue
             row = packs.check_cases(samples.load(step), step, 1).iloc[0].to_dict()
             image_checks(recipe, card, row, step)
             for arm in card.arms:
@@ -152,6 +180,11 @@ def main() -> int:
                 if arm == "ct":
                     check(f"{tag}: image line names {recipe.windows_phrase()}", recipe.windows_phrase() in msg.question)
                     labels = [p["text"] for p in msg.parts[:-1] if p["type"] == "text"]
+                    if recipe.intro:
+                        want_intro = recipe.intro.format(n=len(msg.images))
+                        check(f"{tag}: intro line first, before the images: {want_intro!r}", labels[:1] == [want_intro]
+                              and msg.parts[0]["type"] == "text" and msg.prefix_len == len(msg.parts) - 1)
+                        labels = labels[1:]
                     names = [s for s in card.scan_names if s]
                     order_ok = (not names) or labels[0].startswith(names[0])
                     check(f"{tag}: labels '{labels[0]}' … '{labels[-1]}' ({len(labels)}), prior first", order_ok and len(labels) == len(msg.images))
@@ -178,7 +211,7 @@ def main() -> int:
     n_fail = sum(not r["ok"] for r in RESULTS)
     Path(args.out).write_text(json.dumps({"checks": RESULTS, "examples": examples, "tokens": tokens, "jpeg_error_per_channel": JPEG_ERR,
                                           "recipes": {k: {f: (dict(v) if f == "settings" else v) for f, v in vars(r).items()}
-                                                      for k, r in RECIPES.items()}}, indent=1, default=str))
+                                                      for k, r in recipes.items()}}, indent=1, default=str))
     print(f"{len(RESULTS) - n_fail}/{len(RESULTS)} checks passed -> {args.out}")
     return 1 if n_fail else 0
 

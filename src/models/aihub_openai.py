@@ -40,9 +40,14 @@ USAGE_KEYS = ("prompt_tokens", "cached_prompt_tokens", "cache_write_tokens", "ou
               "total_tokens", "image_count", "request_bytes", "seconds")
 
 
+#: Schema text for the reason_field arm's ``reasoning`` string (the model writes it before ``answer``).
+REASONING_DESCRIPTION = "Brief reasoning from the images, written before the answer."
+
+
 def build_request(question, encoded_images, choices=None, max_output_tokens=4096, reasoning_effort=None,
-                  image_detail=None, mime="image/jpeg"):
-    """The chat-completions body for one row. Pure (no network): unit-tested."""
+                  image_detail=None, mime="image/jpeg", reason_field=False):
+    """The chat-completions body for one row. Pure (no network): unit-tested. ``reason_field`` puts a free
+    ``reasoning`` string before the forced ``answer`` (list choices only)."""
     content = []
     for b in encoded_images or []:
         url = {"url": f"data:{mime};base64," + base64.b64encode(b).decode("ascii")}
@@ -54,23 +59,25 @@ def build_request(question, encoded_images, choices=None, max_output_tokens=4096
     if choices:
         # A list forces one `answer`; a dict {field: options} (a panel) forces one field per question.
         fields = choices if isinstance(choices, dict) else {"answer": choices}
+        props = {k: {"type": "string", "enum": [str(c) for c in v]} for k, v in fields.items()}
+        if reason_field and not isinstance(choices, dict):
+            props = {"reasoning": {"type": "string", "description": REASONING_DESCRIPTION}, **props}
         body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "strict": True, "schema": {
-            "type": "object", "additionalProperties": False, "required": list(fields),
-            "properties": {k: {"type": "string", "enum": [str(c) for c in v]} for k, v in fields.items()}}}}
+            "type": "object", "additionalProperties": False, "required": list(props), "properties": props}}}
     if reasoning_effort:
         body["reasoning_effort"] = reasoning_effort
     return body
 
 
 def build_parts_request(parts, choices=None, max_output_tokens=4096, reasoning_effort=None, image_detail=None,
-                        cache_breakpoint=False, cache_key=None):
+                        cache_breakpoint=False, cache_key=None, reason_field=False):
     """Chat-completions body from ordered parts ({"type": "text", "text"} / {"type": "image", "data", "mime"}),
     so slice labels can sit between the images (the eval set's recipes). Same forcing as ``build_request``.
 
     ``cache_breakpoint`` marks the last image as the end of the reusable prefix (GPT-5.6+ prompt-cache breakpoints),
     so a scan's other questions read its images from the cache whatever their question text; ``cache_key`` sets
     ``prompt_cache_key`` so those calls are routed to the same cache (Azure prompt-caching guide, 2026-08)."""
-    body = build_request("", [], choices, max_output_tokens, reasoning_effort, image_detail)
+    body = build_request("", [], choices, max_output_tokens, reasoning_effort, image_detail, reason_field=reason_field)
     content = []
     for p in parts:
         if p["type"] == "text":
@@ -136,6 +143,9 @@ def parse_response(status, content_type, text, choices=None):
         return json.dumps({k: str(answer[k]).strip() for k in choices}, sort_keys=True), usage, None, False
     if choices and answer not in [str(c) for c in choices]:
         return None, usage, f"answer {answer[:100]!r} not in options", False
+    if choices and isinstance(parsed, dict) and "reasoning" in parsed:
+        # reason_field arm: keep the reasoning with the answer (the scorer reads {"answer": ...}).
+        return json.dumps({"reasoning": str(parsed["reasoning"]), "answer": answer}), usage, None, False
     return answer, usage, None, False
 
 
@@ -167,6 +177,7 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         self.image_detail = None
         self.cache_breakpoint = False  # recipe setting: explicit prompt-cache breakpoint after the last image
         self.prompt_cache_key = False  # recipe setting: route a scan's calls together (key = hash of its images)
+        self.reason_field = False  # recipe setting: schema asks for a short reasoning string before the answer
         self.jpeg_quality = 95
         self.concurrency = 1
         self.max_retries = 6
@@ -185,13 +196,14 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
         for k in ("jpeg_quality", "concurrency", "max_retries", "timeout_s"):
             setattr(self, k, int(opts.get(k, getattr(self, k))))
         self.max_total_tokens = opts.get("max_total_tokens", self.max_total_tokens)
-        for k in ("cache_breakpoint", "prompt_cache_key"):
+        for k in ("cache_breakpoint", "prompt_cache_key", "reason_field"):
             setattr(self, k, bool(opts.get(k, getattr(self, k))))
 
     def _parts_body(self, msg, max_new_tokens, choices):
         return build_parts_request(msg["parts"], choices, max_new_tokens, self.reasoning_effort, self.image_detail,
                                    cache_breakpoint=self.cache_breakpoint,
-                                   cache_key=scan_cache_key(msg["parts"]) if self.prompt_cache_key else None)
+                                   cache_key=scan_cache_key(msg["parts"]) if self.prompt_cache_key else None,
+                                   reason_field=self.reason_field)
 
     def load(self):
         self._key = read_key(self.key_file)
@@ -243,7 +255,8 @@ class AIHubOpenAIAdapter(BaseVLMAdapter):
             body = self._parts_body(msg, max_new_tokens, choices)
         else:
             encoded = [encode_image(im, "jpeg", self.jpeg_quality) for im in msg["images"]]
-            body = build_request(msg["question"], encoded, choices, max_new_tokens, self.reasoning_effort, self.image_detail)
+            body = build_request(msg["question"], encoded, choices, max_new_tokens, self.reasoning_effort, self.image_detail,
+                                 reason_field=self.reason_field)
         data = json.dumps(body)
         key = hashlib.sha256((self.model_name + "\n" + data).encode()).hexdigest()
         path = self.response_cache / key[:2] / f"{key}.json"

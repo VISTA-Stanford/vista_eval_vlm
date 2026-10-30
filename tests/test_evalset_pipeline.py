@@ -259,6 +259,107 @@ def test_aihub_cache_breakpoint_and_key():
     assert scan_cache_key(_parts()) != scan_cache_key([{"type": "image", "data": b"other"}])
 
 
+# -- prompt ablations (configs/evalset/astra_argon_prompt_arms.yaml) --------------------------------
+
+ARMS_FILE = __import__("pathlib").Path(__file__).resolve().parents[1] / "configs" / "evalset" / "astra_argon_prompt_arms.yaml"
+
+
+def _variant(name):
+    from evalset import arms
+    over, _ = arms.load(ARMS_FILE, name)
+    return arms.apply(get(over["recipe"]), name, over)
+
+
+def test_intro_goes_first_inside_the_cached_prefix():
+    r = _variant("astra_intro")
+    m = r.build("Is there X? Answer yes or no.", [(None, [b"i1", b"i2"])])
+    assert m.parts[0] == {"type": "text", "text": "You will see 2 axial chest CT slices, then one yes/no question about them."}
+    assert [p["type"] for p in m.parts] == ["text", "text", "image", "text", "image", "text"]
+    assert m.prefix_len == 5 and m.question == "Is there X? Answer yes or no."
+    # Two scans: n counts every image sent.
+    two = r.build("Q? Answer yes or no.", [("PRIOR", [b"a"]), ("CURRENT", [b"b", b"c"])])
+    assert two.parts[0]["text"].startswith("You will see 3 axial")
+    # Text-only arms are unchanged, so their calls match v1's byte for byte.
+    assert r.build("Q? Answer yes or no.", None).parts == get("astra").build("Q? Answer yes or no.", None).parts
+
+
+def test_intro_keeps_astra_breakpoint_on_the_last_image():
+    from models.aihub_openai import build_parts_request
+    m = _variant("astra_intro").build("Q? Answer yes or no.", [(None, [b"i1", b"i2"])])
+    c = build_parts_request(list(m.parts), ["yes", "no"], 50, "low", cache_breakpoint=True)["messages"][0]["content"]
+    assert [i for i, x in enumerate(c) if "prompt_cache_breakpoint" in x] == [4]
+    assert c[0] == {"type": "text", "text": m.parts[0]["text"]}
+
+
+def test_arms_file_variants_change_one_thing_each():
+    assert _variant("astra_effort_medium").setting("reasoning_effort") == "medium"
+    assert _variant("argon_effort_medium").setting("thinking_level") == "medium"
+    for v in ("astra_reason_field", "argon_reason_field"):
+        r = _variant(v)
+        assert r.setting("reason_field") is True and r.intro == ""
+    a = _variant("astra_reason_field")
+    assert a.setting("cache_breakpoint") and a.setting("reasoning_effort") == "low"  # v1 settings kept
+    assert _variant("argon_intro").pack_id(50) == get("argon").pack_id(50)  # same pixels, same pack
+
+
+def test_aihub_reason_field_schema_and_parse():
+    from models.aihub_openai import build_parts_request, parse_response
+    b = build_parts_request(_parts(), ["yes", "no"], 50, "low", reason_field=True)
+    sch = b["response_format"]["json_schema"]["schema"]
+    assert list(sch["properties"]) == ["reasoning", "answer"] and sch["required"] == ["reasoning", "answer"]
+    assert sch["properties"]["answer"]["enum"] == ["yes", "no"] and sch["properties"]["reasoning"]["type"] == "string"
+    plain = build_parts_request(_parts(), ["yes", "no"], 50, "low")
+    assert list(plain["response_format"]["json_schema"]["schema"]["properties"]) == ["answer"]
+
+    def reply(content):
+        return json.dumps({"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 10}})
+    text, _, err, _ = parse_response(200, "application/json", reply('{"reasoning": "nodule in RUL", "answer": "yes"}'), ["yes", "no"])
+    assert err is None and json.loads(text) == {"reasoning": "nodule in RUL", "answer": "yes"}
+    assert score.parse_answer(text, "schema") == "yes"
+    _, _, err, _ = parse_response(200, "application/json", reply('{"reasoning": "r", "answer": "maybe"}'), ["yes", "no"])
+    assert "not in options" in err
+    text, _, err, _ = parse_response(200, "application/json", reply('{"answer": "no"}'), ["yes", "no"])
+    assert text == "no"  # v1 replies unchanged
+
+
+def test_gemini_reason_field_schema_and_parse():
+    from models.vertex_gemini import build_parts_request, parse_response
+    g = build_parts_request(_parts(), ["yes", "no"], 100, "MEDIA_RESOLUTION_HIGH", "low", reason_field=True)["generationConfig"]
+    assert g["responseMimeType"] == "application/json"
+    assert g["responseSchema"]["propertyOrdering"] == ["reasoning", "answer"]
+    assert g["responseSchema"]["properties"]["answer"]["enum"] == ["yes", "no"]
+    plain = build_parts_request(_parts(), ["yes", "no"], 100, "MEDIA_RESOLUTION_HIGH", "low")["generationConfig"]
+    assert plain["responseMimeType"] == "text/x.enum"
+
+    def body(t):
+        return {"candidates": [{"content": {"parts": [{"text": "thinking", "thought": True}, {"text": t}]},
+                                "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 5}}
+    text, _, err = parse_response(body('{"reasoning": "clear lungs", "answer": "no"}'), ["yes", "no"], True)
+    assert err is None and json.loads(text)["answer"] == "no" and score.parse_answer(text, "schema") == "no"
+    assert "not the schema's JSON" in parse_response(body("no"), ["yes", "no"], True)[2]
+    assert "not in options" in parse_response(body('{"reasoning": "r", "answer": "Yes!"}'), ["yes", "no"], True)[2]
+
+
+def test_gemini_reason_field_is_its_own_cache_key(tmp_path):
+    from models.vertex_gemini import VertexGeminiAdapter
+    a = VertexGeminiAdapter("gemini-4-argon", cache_dir=str(tmp_path))
+    a.configure({"thinking_level": "low"})
+    a.response_cache.mkdir(parents=True)
+    sent = []
+
+    def fake_post(method, body, url=None, http="POST"):
+        sent.append(body)
+        ans = '{"reasoning": "r", "answer": "yes"}' if body["generationConfig"]["responseMimeType"] == "application/json" else "yes"
+        return {"candidates": [{"content": {"parts": [{"text": ans}]}}], "usageMetadata": {"promptTokenCount": 3}}, None
+    a._post = fake_post
+    msg = {"parts": _parts(), "prefix_len": 2}
+    assert a.infer(None, None, [msg], 100, ["yes", "no"])[0]["text"] == "yes"
+    a.configure({"reason_field": True})
+    assert not a.is_answered(msg, 100, ["yes", "no"])  # a v1 answer is not reused for the reasoning arm
+    out = a.infer(None, None, [msg], 100, ["yes", "no"])[0]
+    assert len(sent) == 2 and json.loads(out["text"])["reasoning"] == "r" and a.is_answered(msg, 100, ["yes", "no"])
+
+
 def test_run_question_subset(mount):
     root = mount / "evalset"
     labels = {f"label__{q.task}": 0 for q in CARDS[2].questions}

@@ -52,13 +52,24 @@ def _png_b64(img):
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+#: Schema text for the reason_field arm's ``reasoning`` string (the model writes it before ``answer``).
+REASONING_DESCRIPTION = "Brief reasoning from the images, written before the answer."
+
+
 def build_request(question, images, choices=None, max_output_tokens=8192,
-                  media_resolution=None, thinking_level=None):
-    """The ``generateContent`` body for one row. Pure (no network): unit-tested."""
+                  media_resolution=None, thinking_level=None, reason_field=False):
+    """The ``generateContent`` body for one row. Pure (no network): unit-tested. ``reason_field`` asks for JSON
+    {"reasoning", "answer"} in that order (``propertyOrdering``) instead of the bare enum."""
     parts = [{"inlineData": {"mimeType": "image/png", "data": _png_b64(im)}} for im in (images or [])]
     parts.append({"text": str(question)})
     gen = {"temperature": 0.0, "maxOutputTokens": int(max_output_tokens)}
-    if choices:
+    if choices and reason_field:
+        gen["responseMimeType"] = "application/json"
+        gen["responseSchema"] = {"type": "OBJECT", "properties": {
+            "reasoning": {"type": "STRING", "description": REASONING_DESCRIPTION},
+            "answer": {"type": "STRING", "enum": [str(c) for c in choices]}},
+            "required": ["reasoning", "answer"], "propertyOrdering": ["reasoning", "answer"]}
+    elif choices:
         gen["responseMimeType"] = "text/x.enum"
         gen["responseSchema"] = {"type": "STRING", "enum": [str(c) for c in choices]}
     if media_resolution:
@@ -81,10 +92,10 @@ def gemini_parts(parts):
 
 
 def build_parts_request(parts, choices=None, max_output_tokens=8192, media_resolution=None, thinking_level=None,
-                        cached_content=None, prefix_len=0):
+                        cached_content=None, prefix_len=0, reason_field=False):
     """generateContent body from ordered parts. With ``cached_content`` (an explicit cache's name holding
     the first ``prefix_len`` parts), only the remaining parts are sent. Pure (no network): unit-tested."""
-    body = build_request("", [], choices, max_output_tokens, media_resolution, thinking_level)
+    body = build_request("", [], choices, max_output_tokens, media_resolution, thinking_level, reason_field)
     send = parts[prefix_len:] if cached_content else parts
     body["contents"] = [{"role": "user", "parts": gemini_parts(send)}]
     if cached_content:
@@ -100,11 +111,12 @@ def build_cache_request(project, location, model, prefix_parts, ttl_s=CACHE_TTL_
             "contents": [{"role": "user", "parts": gemini_parts(prefix_parts)}], "ttl": f"{int(ttl_s)}s"}
 
 
-def parse_response(body, choices=None):
+def parse_response(body, choices=None, reason_field=False):
     """(answer_text, usage, error) from a ``generateContent`` response body.
 
     An answer outside ``choices`` (or an empty one, e.g. the output budget ran out while
-    thinking) is an error, not a guess.
+    thinking) is an error, not a guess. With ``reason_field`` the text is JSON {"reasoning", "answer"},
+    returned whole (the scorer reads its ``answer``).
     """
     um = body.get("usageMetadata", {}) or {}
     usage = {
@@ -125,6 +137,15 @@ def parse_response(body, choices=None):
     text = "".join(texts).strip()
     if not text:
         return None, usage, f"empty answer (finishReason={cand.get('finishReason')})"
+    if choices and reason_field:
+        try:
+            v = json.loads(text)
+            answer = str(v.get("answer", "")).strip()
+        except (json.JSONDecodeError, AttributeError):
+            return None, usage, f"answer is not the schema's JSON: {text[:100]!r} (finishReason={cand.get('finishReason')})"
+        if answer not in [str(c) for c in choices]:
+            return None, usage, f"answer {answer[:100]!r} not in options (finishReason={cand.get('finishReason')})"
+        return json.dumps({"reasoning": str(v.get("reasoning", "")), "answer": answer}), usage, None
     if choices and text not in [str(c) for c in choices]:
         return None, usage, f"answer {text[:100]!r} not in options (finishReason={cand.get('finishReason')})"
     return text, usage, None
@@ -149,6 +170,7 @@ class VertexGeminiAdapter(BaseVLMAdapter):
         self.media_resolution = None
         self.thinking_level = None
         self.explicit_cache = False
+        self.reason_field = False  # recipe setting: JSON {"reasoning", "answer"} instead of the bare enum
         self.prices = None
         self.max_spend_usd = None
         self.spent_usd = 0.0
@@ -169,6 +191,7 @@ class VertexGeminiAdapter(BaseVLMAdapter):
         self.media_resolution = opts.get("media_resolution", self.media_resolution)
         self.thinking_level = opts.get("thinking_level", self.thinking_level)
         self.explicit_cache = bool(opts.get("explicit_cache", self.explicit_cache))
+        self.reason_field = bool(opts.get("reason_field", self.reason_field))
         self.prices = opts.get("price_per_mtok", self.prices)
         self.max_spend_usd = opts.get("max_spend_usd", self.max_spend_usd)
 
@@ -259,14 +282,14 @@ class VertexGeminiAdapter(BaseVLMAdapter):
         if "parts" in msg:
             # The answer cache keys on the logical request (all parts), not on the cache object's name.
             key_body = build_parts_request(msg["parts"], choices, max_new_tokens, self.media_resolution,
-                                           self.thinking_level)
+                                           self.thinking_level, reason_field=self.reason_field)
             body = key_body if not cached_content else build_parts_request(
                 msg["parts"], choices, max_new_tokens, self.media_resolution, self.thinking_level,
-                cached_content, msg.get("prefix_len", 0))
+                cached_content, msg.get("prefix_len", 0), reason_field=self.reason_field)
             n_images = sum(1 for p in msg["parts"] if p["type"] == "image")
         else:
             body = build_request(msg["question"], msg["images"], choices, max_new_tokens,
-                                 self.media_resolution, self.thinking_level)
+                                 self.media_resolution, self.thinking_level, self.reason_field)
             key_body, n_images = body, len(msg["images"])
         path = self._cache_path(key_body)
         key = path.stem  # the request hash: links an answer row to its saved reply
@@ -292,7 +315,7 @@ class VertexGeminiAdapter(BaseVLMAdapter):
                     self._inflight -= 1
             if err:
                 return {"text": "", "error": err, "request_key": key}
-        text, usage, err = parse_response(resp, choices)
+        text, usage, err = parse_response(resp, choices, self.reason_field)
         if not cached and err is None:
             # Cache only a readable answer, so an unreadable one is asked again on the next run.
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,7 +336,8 @@ class VertexGeminiAdapter(BaseVLMAdapter):
 
     # -- explicit context cache (eval set: one cache per scan, images first) ------------------------
     def is_answered(self, msg, max_new_tokens, choices):
-        key_body = build_parts_request(msg["parts"], choices, max_new_tokens, self.media_resolution, self.thinking_level)
+        key_body = build_parts_request(msg["parts"], choices, max_new_tokens, self.media_resolution, self.thinking_level,
+                                       reason_field=self.reason_field)
         return self._cache_path(key_body).exists()
 
     def create_cache(self, prefix_parts):

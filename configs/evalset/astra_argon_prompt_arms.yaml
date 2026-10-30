@@ -1,0 +1,27 @@
+# Astra + Argon prompt ablations (Phil 10-30; hand-off planning/vista_eval_vlm/session/
+# 2026-10-30-astra-argon-prompt-pilot-handoff.md). One change per arm against the v1 recipe (the control). First 50
+# check cases per step, the MedGemma reasoning pilot's cases, so all three models compare: step 1 --which test,
+# steps 2 and 4 --which sample (no step 3). Run name prompt_pilot; compare each arm with that model's v1 answers.
+#   intro          a framing line before the images: identical on every call, so it joins the cached prefix
+#   effort_medium  reasoning / thinking one step up: more output tokens, prompt unchanged
+#   reason_field   a short reasoning string before the forced answer in the schema: more output tokens
+# Astra runs on weill-p01 (scripts/evalset_weill.sh), Argon on phil-sllm-01 (python -m evalset.run, from src/).
+variants:
+  astra_intro:
+    recipe: astra
+    intro: "You will see {n} axial chest CT slices, then one yes/no question about them."
+  astra_effort_medium:
+    recipe: astra
+    settings: {reasoning_effort: medium}
+  astra_reason_field:
+    recipe: astra
+    settings: {reason_field: true}
+  argon_intro:
+    recipe: argon
+    intro: "You will see {n} axial chest CT slices, then one yes/no question about them."
+  argon_effort_medium:
+    recipe: argon
+    settings: {thinking_level: medium}
+  argon_reason_field:
+    recipe: argon
+    settings: {reason_field: true}

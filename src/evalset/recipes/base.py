@@ -4,8 +4,9 @@ A recipe fixes the render (slice sampler and count, windows, size, file format, 
 wrapper (slice labels, where the question goes, how the answer is forced). The render settings name
 the image pack (``render_key``), so two recipes that render alike share one pack on the mount.
 
-Messages are built as a list of parts, images first and the question last, so every question about
-one scan shares the same prefix and the model's cache can reuse it (``Message.prefix_len``).
+Messages are built as a list of parts, images first (after an optional ``intro`` line) and the question
+last, so every question about one scan shares the same prefix and the model's cache can reuse it
+(``Message.prefix_len``).
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ class Recipe:
     answer_form: str = "schema"      # "schema": forced {"answer": yes|no}; "final_answer": free text
     persona: str = ""                # line put before the card text (CT arms only)
     answer_line: str = ""            # replaces the card's "Answer yes or no." when set
+    intro: str = ""                  # text part before the first image (CT arms only); "{n}" = images sent
     max_images: int | None = None
     settings: tuple = ()             # model call settings, as (key, value) pairs: effort, decoding...
 
@@ -102,6 +104,10 @@ class Recipe:
         n_img = sum(1 for p in parts if p["type"] == "image")
         if self.max_images is not None and n_img > self.max_images:
             raise ValueError(f"{self.name}: {n_img} images, cap is {self.max_images}")
+        if self.intro and n_img:
+            # The same text on every call about the scan, so it joins the cached prefix (before the images, so
+            # the Astra cache breakpoint stays on the last image).
+            parts.insert(0, {"type": "text", "text": self.intro.format(n=n_img)})
         prefix = len(parts)
         parts.append({"type": "text", "text": self.wrap_text(card_text, bool(scans))})
         return Message(parts=tuple(parts), prefix_len=prefix)
