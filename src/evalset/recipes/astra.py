@@ -27,5 +27,8 @@ RECIPE = Recipe(
     label_style="before",
     answer_form="schema",
     max_images=50,
-    settings=(("reasoning_effort", "low"), ("max_new_tokens", 4096), ("concurrency", 4)),
+    # cache_breakpoint + prompt_cache_key: a scan's later questions read its images from the hub's prompt cache
+    # (10-30 test: 40/40 follow-up calls cached, 66% of tokens, vs 34% without; aihub_openai.build_parts_request).
+    settings=(("reasoning_effort", "low"), ("max_new_tokens", 4096), ("concurrency", 4),
+              ("cache_breakpoint", True), ("prompt_cache_key", True)),
 )
