@@ -29,6 +29,8 @@ RECIPE = Recipe(
     max_images=50,
     # cache_breakpoint + prompt_cache_key: a scan's later questions read its images from the hub's prompt cache
     # (10-30 test: 40/40 follow-up calls cached, 66% of tokens, vs 34% without; aihub_openai.build_parts_request).
+    # cache_chunk 1: one scan at a time; with 8 scans in flight only 77% of follow-ups hit (calls spill to other
+    # replicas), so the hub's routing key holds best when a scan's calls are the only ones going.
     settings=(("reasoning_effort", "low"), ("max_new_tokens", 4096), ("concurrency", 4),
-              ("cache_breakpoint", True), ("prompt_cache_key", True)),
+              ("cache_breakpoint", True), ("prompt_cache_key", True), ("cache_chunk", 1)),
 )
