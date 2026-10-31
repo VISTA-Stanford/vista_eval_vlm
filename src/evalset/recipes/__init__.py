@@ -1,9 +1,9 @@
 """One recipe per model. ``get("argon", n_slices=25)`` returns a copy with the pilot's overrides."""
 
 from .base import Message, Recipe  # noqa: F401
-from . import argon, astra, medgemma
+from . import argon, astra, medgemma, opus
 
-RECIPES = {r.name: r for r in (medgemma.RECIPE, astra.RECIPE, argon.RECIPE)}
+RECIPES = {r.name: r for r in (medgemma.RECIPE, astra.RECIPE, argon.RECIPE, opus.RECIPE)}
 
 
 def get(name: str, **overrides) -> Recipe:

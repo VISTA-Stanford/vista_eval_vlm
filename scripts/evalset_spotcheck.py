@@ -141,6 +141,25 @@ def wire_checks(recipe, msg, step, arm):
         return {"provider": "AI Hub chat/completions", "parts": ("intro + " if intro else "") + f"{n_img} labels + {n_img} images, then question",
                 "settings": {"reasoning_effort": b.get("reasoning_effort"), "max_completion_tokens": b["max_completion_tokens"],
                              "response_format": schema}}
+    if recipe.model_type == "vertex_claude":
+        from models.vertex_claude import build_parts_request
+        b = build_parts_request(parts, run.CHOICES, int(recipe.setting("max_new_tokens", 4096)), recipe.setting("effort"),
+                                msg.prefix_len, bool(recipe.setting("prompt_cache", True)), reason_field=reason)
+        c = b["messages"][0]["content"]
+        n_img = sum(x["type"] == "image" for x in c)
+        sch = b["output_config"]["format"]["schema"]
+        order = list(sch["properties"]) == (["reasoning", "answer"] if reason else ["answer"])
+        # The cache mark, when on, sits on the last image (an intro line before the images doesn't move it).
+        bp = [i for i, x in enumerate(c) if "cache_control" in x]
+        last_img = max(i for i, x in enumerate(c) if x["type"] == "image") if n_img else None
+        bp_ok = bp == [last_img] if recipe.setting("prompt_cache", True) and n_img else not bp
+        ok = c[-1]["type"] == "text" and sch["properties"]["answer"]["enum"] == ["yes", "no"] and order and bp_ok and \
+            b["output_config"].get("effort") == recipe.setting("effort") and "temperature" not in b and "tools" not in b
+        schema = "JSON schema {reasoning, answer: yes|no}" if reason else "JSON schema {answer: yes|no}"
+        check(f"{tag}: Vertex Claude body — {n_img} images, question last, {schema}, effort {b['output_config'].get('effort')}, "
+              f"cache mark {'on last image' if bp else 'off'}, no tools", ok)
+        return {"provider": "Vertex rawPredict (Anthropic)", "parts": ("intro + " if intro else "") + f"{n_img} labels + {n_img} images, then question",
+                "settings": {"effort": b["output_config"].get("effort"), "max_tokens": b["max_tokens"], "output_format": schema}}
     c = run.openai_content(msg)
     kinds = [x["type"] for x in c]
     ok = kinds[-1] == "text" and all(kinds[i] == "image_url" and kinds[i + 1] == "text" for i in range(0, len(kinds) - 1, 2))

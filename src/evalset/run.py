@@ -64,8 +64,8 @@ class APIBackend:
         self.recipe = recipe
         self.adapter = MODEL_REGISTRY[recipe.model_type](recipe.model_name, "cpu", str(cache_dir))
         opts = dict(recipe.settings)
-        if recipe.model_type == "vertex_gemini":
-            opts.setdefault("price_per_mtok", ARGON_PRICES)
+        if recipe.model_type in ("vertex_gemini", "vertex_claude"):
+            opts.setdefault("price_per_mtok", ARGON_PRICES if recipe.model_type == "vertex_gemini" else OPUS_PRICES)
             if max_spend is not None:
                 opts["max_spend_usd"] = max_spend
         elif recipe.model_type == "aihub_openai" and max_spend is not None:
@@ -97,6 +97,9 @@ class APIBackend:
 #: Gemini 4 Argon, Vertex global, USD per million tokens through 2026-11-30 (doubles from 12-01).
 ARGON_PRICES = {"input": 2.0, "cached": 0.10, "output": 10.0, "long_context_over": 10 ** 9,
                 "input_long": 2.0, "output_long": 10.0}
+#: Claude Opus 5.5, USD per million tokens at Anthropic's list rate (Vertex global is billed at partner rates; the
+#: pilot's Vertex bill is the check). Cache writes (5 min) bill at 1.25x input; thinking bills as output.
+OPUS_PRICES = {"input": 4.0, "cache_write": 5.0, "cached": 0.20, "output": 20.0}
 
 
 # -- rows -------------------------------------------------------------------------------------------

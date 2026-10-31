@@ -72,6 +72,12 @@ except (ImportError, SyntaxError, AttributeError):
     pass
 
 try:
+    from .vertex_claude import VertexClaudeAdapter
+    MODEL_REGISTRY["vertex_claude"] = VertexClaudeAdapter
+except (ImportError, SyntaxError, AttributeError):
+    pass
+
+try:
     from .codex_exec import CodexExecAdapter
     MODEL_REGISTRY["codex_exec"] = CodexExecAdapter
 except (ImportError, SyntaxError, AttributeError):

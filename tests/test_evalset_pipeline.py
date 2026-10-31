@@ -719,3 +719,89 @@ def test_render_many_multi_writes_each_pack_from_one_read(mount, monkeypatch):
     assert packs.load(mg, 3, "a", "b") and packs.load(ar, 3, "a", "b")
     packs.render_many_multi([(mg, 3), (ar, 3)], [("a", "b")], workers=1)
     assert len(opened) == 1  # both already rendered: nothing re-read
+
+
+# -- Claude (Opus 5.5) on Vertex -------------------------------------------------------------------
+
+def _claude_reply(text, stop="end_turn", **usage):
+    u = {"input_tokens": 10, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 20,
+         "output_tokens_details": {"thinking_tokens": 12}}
+    u.update(usage)
+    return {"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": text}], "stop_reason": stop, "usage": u}
+
+
+def test_claude_request_shape_no_tools_cache_on_last_image():
+    from models.vertex_claude import build_parts_request
+    b = build_parts_request(_parts(), ["yes", "no"], 100, "low", prefix_len=2)
+    c = b["messages"][0]["content"]
+    assert [x["type"] for x in c] == ["text", "image", "text"]
+    assert [i for i, x in enumerate(c) if "cache_control" in x] == [1]  # the image, not the question
+    assert b["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": {
+        "type": "object", "properties": {"answer": {"type": "string", "enum": ["yes", "no"]}},
+        "required": ["answer"], "additionalProperties": False}}}
+    for banned in ("tools", "tool_choice", "temperature", "thinking", "model"):
+        assert banned not in b
+    assert b["anthropic_version"] == "vertex-2023-10-16"
+    assert "cache_control" not in str(build_parts_request(_parts(), ["yes", "no"], 100, "low", prefix_len=0))
+    assert "cache_control" not in str(build_parts_request(_parts(), ["yes", "no"], 100, "low", prefix_len=2, cache=False))
+    r = build_parts_request(_parts(), ["yes", "no"], 100, "low", prefix_len=2, reason_field=True)
+    assert list(r["output_config"]["format"]["schema"]["properties"]) == ["reasoning", "answer"]
+
+
+def test_claude_parse_answer_refusal_and_bad_answers():
+    from models.vertex_claude import parse_response
+    text, usage, err = parse_response(_claude_reply('{"answer": "yes"}', cache_read_input_tokens=900,
+                                                    cache_creation_input_tokens=50), ["yes", "no"])
+    assert err is None and score.parse_answer(text, "schema") == "yes"
+    assert usage == {"prompt_tokens": 960, "cached_tokens": 900, "cache_write_tokens": 50, "output_tokens": 8,
+                     "thinking_tokens": 12, "total_tokens": 980}
+    refused = {"content": [], "stop_reason": "refusal", "stop_details": {"category": "bio", "explanation": "x"}, "usage": {}}
+    _, _, err = parse_response(refused, ["yes", "no"])
+    assert err.startswith("refusal") and score.is_refusal("", err)
+    assert "not in options" in parse_response(_claude_reply('{"answer": "maybe"}'), ["yes", "no"])[2]
+    assert "not the schema's JSON" in parse_response(_claude_reply("yes"), ["yes", "no"])[2]
+    assert "empty answer" in parse_response(_claude_reply("", stop="max_tokens"), ["yes", "no"])[2]
+
+
+def test_claude_cost_by_token_kind():
+    from models.vertex_claude import VertexClaudeAdapter
+    a = VertexClaudeAdapter("claude-opus-5-5")
+    a.prices = run.OPUS_PRICES
+    # 0.1M uncached x $4 + 0.2M written x $5 + 1.0M read x $0.20 + (0.05M + 0.05M thinking) x $20 = 0.4 + 1.0 + 0.2 + 2.0
+    cost = a.call_cost_usd({"prompt_tokens": 1_300_000, "cached_tokens": 1_000_000, "cache_write_tokens": 200_000,
+                            "output_tokens": 50_000, "thinking_tokens": 50_000})
+    assert cost == pytest.approx(3.6)
+
+
+def test_claude_adapter_reuses_answers_and_stops_at_spend_cap(tmp_path):
+    from models.vertex_claude import VertexClaudeAdapter
+    a = VertexClaudeAdapter("claude-opus-5-5", cache_dir=str(tmp_path))
+    a.configure({"effort": "low", "concurrency": 1, "price_per_mtok": run.OPUS_PRICES, "max_spend_usd": 0.5})
+    a.response_cache.mkdir(parents=True)
+    sent = []
+
+    def fake_post(method, body, url=None, http="POST"):
+        sent.append(url)
+        # 100,000 uncached input tokens = $0.40 per call
+        return _claude_reply('{"answer": "no"}', input_tokens=100_000, output_tokens=0,
+                             output_tokens_details={"thinking_tokens": 0}), None
+    a._post = fake_post
+    m1 = {"parts": _parts(), "prefix_len": 2}
+    m2 = {"parts": _parts()[:2] + [{"type": "text", "text": "Other?"}], "prefix_len": 2}
+    out = a.ask_group([m1], 100, ["yes", "no"])[0]
+    assert out["text"] == '{"answer": "no"}' and not out["cached"] and out["usage"]["image_count"] == 1
+    assert sent[0].endswith("/publishers/anthropic/models/claude-opus-5-5:rawPredict") and "/locations/global/" in sent[0]
+    assert a.is_answered(m1, 100, ["yes", "no"]) and a.infer(None, None, [m1], 100, ["yes", "no"])[0]["cached"]
+    blocked = a.infer(None, None, [m2], 100, ["yes", "no"])[0]  # $0.40 spent + $0.40 more would pass $0.50
+    assert "spend cap" in blocked["error"] and len(sent) == 1
+
+
+def test_opus_recipe_wires_claude_adapter_and_prices(tmp_path, monkeypatch):
+    from models.vertex_claude import VertexClaudeAdapter
+    monkeypatch.setattr(VertexClaudeAdapter, "load", lambda self: (self, None))
+    r = get("opus")
+    assert (r.model_type, r.model_name, r.n_slices, r.n_slices_pair, r.image_format) == ("vertex_claude", "claude-opus-5-5", 50, 25, "png")
+    assert r.render_key(50) == get("argon").render_key(50)  # same pixels as Argon: shares its image pack
+    be = run.APIBackend(r, tmp_path, max_spend=12.0)
+    assert isinstance(be.adapter, VertexClaudeAdapter) and be.adapter.prices == run.OPUS_PRICES
+    assert be.adapter.max_spend_usd == 12.0 and be.adapter.effort == "low" and not be.per_case
