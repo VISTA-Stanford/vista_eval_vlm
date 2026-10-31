@@ -1,0 +1,9 @@
+# Astra step 3, progression vs the prior CT (Phil 10-31): the question goes before the slices, so the model reads the
+# PRIOR and CURRENT scans knowing it is comparing them. Not for caching: the question is ~150 tokens (under the hub's
+# 1,024-token cache minimum) and no prior scan repeats in the 400-pair sample. Everything else is the v1 Astra recipe
+# (25 + 25 PNG slices, labels, strict yes/no schema, effort low). Run name v1, step 3 --which sample (400 pairs):
+#   RECIPE=astra RUN=v1 STEPS=3 WHICH=sample MAX_SPEND=80 ARMS=<this file> VARIANT=question_first bash scripts/evalset_weill.sh
+variants:
+  question_first:
+    recipe: astra
+    question_first: true

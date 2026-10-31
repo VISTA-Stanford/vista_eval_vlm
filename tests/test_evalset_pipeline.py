@@ -360,6 +360,40 @@ def test_gemini_reason_field_is_its_own_cache_key(tmp_path):
     assert len(sent) == 2 and json.loads(out["text"])["reasoning"] == "r" and a.is_answered(msg, 100, ["yes", "no"])
 
 
+def test_question_first_puts_the_task_before_the_scans():
+    from evalset import arms
+    from models.aihub_openai import build_parts_request
+    f = ARMS_FILE.parent / "astra_step3_arms.yaml"
+    over, _ = arms.load(f, "question_first")
+    r = arms.apply(get("astra"), "question_first", over)
+    text = "Compare them. Answer yes or no."
+    m = r.build(text, [("PRIOR", [b"p1", b"p2"]), ("CURRENT", [b"c1", b"c2"])])
+    assert m.parts[0] == {"type": "text", "text": text} and m.question == text and m.question_index == 0
+    assert [p["text"] for p in m.parts if p["type"] == "text"][1:] == [
+        "PRIOR scan, image 1:", "PRIOR scan, image 2:", "CURRENT scan, image 1:", "CURRENT scan, image 2:"]
+    assert m.parts[-1]["type"] == "image" and m.prefix_len == 0 and len(m.images) == 4
+    c = build_parts_request(list(m.parts), ["yes", "no"], 50, "low", cache_breakpoint=True)["messages"][0]["content"]
+    assert c[0] == {"type": "text", "text": text} and c[-1]["type"] == "image_url"
+    # Text-only calls and the v1 recipe are unchanged.
+    assert r.build(text, None).parts == get("astra").build(text, None).parts
+    assert get("astra").build(text, [(None, [b"x"])]).question_index == -1
+    assert run.message_key(m) != run.message_key(get("astra").build(text, [("PRIOR", [b"p1", b"p2"]), ("CURRENT", [b"c1", b"c2"])]))
+    with pytest.raises(ValueError):
+        get("astra", intro="x", question_first=True).build(text, [(None, [b"x"])])
+
+
+def test_run_question_first_scores_the_answer(mount):
+    root = mount / "evalset"
+    _samples(root, 3, [dict(case_id="p1", person_id="1", split="test", study="a", series="b", prior_study="c",
+                            prior_series="d", label__radiology_progression=1)])
+    r = get("astra", n_slices_pair=2, question_first=True)
+    packs.render_many(r, 2, [("a", "b"), ("c", "d")], workers=1)
+    seen = []
+    res = run.run(r, 3, "ct", "qf", backend=FakeBackend(lambda m: seen.append(m) or '{"answer": "yes"}'))
+    assert seen[0].parts[0]["type"] == "text" and "progressed" in seen[0].question
+    assert res.iloc[0]["answer"] == "yes" and res.iloc[0]["label"] == 1
+
+
 def test_run_question_subset(mount):
     root = mount / "evalset"
     labels = {f"label__{q.task}": 0 for q in CARDS[2].questions}

@@ -101,6 +101,8 @@ def wire_checks(recipe, msg, step, arm):
     parts = list(msg.parts)
     reason = bool(recipe.setting("reason_field"))
     intro = 1 if recipe.intro and msg.images else 0
+    qi = msg.question_index  # -1 (question last) or 0 (question_first)
+    where = "question first" if qi == 0 else "question last"
     if recipe.model_type == "vertex_gemini":
         from models.vertex_gemini import build_parts_request
         b = build_parts_request(parts, run.CHOICES, int(recipe.setting("max_new_tokens", 8192)),
@@ -110,11 +112,11 @@ def wire_checks(recipe, msg, step, arm):
         rs = g["responseSchema"]
         enum = rs["properties"]["answer"]["enum"] if reason else rs["enum"]
         shape = rs.get("propertyOrdering") == ["reasoning", "answer"] if reason else g["responseMimeType"] == "text/x.enum"
-        ok = kinds[-1] == "text" and enum == ["yes", "no"] and shape and \
+        ok = kinds[qi] == "text" and enum == ["yes", "no"] and shape and \
             g.get("mediaResolution") == recipe.setting("media_resolution") and \
             g.get("thinkingConfig", {}).get("thinkingLevel") == recipe.setting("thinking_level")
         schema = "JSON {reasoning, answer: yes|no}" if reason else "enum yes/no"
-        check(f"{tag}: Vertex body — {kinds.count('inlineData')} images, question last, {schema}, "
+        check(f"{tag}: Vertex body — {kinds.count('inlineData')} images, {where}, {schema}, "
               f"{g.get('mediaResolution')}, thinking {g.get('thinkingConfig', {}).get('thinkingLevel')}", ok)
         return {"provider": "Vertex generateContent",
                 "parts": ("intro + " if intro else "") + f"{kinds.count('text') - 1 - intro} labels + {kinds.count('inlineData')} images, then question",
@@ -133,10 +135,10 @@ def wire_checks(recipe, msg, step, arm):
         bp = [i for i, x in enumerate(c) if "prompt_cache_breakpoint" in x]
         last_img = max(i for i, x in enumerate(c) if x["type"] == "image_url") if n_img else None
         bp_ok = bp == [last_img] if recipe.setting("cache_breakpoint") and n_img else not bp
-        ok = c[-1]["type"] == "text" and props == ["yes", "no"] and order and bp_ok and n_img <= 50 and \
+        ok = c[qi]["type"] == "text" and c[qi]["text"] == msg.question and props == ["yes", "no"] and order and bp_ok and n_img <= 50 and \
             b.get("reasoning_effort") == recipe.setting("reasoning_effort")
         schema = "strict JSON schema {reasoning, answer: yes|no}" if reason else "strict JSON schema {answer: yes|no}"
-        check(f"{tag}: AI Hub body — {n_img} images (cap 50), question last, {schema}, effort {b.get('reasoning_effort')}, "
+        check(f"{tag}: AI Hub body — {n_img} images (cap 50), {where}, {schema}, effort {b.get('reasoning_effort')}, "
               f"breakpoint {'on last image' if bp else 'off'}", ok)
         return {"provider": "AI Hub chat/completions", "parts": ("intro + " if intro else "") + f"{n_img} labels + {n_img} images, then question",
                 "settings": {"reasoning_effort": b.get("reasoning_effort"), "max_completion_tokens": b["max_completion_tokens"],
@@ -179,7 +181,11 @@ def main() -> int:
                 check(f"{tag}: question = card text wrapped by the recipe", msg.question == want_text)
                 if arm == "ct":
                     check(f"{tag}: image line names {recipe.windows_phrase()}", recipe.windows_phrase() in msg.question)
-                    labels = [p["text"] for p in msg.parts[:-1] if p["type"] == "text"]
+                    qpos = msg.question_index % len(msg.parts)
+                    labels = [p["text"] for i, p in enumerate(msg.parts) if p["type"] == "text" and i != qpos]
+                    if recipe.question_first:
+                        check(f"{tag}: question first, then {len(msg.images)} images, nothing after the last image",
+                              qpos == 0 and msg.parts[-1]["type"] == "image" and msg.prefix_len == 0)
                     if recipe.intro:
                         want_intro = recipe.intro.format(n=len(msg.images))
                         check(f"{tag}: intro line first, before the images: {want_intro!r}", labels[:1] == [want_intro]
@@ -199,8 +205,8 @@ def main() -> int:
                             check(f"{tag}: report text not in prompt", v[:40] not in msg.question)
                 wire = wire_checks(recipe, msg, step, arm)
                 examples[f"{rname}|{step}|{arm}"] = {
-                    "n_images": len(msg.images), "labels": [p["text"] for p in msg.parts[:-1] if p["type"] == "text"][:2]
-                    + (["…"] if len(msg.parts) > 6 else []) + [p["text"] for p in msg.parts[:-1] if p["type"] == "text"][-1:],
+                    "n_images": len(msg.images), "labels": [p["text"] for p in msg.parts if p["type"] == "text" and p["text"] != msg.question][:2]
+                    + (["…"] if len(msg.parts) > 6 else []) + [p["text"] for p in msg.parts if p["type"] == "text" and p["text"] != msg.question][-1:],
                     "question": msg.question, "wire": wire, "n_questions": len(qm)}
         for f in sorted(glob.glob(str(paths.root() / "runs" / args.run / rname / "step*_ct.csv"))):
             import pandas as pd

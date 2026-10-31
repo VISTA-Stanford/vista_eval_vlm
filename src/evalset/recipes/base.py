@@ -22,9 +22,11 @@ YES_NO = ("yes", "no")
 
 @dataclasses.dataclass(frozen=True)
 class Message:
-    """One call: ``parts`` in order; the first ``prefix_len`` parts are the cacheable images + labels."""
+    """One call: ``parts`` in order; the first ``prefix_len`` parts are the cacheable images + labels. The question
+    is the last part, or the first (``question_index`` 0) for a question-first recipe."""
     parts: tuple
     prefix_len: int
+    question_index: int = -1
 
     @property
     def images(self):
@@ -32,7 +34,7 @@ class Message:
 
     @property
     def question(self):
-        return self.parts[-1]["text"]
+        return self.parts[self.question_index]["text"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -53,6 +55,7 @@ class Recipe:
     persona: str = ""                # line put before the card text (CT arms only)
     answer_line: str = ""            # replaces the card's "Answer yes or no." when set
     intro: str = ""                  # text part before the first image (CT arms only); "{n}" = images sent
+    question_first: bool = False     # question before the images, so the model reads them knowing the task
     max_images: int | None = None
     settings: tuple = ()             # model call settings, as (key, value) pairs: effort, decoding...
 
@@ -104,6 +107,12 @@ class Recipe:
         n_img = sum(1 for p in parts if p["type"] == "image")
         if self.max_images is not None and n_img > self.max_images:
             raise ValueError(f"{self.name}: {n_img} images, cap is {self.max_images}")
+        if self.intro and self.question_first:
+            raise ValueError(f"{self.name}: intro and question_first both put text before the images; set one")
+        if self.question_first and n_img:
+            # The task first, then the scans (one question per call, so no scan prefix is shared: prefix_len 0).
+            parts.insert(0, {"type": "text", "text": self.wrap_text(card_text, True)})
+            return Message(parts=tuple(parts), prefix_len=0, question_index=0)
         if self.intro and n_img:
             # The same text on every call about the scan, so it joins the cached prefix (before the images, so
             # the Astra cache breakpoint stays on the last image).
