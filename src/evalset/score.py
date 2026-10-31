@@ -25,7 +25,13 @@ import pandas as pd
 
 from results.final_metrics import forced_answer_metrics
 
-_FINAL = re.compile(r"final\s*answer\s*[:：]?\s*[\*\"'`_]*\s*(yes|no)\b", re.IGNORECASE)
+_WRAP = r"[\s\*\"'`_$\\{}]*(?:\\?(?:boxed|text|mathrm|textbf)\s*\{[\s\*\"'`_$]*)*"
+#: Generous on form, never on meaning (Phil 10-31): a "Final Answer" line, also written "Final Answer: The final answer
+#: is $\boxed{no}$" (MedGemma with a reasoning prompt), a LaTeX \boxed{yes} / \boxed{\text{no}}, or a last line that is
+#: only the answer ("Answer: yes", "**No**"). The last of these in the text wins; a yes/no inside prose never counts.
+_FINAL = re.compile(r"final\s*answer\s*[:：]?\s*(?:(?:the\s+)?(?:final\s+)?answer\s+is\s*[:：]?)?" + _WRAP + r"(yes|no)\b"
+                    r"|\\boxed\s*\{[\s\*$]*(?:\\?(?:text|mathrm|textbf)\s*\{\s*)?(yes|no)\b"
+                    r"|(?:^|\n)[ \t>#\*_-]*(?:answer\s*[:：]\s*)?[\*_`\"']*(yes|no)[\*_`\"'.!]*[ \t]*$", re.IGNORECASE)
 _REFUSAL_TEXT = re.compile(
     r"\b(i\s*(?:am|'m)\s*(?:not able|unable)|i\s*can(?:not|'t)\s*(?:provide|determine|answer|interpret|make)"
     r"|not (?:able|qualified) to (?:provide|interpret|diagnose)|consult (?:a|your) (?:radiologist|physician|doctor)"
@@ -40,7 +46,7 @@ def parse_answer(text, form: str):
         return None
     t = str(text).strip()
     if form == "final_answer":
-        hits = _FINAL.findall(t)
+        hits = [next(g for g in m.groups() if g) for m in _FINAL.finditer(t)]
         return hits[-1].lower() if hits else None
     if form == "schema":
         if t.lower() in ("yes", "no"):
@@ -175,6 +181,16 @@ def score_rows(df: pd.DataFrame, n_boot: int = 1000, seed: int = 0) -> pd.DataFr
     return pd.DataFrame(out)
 
 
+def reparse(answers: pd.DataFrame, form: str) -> pd.DataFrame:
+    """The answers file with ``answer`` parsed again from ``response_text`` (rows with a call error stay unparsed) and
+    ``refused`` recomputed, so a parser change rescores old runs without touching their raw replies."""
+    a = answers.copy()
+    err = a["error"].fillna("").astype(str) if "error" in a else pd.Series("", index=a.index)
+    a["answer"] = [parse_answer(t, form) if not e else None for t, e in zip(a["response_text"], err)]
+    a["refused"] = [x is None and is_refusal(t, e or None) for x, t, e in zip(a["answer"], a["response_text"], err)]
+    return a
+
+
 def prepare(answers: pd.DataFrame) -> pd.DataFrame:
     """Answers file rows -> scoring rows (parsed answer, label, refusal), dropping rows with no scored label."""
     a = answers[answers["label"].notna()].copy()
@@ -191,8 +207,12 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--n-boot", type=int, default=1000)
     ap.add_argument("--split", default=None, help="score only this split (step 4: test reported separately)")
+    ap.add_argument("--reparse", choices=["final_answer", "schema"], default=None,
+                    help="parse each reply again with today's rules instead of the answer stored at run time")
     args = ap.parse_args()
     df = pd.concat([pd.read_csv(p, dtype={"case_id": str, "person_id": str}) for p in args.results], ignore_index=True)
+    if args.reparse:
+        df = reparse(df, args.reparse)
     if args.split:
         df = df[df["split"] == args.split]
     table = score_rows(prepare(df), n_boot=args.n_boot)

@@ -89,3 +89,27 @@ def test_vllm_sends_system_first_and_api_refuses_it():
     assert [m["role"] for m in be.llm.convs[1]] == ["user"]
     with pytest.raises(ValueError):
         run.APIBackend._wire(r.replace(system="S").build("Answer yes or no.", [(None, [b"x"])]))
+
+
+# -- local staging --------------------------------------------------------------------------------
+
+def test_stage_links_samples_and_runs_and_copies_manifest_last(tmp_path):
+    from evalset import packs, stage
+    src, dest = tmp_path / "mount", tmp_path / "local"
+    (src / "samples").mkdir(parents=True); (src / "runs").mkdir()
+    r = recipes.get("medgemma")
+    a = packs.pack_dir(r, 85, src) / packs.scan_id("st", "se")
+    a.mkdir(parents=True)
+    (a / "001.jpg").write_bytes(b"x"); (a / "manifest.json").write_text("{}")
+    stage.prepare_root(dest, src)
+    assert (dest / "samples").resolve() == (src / "samples").resolve() and (dest / "packs").is_dir()
+    stage.prepare_root(dest, src)  # idempotent
+    assert stage.copy_scan(r, 85, "st", "se", src, dest) == "copied"
+    b = packs.pack_dir(r, 85, dest) / packs.scan_id("st", "se")
+    assert (b / "001.jpg").read_bytes() == b"x" and (b / "manifest.json").is_file()
+    assert not (b / "manifest.json.tmp").exists()
+    assert stage.copy_scan(r, 85, "st", "se", src, dest) == "present"
+    assert stage.copy_scan(r, 85, "no", "pe", src, dest) == "missing"
+    other = tmp_path / "other"; (other / "samples").mkdir(parents=True); (other / "runs").mkdir()
+    with pytest.raises(RuntimeError):
+        stage.prepare_root(dest, other)  # links already point elsewhere

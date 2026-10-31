@@ -122,6 +122,14 @@ def test_summary_arm_sends_no_images(mount):
     ("The nodule ... Final Answer: yes", "final_answer", "yes"),
     ("Final Answer: no. On reflection, **Final Answer: Yes**", "final_answer", "yes"),
     ("I think yes.", "final_answer", None),
+    ("It is unclear.\n\nFinal Answer: The final answer is $\\boxed{no}$", "final_answer", "no"),
+    ("Contrast is seen. $\\boxed{\\text{Yes}}$", "final_answer", "yes"),
+    ("Final Answer: **no**", "final_answer", "no"),
+    ("The aorta is bright, so yes, contrast was given.\n\nAnswer: yes", "final_answer", "yes"),
+    ("Reasoning...\n**No**", "final_answer", "no"),
+    ("Final Answer: yes\nOn reflection: \\boxed{no}", "final_answer", "no"),
+    ("There is no pleural effusion. IMPRESSION:\nNo acute process.", "final_answer", None),
+    ("yes, the scan shows contrast but I am unsure", "final_answer", None),
     ("no", "schema", "no"),
     ('{"answer": "Yes"}', "schema", "yes"),
     ('{"answer": "maybe"}', "schema", None),
@@ -606,3 +614,10 @@ def test_render_many_multi_writes_each_pack_from_one_read(mount, monkeypatch):
     assert packs.load(mg, 3, "a", "b") and packs.load(ar, 3, "a", "b")
     packs.render_many_multi([(mg, 3), (ar, 3)], [("a", "b")], workers=1)
     assert len(opened) == 1  # both already rendered: nothing re-read
+
+
+def test_reparse_reads_old_replies_with_todays_parser():
+    df = pd.DataFrame({"response_text": ["Final Answer: The final answer is $\\boxed{no}$", "Final Answer: yes", "x"],
+                       "answer": [None, "yes", None], "error": [None, None, "timeout"], "refused": [False, False, False]})
+    out = score.reparse(df, "final_answer")
+    assert out["answer"].tolist() == ["no", "yes", None] and df["answer"].tolist()[0] is None
