@@ -503,6 +503,11 @@ def cmd_test(args) -> int:
     """Score one chosen version on TEST. Every opening is recorded; a second look at TEST for the same
     version needs --again and is recorded as such, because each look spends TEST's credibility."""
     layout = opt.Layout()
+    if not args.local:
+        token, _source = load_token()  # also puts a file-only token where the sessions' runner reads it
+        if not config.ROUTE.is_vertex and not token:
+            print(NO_TOKEN.format(file=config.TOKEN_FILE, env=config.TOKEN_ENV_NAME))
+            return 1
     ledger = [json.loads(line) for line in layout.test_ledger.read_text().splitlines()] if layout.test_ledger.exists() else []
     earlier = [e for e in ledger if e["tag"] == args.tag]
     if earlier and not args.again:
@@ -521,7 +526,14 @@ def cmd_test(args) -> int:
         runner = program_runner(layout, image=images()[1], pin=committed_pins(layout)["program"])
         if config.AGENTIC:
             with runner:  # a ProgramRunner: one network for the pass, containers removed on exit
-                artifacts = runner.as_runner(run_id=f"test-{args.tag}-look{len(earlier) + 1}").run(tree, ad.whole_split("test"))
+                inputs = ad.whole_split("test")
+                if config.WITH_SUMMARY:
+                    # Patients with no summary dated at their cutoff are left out of the summary arm (Phil 2026-10-31).
+                    ids = [r["id"] for r in ad.read_split("test")]
+                    kept = [i for i in ids if (config.SUMMARY_DIR / f"{i}.txt").is_file()]
+                    print(f"summary arm: {len(kept)} of {len(ids)} TEST patients have a summary; {len(ids) - len(kept)} left out")
+                    inputs = ad.TaskSource(layout.batches).stage(kept, "test", f"test-summary-{args.tag}-ids")
+                artifacts = runner.as_runner(run_id=f"test-{args.tag}-look{len(earlier) + 1}").run(tree, inputs)
         else:
             artifacts = runner.run(tree, ad.whole_split("test"))
     if artifacts.status != "ok":

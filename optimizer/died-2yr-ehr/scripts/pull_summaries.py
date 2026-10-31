@@ -5,7 +5,8 @@ One summary per patient, from llm_labels.text_llm_summary, taking only the row d
 dates, and those would leak. Among same-day rows the prognosis one (task_groups holds
 progression_recurrence_survival) wins. The text is rich_summary when has_rich, else compact_summary.
 
-Patients: the TRAIN pool (400), and every VAL patient (811, which holds the 200-patient VAL pool). Never TEST.
+Patients: the TRAIN pool (400), and every VAL patient (811, which holds the 200-patient VAL pool). TEST only with
+--with-test, for a chosen version's TEST look (Phil 2026-10-31: v10 on the full TEST split).
 Writes MOUNT_DATA_DIR/summaries/<id>.txt (the durable copy, inside the secure environment) and the same files into
 config.SUMMARY_DIR (the local working copy), read-only. A PHI write: Phil's go 2026-10-29.
 
@@ -32,10 +33,10 @@ PROGNOSIS = "progression_recurrence_survival"
 MOUNT_DIR = config.MOUNT_DATA_DIR / "summaries"
 
 
-def wanted_ids() -> list[str]:
+def wanted_ids(with_test: bool = False) -> list[str]:
     pools = json.loads((config.DATA_DIR / "pools.json").read_text(encoding="utf-8"))
-    val = [json.loads(line)["id"] for line in (config.DATA_DIR / "splits" / "val.jsonl").read_text().splitlines() if line]
-    return sorted(set(pools["train"]) | set(pools["val"]) | set(val))
+    split = lambda s: [json.loads(line)["id"] for line in (config.DATA_DIR / "splits" / f"{s}.jsonl").read_text().splitlines() if line]
+    return sorted(set(pools["train"]) | set(pools["val"]) | set(split("val")) | (set(split("test")) if with_test else set()))
 
 
 def write_ro(path: Path, text: str) -> None:
@@ -102,8 +103,9 @@ def copy_local(ids: list[str]) -> None:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--local-only", action="store_true", help="no BigQuery: copy the mount's summaries to SUMMARY_DIR")
+    p.add_argument("--with-test", action="store_true", help="also the TEST split (only for a chosen version's TEST look)")
     args = p.parse_args()
-    ids = wanted_ids()
+    ids = wanted_ids(args.with_test)
     if not args.local_only:
         pull(ids)
     copy_local(ids)
