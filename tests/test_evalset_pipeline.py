@@ -805,3 +805,24 @@ def test_opus_recipe_wires_claude_adapter_and_prices(tmp_path, monkeypatch):
     be = run.APIBackend(r, tmp_path, max_spend=12.0)
     assert isinstance(be.adapter, VertexClaudeAdapter) and be.adapter.prices == run.OPUS_PRICES
     assert be.adapter.max_spend_usd == 12.0 and be.adapter.effort == "low" and not be.per_case
+
+
+def test_opus_oversize_scans_send_fewer_evenly_spaced_slices():
+    r = get("opus")
+    small = [(None, [bytes([i]) * 100 for i in range(50)])]
+    assert run.fit_request(r, small) is small
+    # 50 slices x 500 kB = ~33.3 MB as base64: over the 29.9 MB cap, fits at 40 (~26.7 MB)
+    big = [(None, [bytes([i]) * 500_000 for i in range(50)])]
+    out = run.fit_request(r, big)[0][1]
+    assert len(out) == 40 and out[0] == big[0][1][0] and out[-1] == big[0][1][-1]
+    assert len(set(out)) == 40  # distinct slices, kept in order
+    assert [big[0][1].index(x) for x in out] == sorted(big[0][1].index(x) for x in out)
+    # 50 x 700 kB = ~46.7 MB: 40 slices (~37 MB) still too big, 30 (~28 MB) fits
+    assert len(run.fit_request(r, [(None, [bytes([i]) * 700_000 for i in range(50)])])[0][1]) == 30
+    # two scans of 25: each trimmed to 20
+    pair = [("prior", [bytes([i]) * 500_000 for i in range(25)]), ("current", [bytes([i + 50]) * 500_000 for i in range(25)])]
+    assert [len(x) for _, x in run.fit_request(r, pair)] == [20, 20]
+    # Argon has no request cap: the same big scan goes whole
+    assert run.fit_request(get("argon"), big) is big
+    with pytest.raises(ValueError):
+        run.fit_request(r, [(None, [bytes([i]) * 2_000_000 for i in range(50)])])

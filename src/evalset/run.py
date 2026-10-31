@@ -32,14 +32,38 @@ KEY_COLS = ["case_id", "question_id", "arm"]
 
 # -- calls ------------------------------------------------------------------------------------------
 
+def request_bytes(scans) -> int:
+    """Rough size of a request carrying these images as base64 (plus ~200 bytes of JSON and label per image)."""
+    return sum(4 * math.ceil(len(b) / 3) + 200 for _, imgs in scans for b in imgs) + 20_000
+
+
+def fit_request(recipe: Recipe, scans):
+    """Recipe setting ``max_request_bytes`` (Opus on Vertex: 30 MB per request): when a case's images would exceed it,
+    send an evenly spaced subset of each scan's slices, trying each count in ``oversize_slices`` in turn (Phil 10-31:
+    40 slices for the ~1% of scans too big for 50; 30 if 40 still does not fit). Other models are unaffected. The count
+    actually sent is in each answer row (``usage_image_count``). Raises if none of the counts fits."""
+    cap = recipe.setting("max_request_bytes")
+    if not cap or request_bytes(scans) <= cap:
+        return scans
+    for k in recipe.setting("oversize_slices", ()):
+        trimmed = []
+        for name, imgs in scans:
+            kk = min(len(imgs), max(1, round(len(imgs) * k / recipe.n_slices)))  # 50 -> 40; 25 + 25 -> 20 + 20
+            idx = sorted({round(i * (len(imgs) - 1) / max(kk - 1, 1)) for i in range(kk)})
+            trimmed.append((name, [imgs[i] for i in idx]))
+        if request_bytes(trimmed) <= cap:
+            return trimmed
+    raise ValueError(f"{recipe.name}: case images exceed {cap} bytes even at {recipe.setting('oversize_slices')} slices")
+
+
 def scans_for_case(recipe: Recipe, card, row, root=None):
     """[(scan name, [image bytes])] in image order: prior first, then the current scan."""
     n = recipe.slices_per_scan(len(card.scan_names))
     if len(card.scan_names) == 1:
-        return [(None, packs.load(recipe, n, row["study"], row["series"], root))]
+        return fit_request(recipe, [(None, packs.load(recipe, n, row["study"], row["series"], root))])
     prior_name, current_name = card.scan_names
-    return [(prior_name, packs.load(recipe, n, row["prior_study"], row["prior_series"], root)),
-            (current_name, packs.load(recipe, n, row["study"], row["series"], root))]
+    return fit_request(recipe, [(prior_name, packs.load(recipe, n, row["prior_study"], row["prior_series"], root)),
+                                (current_name, packs.load(recipe, n, row["study"], row["series"], root))])
 
 
 def messages_for_case(recipe: Recipe, card, row, arm: str, root=None, questions=None):
