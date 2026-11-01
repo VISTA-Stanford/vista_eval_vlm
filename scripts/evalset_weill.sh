@@ -24,14 +24,14 @@ STEPS="${STEPS:-1 2 3 4}"
 export EVALSET_MOUNT_ROOT="${EVALSET_MOUNT_ROOT:-/data/fries/users/padamson/mnt}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 case "$RECIPE" in
-  medgemma) VENV="${VISTA_VENV:-.venv}"; export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" ;;
-  astra) VENV="${VISTA_VENV:-.venv-api}" ;;
-  *) echo "ERROR: RECIPE must be medgemma or astra (argon runs on phil-sllm-01)"; exit 2 ;;
+  medgemma|qwen3vl|octomed) VLLM=1; VENV="${VISTA_VENV:-.venv}"; export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" ;;
+  astra) VLLM=0; VENV="${VISTA_VENV:-.venv-api}" ;;
+  *) echo "ERROR: RECIPE must be medgemma, qwen3vl, octomed or astra (argon runs on phil-sllm-01)"; exit 2 ;;
 esac
 PY="$PWD/$VENV/bin/python"
-[ -x "$PY" ] || { echo "ERROR: no python at $PY (medgemma: bash scripts/setup.sh; astra: bash scripts/setup_api_env.sh)"; exit 2; }
+[ -x "$PY" ] || { echo "ERROR: no python at $PY (vLLM models: bash scripts/setup.sh; astra: bash scripts/setup_api_env.sh)"; exit 2; }
 "$PY" -c "import pandas, pyarrow, PIL, requests" || { echo "ERROR: $VENV lacks pandas/pyarrow/pillow/requests"; exit 2; }
-[ "$RECIPE" = medgemma ] && { "$PY" -c "import vllm" || { echo "ERROR: $VENV has no vllm"; exit 2; }; }
+[ "$VLLM" = 1 ] && { "$PY" -c "import vllm" || { echo "ERROR: $VENV has no vllm"; exit 2; }; }
 echo "host $(hostname)  commit $(git log -1 --format=%h)  recipe $RECIPE  run $RUN  steps $STEPS  limit ${LIMIT:-all}"
 cd src
 LIMIT_ARG=(); [ -n "${LIMIT:-}" ] && LIMIT_ARG=(--limit "$LIMIT")

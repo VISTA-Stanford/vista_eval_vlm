@@ -49,6 +49,7 @@ class Recipe:
     jpeg_quality: int | None = None  # None = PIL's default (75), as the MedGemma notebook encodes
     orientation: str = "radiological"
     label_style: str = "before"      # "before": "Image n:" then the image; "after": image then "SLICE n"
+    label_suffix: str = ""           # added to each label ("\n" for Qwen-family templates, which join text parts as is)
     answer_form: str = "schema"      # "schema": forced {"answer": yes|no}; "final_answer": free text
     persona: str = ""                # line put before the card text (CT arms only)
     answer_line: str = ""            # replaces the card's "Answer yes or no." when set
@@ -99,7 +100,7 @@ class Recipe:
         parts = []
         for scan_name, images in scans or []:
             for j, data in enumerate(images, 1):
-                label = {"type": "text", "text": self._label(scan_name, j)}
+                label = {"type": "text", "text": self._label(scan_name, j) + self.label_suffix}
                 img = {"type": "image", "data": data, "mime": mime}
                 parts += [img, label] if self.label_style == "after" else [label, img]
         n_img = sum(1 for p in parts if p["type"] == "image")

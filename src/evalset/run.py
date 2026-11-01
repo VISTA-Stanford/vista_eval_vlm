@@ -121,15 +121,18 @@ def message_key(m) -> str:
     return h.hexdigest()
 
 
-def p_yes(log_probs):
+def p_yes(log_probs, form: str = "final_answer"):
     """P(yes) from the final answer token's top log-probabilities (open models): the yes-token mass over
-    yes + no, each summed over spellings (" yes", "Yes", ...). None when neither appears."""
+    yes + no, each summed over spellings (" yes", "Yes", ...). For 'boxed_choice' (OctoMed) the option letters count
+    too: A as yes, B as no. None when neither appears."""
     if not isinstance(log_probs, str) or not log_probs:
         return None
     top = json.loads(log_probs).get("top", {})
     mass = {"yes": 0.0, "no": 0.0}
+    alias = {"a": "yes", "b": "no"} if form == "boxed_choice" else {}
     for tok, lp in top.items():
         k = tok.strip().lower().strip("*.'\"")
+        k = alias.get(k, k)
         if k in mass:
             mass[k] += math.exp(lp)
     tot = mass["yes"] + mass["no"]
@@ -147,7 +150,7 @@ def result_row(recipe, step, arm, row, q, out, m=None):
            "response_text": text, "answer": parse_answer(text, recipe.answer_form) if not err else None,
            # A refusal is a declined answer: disclaimer wording next to a readable yes/no is not one.
            "refused": False, "error": err, "cached": out.get("cached"),
-           "log_probs": out.get("log_probs"), "p_yes": p_yes(out.get("log_probs")),
+           "log_probs": out.get("log_probs"), "p_yes": p_yes(out.get("log_probs"), recipe.answer_form),
            "message_key": message_key(m) if m is not None else None, "request_key": out.get("request_key")}
     rec["refused"] = rec["answer"] is None and is_refusal(text, err)
     for k, v in usage.items():
@@ -330,17 +333,27 @@ class VLLMBackend:
         from vllm import LLM, SamplingParams
         self.recipe = recipe
         n_max = max(recipe.n_slices, 2 * recipe.n_slices_pair)
+        limits = {"image": n_max}
+        if recipe.setting("no_video"):
+            limits["video"] = 0  # Qwen-family: no memory set aside for a video the recipe never sends
+        extra = {}
+        if recipe.setting("mm_processor_kwargs"):
+            extra["mm_processor_kwargs"] = dict(recipe.setting("mm_processor_kwargs"))  # e.g. OctoMed's pixel budget
         self.llm = LLM(model=recipe.model_name, dtype="bfloat16", max_model_len=int(recipe.setting("max_model_len")),
-                       limit_mm_per_prompt={"image": n_max},
+                       limit_mm_per_prompt=limits, **extra,
                        # EVALSET_PREFIX_CACHE=0 turns it off, to check cached and uncached runs give the same answers.
                        enable_prefix_caching=os.environ.get("EVALSET_PREFIX_CACHE", "1") != "0",
                        # EVALSET_GPU_MEMORY_UTIL lowers vLLM's share to fit beside another job on a shared GPU.
                        gpu_memory_utilization=float(os.environ.get("EVALSET_GPU_MEMORY_UTIL", "0.85")),
                        trust_remote_code=True,
                        download_dir=cache)
+        # Greedy unless the recipe documents sampling (OctoMed: temp 0.6, top_p 0.95); a fixed seed keeps a sampled
+        # run repeatable.
+        sampling = {k: recipe.setting(k) for k in ("top_p", "top_k", "seed") if recipe.setting(k) is not None}
         self.params = SamplingParams(temperature=float(recipe.setting("temperature", 0.0)),
                                      max_tokens=int(recipe.setting("max_new_tokens", 2000)),
-                                     logprobs=int(recipe.setting("logprobs", 20)))
+                                     logprobs=int(recipe.setting("logprobs", 20)), **sampling)
+        self.choice_tokens = ANSWER_TOKENS[recipe.answer_form]
 
     def ask_many(self, msgs):
         # A system message goes first; MedGemma's chat template folds it into the start of the user turn, before
@@ -348,7 +361,7 @@ class VLLMBackend:
         convs = [([{"role": "system", "content": m.system}] if m.system else [])
                  + [{"role": "user", "content": openai_content(m)}] for m in msgs]
         outs = self.llm.chat(convs, self.params, use_tqdm=True)
-        return [{"text": o.outputs[0].text, "log_probs": answer_logprobs(o.outputs[0]), "usage":
+        return [{"text": o.outputs[0].text, "log_probs": answer_logprobs(o.outputs[0], self.choice_tokens), "usage":
                  {"prompt_tokens": len(o.prompt_token_ids or []), "output_tokens": len(o.outputs[0].token_ids)}}
                 for o in outs]
 
@@ -391,8 +404,12 @@ def openai_content(m):
     return out
 
 
-def answer_logprobs(completion):
-    """JSON {position, top: {token: logprob}} at the last generated token that reads yes/no, or None."""
+#: Tokens that carry the final answer, per answer form: yes/no words, or OctoMed's option letters (A = yes, B = no).
+ANSWER_TOKENS = {"final_answer": ("yes", "no"), "schema": ("yes", "no"), "boxed_choice": ("a", "b", "yes", "no")}
+
+
+def answer_logprobs(completion, tokens=("yes", "no")):
+    """JSON {position, top: {token: logprob}} at the last generated token that reads as an answer (``tokens``), or None."""
     lps = getattr(completion, "logprobs", None)
     if not lps:
         return None
@@ -400,7 +417,7 @@ def answer_logprobs(completion):
         pos = lps[i] or {}
         chosen = pos.get(completion.token_ids[i])
         tok = getattr(chosen, "decoded_token", "") or ""
-        if tok.strip().lower().strip("*.'\"") in ("yes", "no"):
+        if tok.strip().lower().strip("*.'\"{}()") in tokens:
             return json.dumps({"position": i, "top": {str(getattr(v, "decoded_token", k)): float(v.logprob)
                                                       for k, v in pos.items()}})
     return None

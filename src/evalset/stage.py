@@ -21,7 +21,6 @@ from pathlib import Path
 
 from evalset import packs, paths, samples
 from evalset.cards import CARDS
-from evalset.recipes import get
 
 
 def mount_eval_root() -> Path:
@@ -94,8 +93,12 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--to", required=True, help="local eval-set root (created; samples and runs link to the mount)")
     ap.add_argument("--workers", type=int, default=32)
+    ap.add_argument("--arms", default=None, help="arms YAML (see evalset.arms); with --variant")
+    ap.add_argument("--variant", default=None)
     args = ap.parse_args()
-    counts = stage(get(args.recipe), args.steps, args.which, args.limit, Path(args.to), args.workers)
+    from evalset.run import recipe_for
+    recipe, _ = recipe_for(args.recipe, args.arms, args.variant)
+    counts = stage(recipe, args.steps, args.which, args.limit, Path(args.to), args.workers)
     print(f"steps {args.steps} ({args.which}, limit {args.limit or 'all'}): {counts}")
     return 0
 

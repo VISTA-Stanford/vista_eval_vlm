@@ -32,6 +32,14 @@ _WRAP = r"[\s\*\"'`_$\\{}]*(?:\\?(?:boxed|text|mathrm|textbf)\s*\{[\s\*\"'`_$]*)
 _FINAL = re.compile(r"final\s*answer\s*[:：]?\s*(?:(?:the\s+)?(?:final\s+)?answer\s+is\s*[:：]?)?" + _WRAP + r"(yes|no)\b"
                     r"|\\boxed\s*\{[\s\*$]*(?:\\?(?:text|mathrm|textbf)\s*\{\s*)?(yes|no)\b"
                     r"|(?:^|\n)[ \t>#\*_-]*(?:answer\s*[:：]\s*)?[\*_`\"']*(yes|no)[\*_`\"'.!]*[ \t]*$", re.IGNORECASE)
+#: OctoMed's trained multiple-choice form (its card): it reasons in <think>, then puts the option in the last \boxed{}.
+#: A = Yes, B = No (the "A: Yes" / "B: No" lines its recipe adds); the word itself is read too. Only the text after the
+#: think block counts, so an option it weighed while reasoning never does; a think block that never closes (the token
+#: limit) is unparsed. Failing a \boxed{}, a last line that is only the option ("Answer: A", "(B) No").
+_BOXED = re.compile(r"\\boxed\s*\{[\s\*$(]*(?:\\?(?:text|mathrm|textbf)\s*\{[\s(]*)?(a|b|yes|no)\b", re.IGNORECASE)
+_LAST_CHOICE = re.compile(r"(?:^|\n)[ \t>#\*_-]*(?:(?:final\s*)?answer\s*[:：]\s*)?[\*_`\"'(]*(a|b|yes|no)\b[)\*_`\"'.!:]*"
+                          r"(?:\s*(?:yes|no))?[\*_`\"'.!]*[ \t]*$", re.IGNORECASE)
+CHOICE_LETTER = {"a": "yes", "b": "no", "yes": "yes", "no": "no"}
 _REFUSAL_TEXT = re.compile(
     r"\b(i\s*(?:am|'m)\s*(?:not able|unable)|i\s*can(?:not|'t)\s*(?:provide|determine|answer|interpret|make)"
     r"|not (?:able|qualified) to (?:provide|interpret|diagnose)|consult (?:a|your) (?:radiologist|physician|doctor)"
@@ -41,10 +49,18 @@ _REFUSAL_ERROR = re.compile(r"content.?filter|responsibleaipolicy|safety|blocked
 
 def parse_answer(text, form: str):
     """'yes', 'no' or None. ``form``: 'final_answer' (the last "Final Answer: yes/no" in free text) or
-    'schema' (a forced answer: the bare word, or JSON {"answer": ...})."""
+    'schema' (a forced answer: the bare word, or JSON {"answer": ...}) or 'boxed_choice' (OctoMed: the last
+    \\boxed{A|B} after its think block, A = yes, B = no)."""
     if text is None or (isinstance(text, float) and np.isnan(text)):
         return None
     t = str(text).strip()
+    if form == "boxed_choice":
+        if "</think>" in t:
+            t = t.rsplit("</think>", 1)[1].strip()
+        elif "<think>" in t:
+            return None
+        hits = [m.group(1) for m in _BOXED.finditer(t)] or [m.group(1) for m in _LAST_CHOICE.finditer(t)]
+        return CHOICE_LETTER[hits[-1].lower()] if hits else None
     if form == "final_answer":
         hits = [next(g for g in m.groups() if g) for m in _FINAL.finditer(t)]
         return hits[-1].lower() if hits else None
@@ -207,7 +223,7 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--n-boot", type=int, default=1000)
     ap.add_argument("--split", default=None, help="score only this split (step 4: test reported separately)")
-    ap.add_argument("--reparse", choices=["final_answer", "schema"], default=None,
+    ap.add_argument("--reparse", choices=["final_answer", "schema", "boxed_choice"], default=None,
                     help="parse each reply again with today's rules instead of the answer stored at run time")
     args = ap.parse_args()
     df = pd.concat([pd.read_csv(p, dtype={"case_id": str, "person_id": str}) for p in args.results], ignore_index=True)
