@@ -39,7 +39,8 @@ def test_qwen_uses_astras_packs_and_plain_prompt():
 
 def test_octomed_options_system_and_budget():
     r, m = _msg("octomed")
-    assert len(m.images) == 10 and m.system == "You are a helpful assistant."
+    assert len(m.images) == 50 and m.system == "You are a helpful assistant."
+    assert r.pack_id(50) == get("astra").pack_id(50) and r.pack_id(25) == get("astra").pack_id(25)
     assert m.question.endswith("A: Yes\nB: No\nPlease reason step-by-step, and put your final answer within \\boxed{}.")
     assert "Answer yes or no." not in m.question
     assert dict(r.setting("mm_processor_kwargs")) == {"min_pixels": 262144, "max_pixels": 262144}
@@ -47,9 +48,9 @@ def test_octomed_options_system_and_budget():
     assert r.setting("seed") is not None
 
 
-def test_octomed_two_scan_card_gets_5_plus_5():
+def test_octomed_two_scan_card_gets_25_plus_25():
     _, m = _msg("octomed", step=3)
-    assert len(m.images) == 10 and m.parts[1]["text"] == "PRIOR SLICE 1\n"
+    assert len(m.images) == 50 and m.parts[1]["text"] == "PRIOR SLICE 1\n"
 
 
 def test_summary_arm_has_no_images():
@@ -109,8 +110,8 @@ def test_ablation_variants_apply():
     f = Path("/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/evalset_v1/arms/open_vlm_fair_eval.yaml")
     if not f.exists():
         pytest.skip("arms file lives on the mount")
-    for name, v, n, ctx in [("qwen3vl", "qwen3vl_85", 85, 32768), ("octomed", "octomed_50", 50, 32768),
-                            ("octomed", "octomed_85", 85, 49152)]:
+    for name, v, n, ctx in [("qwen3vl", "qwen3vl_85", 85, 32768), ("octomed", "octomed_10", 10, 16384),
+                            ("octomed", "octomed_50", 50, 32768), ("octomed", "octomed_85", 85, 49152)]:
         r = arms.apply(get(name), v, arms.load(f, v)[0])
         assert r.n_slices == n and int(r.setting("max_model_len")) == ctx and r.name == f"{name}__{v}"
         assert r.answer_form == get(name).answer_form

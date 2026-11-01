@@ -21,7 +21,7 @@ MOUNT=/data/fries/users/padamson/mnt
 ARMS_FILE="$MOUNT/su-vista-uscentral1/vistabench/vlm/evalset_v1/arms/open_vlm_fair_eval.yaml"
 case "$RECIPE" in
   qwen3vl) VARIANTS="qwen3vl_85" ;;
-  octomed) VARIANTS="octomed_50 octomed_85" ;;
+  octomed) VARIANTS="octomed_10 octomed_85" ;;
   *) echo "ERROR: recipe must be qwen3vl or octomed"; exit 2 ;;
 esac
 
