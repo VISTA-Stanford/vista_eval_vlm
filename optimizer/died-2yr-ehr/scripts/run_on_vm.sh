@@ -7,7 +7,8 @@
 #
 # Needs: Docker, the su-vista-uscentral1 mount, uv, git access to both repos, and on the seat route (the default) the
 # Claude token at ~/.config/alo/oauth_token (mode 600; `claude setup-token` makes one); with ALO_ROUTE=vertex, the
-# Vertex-only service account key at ~/.config/alo/vertex-sa.json (mode 600). Settings, all optional, on the same line:
+# machine's optimizer login (/home/optimizer/.config/gcloud/application_default_credentials.json, the file crc and
+# rad-eval mount; never read here, only checked to exist). Settings, all optional, on the same line:
 # RUN_ID (yesno-r1), ITERATIONS (5), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20), START (a version tag to start a new run
 # from, e.g. program-v5; default the newest good version), TASK_SCHEDULE (JSON, e.g. a bigger TRAIN); SETUP_ONLY=1 stops before the run.
 # ANSWER=probability (with WITH_SUMMARY=1 for the summary arm) runs the probability version: 0-100 answers scored by
@@ -19,7 +20,6 @@
 set -euo pipefail
 
 BRANCH=feat/died-2yr-ehr-agentic
-ENGINE_BRANCH=main
 VLM=${VLM_REPO:-$HOME/code/vista_eval_vlm}
 TASK_WT=$HOME/code/vista_eval_vlm-died2yr-ehr
 TASK_DIR=$TASK_WT/optimizer/died-2yr-ehr
@@ -83,9 +83,8 @@ docker info >/dev/null 2>&1 || fail "Docker is not running or this user cannot u
 [ -f "$DATA/pools.json" ] || fail "the data is not readable at $DATA (is the su-vista-uscentral1 mount here?)"
 [ -d "$DATA/archive/tables" ] || fail "no record archive at $DATA/archive (the export has not been run yet)"
 if [ "${ALO_ROUTE:-anthropic}" = vertex ]; then
-    KEY=$HOME/.config/alo/vertex-sa.json
-    [ -f "$KEY" ] || fail "no Vertex-only key at $KEY (or run on the seat: unset ALO_ROUTE)"
-    [ "$(stat -c %a "$KEY")" = 600 ] || fail "$KEY must be mode 600"
+    LOGIN=/home/optimizer/.config/gcloud/application_default_credentials.json
+    [ -f "$LOGIN" ] && [ ! -L "$LOGIN" ] || fail "no optimizer login at $LOGIN (or run on the seat: unset ALO_ROUTE)"
 else
     TOKEN=$HOME/.config/alo/oauth_token
     [ -f "$TOKEN" ] || fail "no Claude token at $TOKEN: run claude setup-token, save it there with mode 600"
@@ -109,7 +108,7 @@ if [ "$ANSWER" != yesno ]; then grep -q '^ANSWER = os.environ.get("ANSWER"' "$TA
 
 # The engine, at the task's pin.
 [ -d "$ENGINE/.git" ] || git clone -q git@github.com:philadamson93/agentic-label-opt.git "$ENGINE"
-git -C "$ENGINE" fetch -q origin "$ENGINE_BRANCH"
+git -C "$ENGINE" fetch -q origin  # every branch: the pin can sit on a branch other than main (bb216c2, 2026-11-01)
 if [ -d "$ENGINE_WT" ]; then
     [ -z "$(git -C "$ENGINE_WT" status --porcelain)" ] || fail "$ENGINE_WT has uncommitted changes; not touching it"
     git -C "$ENGINE_WT" checkout -q --detach "$PIN"
