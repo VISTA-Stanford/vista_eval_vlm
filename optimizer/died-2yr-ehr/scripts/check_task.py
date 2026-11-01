@@ -427,12 +427,22 @@ def check_survival(report, spec) -> None:
     report("task score on the VAL pool == sksurv integrated Brier (unreadable answers at the average curve)",
            abs(score.primary_metric.value - want_ibs) < 1e-10 and score.primary_metric.higher_is_better is False,
            f"{score.primary_metric.value:.4f} vs {want_ibs:.4f}; lower is better")
-    report("C-index on the VAL pool == sksurv with risk = minus the curve's mean over the scoring months",
-           abs(score.breakdown["c_index"] - round(want_c, 4)) < 1e-9, f"{score.breakdown['c_index']} vs {want_c:.4f}")
     nbad = sum(1 for a in answers.values() if a["error"])
-    report("breakdown counts unreadable answers and gives the average curve's own score",
-           score.breakdown["program_errors"] == nbad and score.breakdown.get("error_rising_curve", 0) == nbad
-           and "integrated_brier" in score.breakdown["average_curve"], f"{nbad} unreadable")
+    if config.SUMMARY_ONLY:
+        # Bare arm: the scorecard is the headline integrated Brier and counts only (Phil 2026-11-01); the score itself
+        # is still checked against sksurv above.
+        b = score.breakdown
+        report("bare scorecard: integrated Brier plus n / deaths / censored / failures, and nothing more",
+               set(b) - {k for k in b if k.startswith("error_")} == {"n", "deaths", "censored", "program_errors",
+                                                                     "integrated_brier"}
+               and b["program_errors"] == nbad and b["deaths"] == int(eev.sum()) and b["n"] == len(pool)
+               and abs(b["integrated_brier"] - round(want_ibs, 4)) < 1e-9, str(sorted(b)))
+    else:
+        report("C-index on the VAL pool == sksurv with risk = minus the curve's mean over the scoring months",
+               abs(score.breakdown["c_index"] - round(want_c, 4)) < 1e-9, f"{score.breakdown['c_index']} vs {want_c:.4f}")
+        report("breakdown counts unreadable answers and gives the average curve's own score",
+               score.breakdown["program_errors"] == nbad and score.breakdown.get("error_rising_curve", 0) == nbad
+               and "integrated_brier" in score.breakdown["average_curve"], f"{nbad} unreadable")
     report("per-example: failed = None, others right or wrong",
            all((correct[i] is None) == bool(answers[i]["error"]) for i in pool))
 
@@ -469,8 +479,13 @@ def check_survival(report, spec) -> None:
         tscore = ad.TaskScorer().score(arts, "train", {"_iter": 1})
         corpus = ad.mistake_corpus(Path(tmp) / "fb")(arts, tscore)
         entries = {e["id"]: e for e in json.loads(Path(corpus.ref).read_text())}
-    ok = all("gold_died" in e and "gold_months_followed" in e and "survival_at_12m" in e and e["reasons"]
-             and "said_died_within_1_year" not in e for e in entries.values())
+    if config.SUMMARY_ONLY:  # every patient, right or wrong, with its summary (and nothing from the record) and its curve
+        ok = all("gold_died" in e and "gold_months_followed" in e and e["survival_curve"] == tans[i]["curve"]
+                 and e["reasons"] and [Path(f).name for f in e["record_files"]] == [f"{i}-summary.txt"]
+                 for i, e in entries.items())
+    else:
+        ok = all("gold_died" in e and "gold_months_followed" in e and "survival_at_12m" in e and e["reasons"]
+                 and "said_died_within_1_year" not in e for e in entries.values())
     wrong_way = [entries[i]["mistake"] for k, i in enumerate(tids) if k % 2 == 1]
     right_way = [entries[i]["mistake"] for k, i in enumerate(tids) if k % 2 == 0]
     report("mistakes file: gold, follow-up, curve at 12-60 months, reasons"
@@ -478,8 +493,10 @@ def check_survival(report, spec) -> None:
            ok and len(entries) == len(tids) and (not real or (all(wrong_way) and not any(right_way))),
            f"{sum(e['mistake'] for e in entries.values())} of {len(entries)} mistakes")
 
+    if config.SUMMARY_ONLY:
+        check_bare_survival_text(report, spec)
     # 3e. the cohort survival the prompt states == Kaplan-Meier of the real key's TRAIN (skipped on synthetic data)
-    if len(train) > 1000:
+    elif len(train) > 1000:
         got = {k: f"{100 * float(km_p[np.searchsorted(km_x, m, side='right') - 1]):.1f}%" for k, m in
                (("1 year", 12), ("2 years", 24), ("3 years", 36), ("5 years", 60), ("10 years", 120))}
         report("prompt's TRAIN survival == Kaplan-Meier of the key", got == agentic.TRAIN_SURVIVAL, str(got))
@@ -514,6 +531,53 @@ def check_survival(report, spec) -> None:
            f"{len(cases)} cases{why}")
     report("a curve is read as a step curve, 1 before its first point",
            ad.curve_at([[2, 0.9], [5, 0.5]], [1, 2, 4.9, 5, 9]) == [1.0, 0.9, 0.9, 0.5, 0.5])
+
+
+#: Cohort numbers and prognostic hints the full survival arm hands over; none may reach the bare arm's session or
+#: optimizer (Phil 2026-11-01).
+BARE_FORBIDDEN = ("18.5%", "30.6%", "80.2%", "68.5%", "61.2%", "51.2%", "32.8%", "79.9%", "68.1%", "0.21", "0.15 to 0.18", "ECOG",
+                  "performance status", "clinical stage", "albumin", "metastas", "record_guide", "notes.txt",
+                  "thoracic oncologist", "hazard ratio", "average curve scores")
+
+
+def check_bare_survival_text(report, spec) -> None:
+    """Survival + summary-only: the prompt carries the eval-set VLM summary prompt verbatim (opening and PATIENT
+    SUMMARY block, read from vista_eval_vlm main's death card), with only the answer changed; no cohort number or hint
+    is in anything the session or the optimizer reads."""
+    import ast
+    import subprocess
+
+    import adapters as ad
+    import agentic
+    import config
+    import optimizer_prompt as op
+    from isolation.program_runner import CallPaths
+    from isolation.pass_outputs import Call
+
+    pid = sorted(ad.pools()["val"])[0]
+    summary = (config.SUMMARY_DIR / f"{pid}.txt").read_text(encoding="utf-8").strip()
+    prompt = spec.prompt(Call(pid, {"id": pid}), "label", CallPaths(program="/w/p", call="/w/c", ro={}), "PID")
+    src = subprocess.run(["git", "show", "origin/main:src/evalset/cards/death.py"], cwd=HERE, capture_output=True,
+                         text=True)
+    opening = None
+    if src.returncode == 0:
+        for node in ast.walk(ast.parse(src.stdout)):
+            if isinstance(node, ast.keyword) and node.arg == "summary_opening":
+                opening = ast.literal_eval(node.value)
+    block = f"{opening}\n\nPATIENT SUMMARY:\n{summary}\n\nQuestion: "
+    report("bare prompt carries the eval-set summary prompt verbatim (opening + PATIENT SUMMARY + Question), answer "
+           "changed to a curve", opening is not None and opening == agentic.BARE_OPENING and block in prompt
+           and "Answer yes or no." not in prompt and '"survival_curve"' in prompt,
+           "eval-set death card read from origin/main" if opening else "could not read the death card from origin/main")
+    texts = {"prompt": prompt.replace(summary, ""), "seed": (config.SEED_PROGRAM_DIR / "instructions.md").read_text(),
+             "brief": config.TASK_BRIEF.read_text(), "instructions": config.OPTIMIZER_INSTRUCTIONS.read_text(),
+             "per-round message": op.SURVIVAL_SUMMARY_ONLY_TEST}
+    hits = [(k, w) for k, t in texts.items() for w in BARE_FORBIDDEN if w in t]
+    report("no cohort numbers or hints in the bare prompt, seed, brief, instructions or per-round message",
+           not hits and config.SEED_PROGRAM_DIR.name == "program_agentic_survival_bare"
+           and config.TASK_BRIEF.name == "task_agentic_survival_bare.md"
+           and config.OPTIMIZER_INSTRUCTIONS.name == "optimizer_instructions_survival_bare.md",
+           f"hits {hits}" if hits else f"{len(texts)} texts clean")
 
 
 def check_run_rules(report) -> None:

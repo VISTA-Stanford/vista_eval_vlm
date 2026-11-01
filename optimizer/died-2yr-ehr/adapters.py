@@ -94,7 +94,7 @@ def pools() -> dict[str, frozenset]:
     """The fixed TRAIN (400) and VAL (200) pools: the CT task's, copied by scripts/build_data.py, so the two tasks
     score on the same patients. The schedule draws from nothing else."""
     out = {k: frozenset(v) for k, v in json.loads((DATA_DIR / "pools.json").read_text(encoding="utf-8")).items()}
-    if SURVIVAL:  # 390 of 400 TRAIN and 197 of 200 VAL have an os_survival time (2026-11-01)
+    if SURVIVAL:  # 394 of 400 TRAIN and 198 of 200 VAL have an os_survival time (2026-11-01)
         key = survival_key()
         out = {k: frozenset(i for i in v if i in key) for k, v in out.items()}
     if config.SUMMARY_ONLY:  # the summary is the whole input, so only patients with a summary at their cutoff
@@ -349,7 +349,7 @@ from survival_metrics import (  # noqa: E402,F401  (re-exported: the scorer, run
 
 @lru_cache(maxsize=None)
 def cover_months() -> float:
-    """How far every curve must reach, in months: TRAIN's own window end (about 74.5 months), never short of any
+    """How far every curve must reach, in months: TRAIN's own window end (about 74.6 months), never short of any
     scoring window, which can only end earlier. A curve that stops before it is unreadable."""
     return window_upper_days(read_split("train")) / DAYS_PER_MONTH
 
@@ -466,6 +466,15 @@ class TaskScorer:
         readable = [i for i in answers if answer_curve(answers[i]) is not None]
         errors = Counter(a["error"] for a in answers.values() if a.get("error"))
         value = ours.get("integrated_brier", float("nan"))
+        if config.SUMMARY_ONLY:  # bare: the headline integrated Brier and counts only; it samples TRAIN for the rest
+            return ScoreResult(  # (no C-index, per-month Brier/AUC, average-curve score, spread counts; Phil 2026-11-01)
+                primary_metric=PrimaryMetric(name=METRIC_NAME, value=value, higher_is_better=False),
+                breakdown={"n": len(rows), "deaths": ours["deaths"], "censored": len(rows) - ours["deaths"],
+                           "program_errors": sum(errors.values()),
+                           **{f"error_{k}": v for k, v in sorted(errors.items())},
+                           "integrated_brier": round(value, 4) if value == value else None},
+                task_config={**task_config, "_split": split},
+            )
         r4 = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in ours.items()}
         return ScoreResult(
             primary_metric=PrimaryMetric(name=METRIC_NAME, value=value, higher_is_better=False),
@@ -567,6 +576,24 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
                                 "mistake": bool(a["error"]) or bool(wrong_at), "wrong_at": wrong_at,
                                 "record_files": files, "trace_files": traces})
                 continue
+            if config.SUMMARY_ONLY and SURVIVAL:  # every TRAIN patient, right or wrong, with its summary and traces,
+                files, traces = [], []            # its curve as written; mistake sampling kept (Phil 2026-11-01)
+                dest = records / f"{i}-summary.txt"
+                _copy_over(config.SUMMARY_DIR / f"{i}.txt", dest)
+                files.append(str(dest))
+                log = Path(a["findings_log"]) if a.get("findings_log") else None
+                for f in _trace_files(artifacts, i) + ([log] if log and log.is_file() else []):
+                    tdest = records / f"{i}-trace-{f.name}"
+                    _copy_over(f, tdest)
+                    traces.append(str(tdest))
+                entries.append({"id": i, "gold_died": rows[i]["event"],
+                                "gold_months_followed": round(rows[i]["time_days"] / DAYS_PER_MONTH, 1),
+                                "survival_curve": a.get("curve"), "error": a["error"],
+                                "reasons": a.get("reasons") or [],
+                                "mistake": bool(a["error"]) or surv_wrong[i],
+                                "wrong_at": ["curve worse than the average curve"] if surv_wrong[i] else [],
+                                "record_files": files, "trace_files": traces})
+                continue
             if SURVIVAL:
                 wrong_at = ["curve worse than the average curve"] if surv_wrong[i] else []
             else:
@@ -610,7 +637,7 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
         path = out / "train_mistakes.json"
         path.write_text(json.dumps(entries, indent=1), encoding="utf-8")
         last = HORIZONS[-1][0]  # grouped by the 2-year outcome: died by 1 year, died in year 2, alive at 2 years
-        if SURVIVAL:  # grouped by whether the death was seen
+        if SURVIVAL:  # grouped by whether the death was seen (the summary-only entries carry the same fields)
             counts = Counter(("died" if e["gold_died"] else "censored") + ("_mistake" if e["mistake"] else "_right")
                              for e in entries)
             return MistakeCorpus(ref=str(path), counts={"total": sum(e["mistake"] for e in entries), **counts})

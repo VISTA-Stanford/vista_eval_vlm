@@ -16,7 +16,8 @@
 # after 2 rounds with no new best VAL, which ends the run as finished (Phil 2026-10-31).
 # ANSWER=survival (Phil 2026-11-01) runs the survival-curve version the same way: integrated Brier against os_survival,
 # defaults RUN_ID surv-summary-r1 (surv-r1 without the summary), its own work folder; a failed session or unreadable
-# curve stops it (STOPPED (unreadable_curve)) for a person to look, never resumed.
+# curve stops it (STOPPED (unreadable_curve)) for a person to look, never resumed. SUMMARY_ONLY=1 runs the bare
+# summary-only arm of either answer: run id <prob|surv>-summaryonly-r1, work folder died-2yr-ehr-<prob|surv>-summaryonly.
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
 # baselines scored on the same VAL pool (baselines_val_pool.json).
@@ -33,9 +34,11 @@ DATA=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7
 export TASK_DATA_DIR=${TASK_DATA_DIR:-$HOME/data/died-2yr-ehr-v1_7}
 export ANSWER=${ANSWER:-yesno}
 export WITH_SUMMARY=${WITH_SUMMARY:-0}
+export SUMMARY_ONLY=${SUMMARY_ONLY:-0}  # the bare summary-only arm (config.SUMMARY_ONLY; implies WITH_SUMMARY)
+if [ "$SUMMARY_ONLY" = 1 ]; then export WITH_SUMMARY=1; fi  # so the summaries are copied below, as config implies
 if [ "$ANSWER" = probability ] || [ "$ANSWER" = survival ]; then
     PREFIX=prob; [ "$ANSWER" = survival ] && PREFIX=surv
-    if [ "$WITH_SUMMARY" = 1 ]; then ARM=$PREFIX-summary; else ARM=$PREFIX; fi
+    if [ "$SUMMARY_ONLY" = 1 ]; then ARM=$PREFIX-summaryonly; elif [ "$WITH_SUMMARY" = 1 ]; then ARM=$PREFIX-summary; else ARM=$PREFIX; fi
     RUN_ID=${RUN_ID:-$ARM-r1}
     export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-2}  # spec: 2 at a time (sllm-01's network gate)
     ITERATIONS=${ITERATIONS:-10}  # Phil 2026-10-31; the stop rule usually ends it sooner

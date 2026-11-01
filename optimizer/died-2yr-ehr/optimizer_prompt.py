@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, PROBABILITY, SURVIVAL, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF  # run.py sets ITERATIONS
+from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, PROBABILITY, SUMMARY_ONLY, SURVIVAL, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF  # run.py sets ITERATIONS
 
 HERE = Path(__file__).resolve().parent
 INSTRUCTIONS = OPTIMIZER_INSTRUCTIONS
@@ -39,6 +39,22 @@ TEST_RULES_BASED = (
 )
 
 
+
+#: Survival + summary-only (bare): where the per-patient files are and how to read them; no record folder, no hints
+#: about what to look for (Phil 2026-11-01: mistake sampling and reading the right and wrong patients' files only).
+SURVIVAL_SUMMARY_ONLY_TEST = (
+    "You cannot run the patients' sessions in here: each patient is read by its own session, outside this container.\n"
+    "You can read what each session read and did, and run your tools on the same summary.\n"
+    "- Every TRAIN patient of the pass is in the mistakes file, right or wrong: its gold (`gold_died`, 1 death or 0\n"
+    "  censored, and `gold_months_followed` from the record's last day), the curve the session wrote, its reasons,\n"
+    "  and `mistake` (its curve did worse on that patient than the average curve would have, or the session failed).\n"
+    "- Every patient's files are flat files in `<files>/`, named `<id>-<file>`: the summary the session read\n"
+    "  (`<id>-summary.txt`), its findings note (`<id>-trace-findings.md`) and its transcript\n"
+    "  (`<id>-trace-events.jsonl`, one JSON event per line).\n"
+    "- To try a tool as a session would, copy a summary to `/tmp/<id>/summary.txt` and run it there (tools live in\n"
+    "  `{program}/tools/`).\n"
+)
+
 def system_prompt() -> str:
     """The standing instructions, plus how to ask the search proxy when it is on (the engine's own wording)."""
     text = INSTRUCTIONS.read_text(encoding="utf-8")
@@ -52,7 +68,11 @@ def system_prompt() -> str:
 def build_prompt(iter_n: int, paths) -> str:
     editable = ", ".join(f"`{paths.program}/{f}`" for f in EDITABLE_FILES)
     first = (
-        ("This is the first iteration. The program is the seed: the plain question and no tools, so its score is "
+        ("This is the first iteration. The program is the seed: the bare question and no tools. Read the task brief, "
+         "read the patients and the summaries they read, and write a real first version: instructions.md and any tools "
+         "it needs."
+         if AGENTIC and SURVIVAL and SUMMARY_ONLY else  # summary-only survival: there are no records to read
+         "This is the first iteration. The program is the seed: the plain question and no tools, so its score is "
          "what a clinician-style prompt gets with no method. Read the task brief, read the mistakes, read some of "
          "those records yourself, and write a real first version: instructions.md and any tools it needs."
          if AGENTIC else
@@ -62,6 +82,8 @@ def build_prompt(iter_n: int, paths) -> str:
         "Start with step 1 of your standing instructions: check last iteration's prediction."
     )
     test = (
+        SURVIVAL_SUMMARY_ONLY_TEST.replace("{program}", paths.program).replace("<files>", f"{paths.feedback}/iter/{iter_n}/files")
+        if AGENTIC and SURVIVAL and SUMMARY_ONLY else
         (("You cannot run the patients' sessions in here: each patient is read by its own session, outside\n"
          "this container. You can read what each session did, read the same record, and run your tools on it.\n"
          "Every file a mistake lists is a flat file in `<files>/`, named `<id>-<file>`.\n"
