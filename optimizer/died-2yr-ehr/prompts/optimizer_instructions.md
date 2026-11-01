@@ -33,20 +33,43 @@ patients who lived it would also push to yes, and the reverse.
 Read the records yourself. The sessions' notes say what they read; only the record shows what they missed or
 misread. Do it with code and grep: a record can hold dozens of notes, and every line you read costs tokens.
 
+## The program: a patient summary, then a decision
+
+The program has two parts that work as one. In any iteration you may improve either or both.
+
+- **The summary.** Tools under `tools/` (and any instructions or skills that drive them) that read the whole
+  record in code, from the structured tables, the registry fields and the notes, and print a short patient summary
+  for the session: the information needed to judge this patient's risk of dying. It always opens with what is in
+  this record: which sources are present, how much of each and over what dates, and what was looked for and not
+  found. What goes in beyond that is yours to work out from what the sessions find and miss. Keep it efficient:
+  the tool does the reading, and the session reads only its output.
+- **The decision.** `instructions.md`: how the session turns that summary, plus any targeted look back into the
+  record, into its yes/no answers.
+
+A session's budget and time limits are in `task.md`; check in the transcripts what sessions actually use. If they
+use a small part of it, a fuller summary is affordable. If the record also holds a ready-made patient summary,
+treat it as one input to yours, not a replacement for reading the record.
+
 ## Each iteration, in five steps
 
 1. **Check last iteration's prediction.** Open your notebook and the last change note (in the notes
    folder). Compare what you predicted with what happened: the new VAL score in
    `iter/<n>/release_val.json`, and the TRAIN numbers in `iter/<n>/release_train.json`. Write down
    whether the prediction held. If VAL fell while TRAIN rose, the last edit fit TRAIN and not the task:
-   make a different change, do not stack another rule on it.
+   make a different change, do not stack another rule on it. If TRAIN has improved over the last two
+   iterations by more than VAL moves by chance (below) and VAL has not, the decision rules are fitting TRAIN:
+   make the next change to the summary.
 2. **Read this iteration's numbers.** `release_train.json` has the TRAIN balanced accuracy and, per horizon, how
    many who died were answered yes and how many who lived were answered no; the number of failed sessions and of
    impossible answer pairs (yes at 1 year, no at 2); the best version so far and what has been spent.
 3. **Read the mistakes and group them.** Sort the mistakes into a few patterns: a finding the sessions
    miss, a finding they over-weight, a part of the record they never open (a table, a kind of note),
    answers leaning to no (or yes) across the board, sessions that ran out of time or budget, answers that were
-   not exactly yes or no. Check each against the record. Pick the pattern that costs the most balanced accuracy.
+   not exactly yes or no. Check each against the record. A death rarely turns on one fact, so for each mistake give a rough
+   split of the blame between **the summary** (information in the record that bears on the answer was missing
+   from it, buried or misstated) and **the decision** (the session had the information and weighed it wrong),
+   for example 70/30. Add the splits up across the mistakes. Pick the pattern that costs the most
+   balanced accuracy, and put the change mainly in the part that carries more of the blame.
 4. **Edit the program.** Change only the program files you are told you may edit: `instructions.md` and
    `tools/`. Write the method in general terms (what to look at, how to look, how to weigh it into a yes or
    no at each horizon). Never refer to a patient's id. If you add or change a tool, run it on a few of the mistakes'
@@ -59,8 +82,8 @@ Write it to the `change_note.json` output, every iteration, as one JSON object:
 
 ```json
 {
-  "change": "what you edited, in one or two sentences",
-  "pattern": "the mistake pattern you targeted",
+  "change": "what you edited, and in which part (summary, decision or both), in one or two sentences",
+  "pattern": "the mistake pattern you targeted, and the blame split summed over the mistakes (summary / decision)",
   "prediction": "which numbers should move, and roughly how much",
   "attempting_step_back": false
 }
@@ -71,7 +94,8 @@ after the score has stalled for several iterations. If that version's VAL score 
 continues from the version before it. An ordinary edit should leave it `false`.
 
 VAL balanced accuracy on 200 patients (35 deaths within 1 year, 63 within 2) moves by about 0.04 by chance. A curve flat within that band for two
-iterations, or creeping up by a sliver, is a plateau: try a different approach rather than another small edit. Examples: a structured checklist with a
+iterations, or creeping up by a sliver, is a plateau: try a different approach rather than another small edit. After a plateau the next change goes to the
+summary (what it extracts and how) or is a deliberate step back, not another threshold. Examples: a structured checklist with a
 points score calibrated to published death rates, a tool that pulls the structured facts out of the parquet
 tables into one summary, a fixed reading order through the record.
 
