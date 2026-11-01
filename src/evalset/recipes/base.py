@@ -53,6 +53,7 @@ class Recipe:
     persona: str = ""                # line put before the card text (CT arms only)
     answer_line: str = ""            # replaces the card's "Answer yes or no." when set
     system: str = ""                 # system message (open models only); the chat template places it
+    question_style: str = "card"     # "card": the card's text; "short": Google's one-line CT-RATE form (Card.short_text)
     max_images: int | None = None
     settings: tuple = ()             # model call settings, as (key, value) pairs: effort, decoding...
 
@@ -88,7 +89,7 @@ class Recipe:
                 raise ValueError("card text must end with 'Answer yes or no.'")
             text = text[: -len("Answer yes or no.")] + self.answer_line
         if with_images and self.persona:
-            text = self.persona + "\n" + text
+            text = self.persona + (" " if self.question_style == "short" else "\n") + text
         return text
 
     def build(self, card_text: str, scans: list[tuple[str | None, list[bytes]]] | None) -> Message:

@@ -52,3 +52,15 @@ class Card:
             ask = q.body[q.body.index(self.question_start):]
             return f"{self.summary_opening}\n\nPATIENT SUMMARY:\n{str(summary).strip()}\n\n{ask}"
         raise ValueError(arm)
+
+    def short_text(self, q: Question) -> str:
+        """Google's CT-RATE question form on one line (MedGemma 1.5 report, Table 13): "Looking at these CT slices, <the
+        card's question, first letter lowered> Answer yes or no." No image line and no answer-key block; the question's
+        meaning is the card's own. One-scan CT cards only (spec 2026-10-30-medgemma-fair-eval, ablation 11-01)."""
+        if len(self.scan_names) != 1:
+            raise ValueError(f"step {self.step}: the short form is for one-scan cards")
+        ask = q.body[q.body.index(self.question_start) + len(self.question_start):].strip()
+        if not ask.endswith(ANSWER):
+            raise ValueError(f"{q.id}: question must end with {ANSWER!r}")
+        ask = ask[: -len(ANSWER)].strip()
+        return f"Looking at these CT slices, {ask[0].lower()}{ask[1:]} {ANSWER}"

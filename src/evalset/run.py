@@ -49,7 +49,8 @@ def messages_for_case(recipe: Recipe, card, row, arm: str, root=None, questions=
     for q in card.questions:
         if questions and q.id not in questions:
             continue
-        text = card.text(q, recipe.windows_phrase(), arm, summary=row.get("summary"))
+        text = (card.short_text(q) if recipe.question_style == "short" and arm == "ct"
+                else card.text(q, recipe.windows_phrase(), arm, summary=row.get("summary")))
         out.append((q, recipe.build(text, scans)))
     return out
 

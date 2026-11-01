@@ -113,3 +113,25 @@ def test_stage_links_samples_and_runs_and_copies_manifest_last(tmp_path):
     other = tmp_path / "other"; (other / "samples").mkdir(parents=True); (other / "runs").mkdir()
     with pytest.raises(RuntimeError):
         stage.prepare_root(dest, other)  # links already point elsewhere
+
+
+# -- Google's short question form ------------------------------------------------------------------
+
+def test_short_question_is_googles_one_line_form():
+    r = recipes.get("medgemma").replace(question_style="short")
+    c = CARDS[2]
+    q = r.build(c.short_text(c.question("lesion_liver")), [(None, [b"x"])]).question
+    assert q == ("You are an expert radiologist for chest CT. Looking at these CT slices, is there a non-benign finding "
+                 "in the liver? Answer with 'Final Answer: yes' or 'Final Answer: no'.")
+    assert "How the answer key was made" not in q and "axial slices" not in q
+    with pytest.raises(ValueError):
+        CARDS[3].short_text(CARDS[3].questions[0])  # two-scan card
+
+
+def test_short_style_reaches_the_run_messages():
+    row = {"study": "s", "series": "x", "case_id": "1"}
+    r = recipes.get("medgemma").replace(question_style="short")
+    from unittest import mock
+    with mock.patch.object(run, "scans_for_case", return_value=[(None, [b"x"])]):
+        out = run.messages_for_case(r, CARDS[2], row, "ct", questions=["pneumonitis"])
+    assert out[0][1].question.startswith("You are an expert radiologist for chest CT. Looking at these CT slices, does")
