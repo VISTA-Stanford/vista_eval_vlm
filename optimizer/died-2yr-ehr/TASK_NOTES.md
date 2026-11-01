@@ -59,6 +59,27 @@ identical patients, and the published v1.7 EHR baselines are scored on the same 
     python scripts/score_baselines.py score --ids pool
     bash scripts/cost_check.sh                       PAID (~$5, Phil's go): 5+5 patients, one iteration, judged
 
+## Probability version (`ANSWER=probability`, Phil 2026-10-31)
+
+Spec: `planning/vista_eval_vlm/2026-10-31-died-2yr-ehr-probability.md` on the mount. One setting switches the task;
+yes/no stays the default, and its prompt and prompt tag are byte-identical to before (checked 2026-10-31).
+
+| Decision | Answer |
+|---|---|
+| Answer | a whole number 0-100 per horizon (stored 0..1), plus 3-5 `reasons` (`fact`, record `file`, `date`), never scored |
+| Score | AUROC at each horizon (Mann-Whitney, ties half), averaged; a failed or unreadable answer scores 0.5. TRAIN breakdown adds Brier, mean probability by outcome, calibration by tenth, distinct values, share on the most common value |
+| Mistake | a probability on the wrong side of the horizon's TRAIN death rate (18.5%, 30.6%): only picks what the optimizer studies |
+| Seed, brief, instructions | `program_agentic_probability/`, `context/task_agentic_probability.md`, `prompts/optimizer_instructions_probability.md` |
+| Schedule, rounds | TRAIN `linear(100, 400, over=10)`, VAL 200; up to 10 rounds; stop after 2 rounds with no new best VAL (`run.py` enforces it before the next pass; `run_on_vm.sh` reports it as finished) |
+| Dollar stops | stop and ask past $200 a run or after a round over $50 (`RUN_BUDGET_USD`, `ROUND_BUDGET_USD`), from the run's receipts plus each round's optimizer budget, checked before each pass |
+| Work folder | `alo-tasks/died-2yr-ehr-prob-summary` (`-prob` without the summary); run `prob-summary-r1` |
+
+    ANSWER=probability TASK_DATA_DIR=/tmp/synth uv run ... python scripts/check_task.py check   AUROC/Brier == sklearn, 0-100 parsing
+    ANSWER=probability TASK_DATA_DIR=/tmp/synth uv run --project $AGENTIC_LABEL_OPT python run.py dry-run --iterations 4
+    python scripts/score_baselines.py score --ids val --horizons both     baselines incl. clinical XGBoost at 1 and 2 years
+    python scripts/check_reasons.py --run <work folder>                   share of reasons in a real file, pre-cutoff, found on that date
+    ANSWER=probability python run.py rescore --run <work folder>          $0: each VAL pass per horizon (AUROC, ties, Brier)
+
 ## Reference scores (v1.7 linear probes, VAL AUROC; not comparable with the task's balanced accuracy)
 
 Reproduction: clinical_pretx 0.7766 published on all 1,124 VAL patients with a label, recomputed 0.7766.
