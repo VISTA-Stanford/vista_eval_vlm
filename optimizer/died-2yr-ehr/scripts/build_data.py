@@ -10,6 +10,10 @@ first treatment - 7 days, written by the shared exporter (vista-onc-labelers com
     export     run the exporter into the local working copy, leak-check it, and archive it to DATA/archive/.
                The first PHI write: an Expensive step that needs Phil's go, so it refuses without --go.
                --dry-run prices the queries instead (no download).
+    survival   query vista_bench v1.7 os_survival (time_to_event_days, event_observed; clock first treatment - 7 days,
+               the same embed_time as the yes/no labels) for every task patient and write DATA/survival.jsonl
+               ({"id", "time_days", "event"}): the survival mode's answer key. A patient with no os_survival row is
+               left out, and counted per split and pool (2026-11-01: 140 of 5,549).
     rehydrate  rebuild the local working copy (DATA_DIR) from the mount: splits, pools and every patient folder
                from DATA/archive/tables/, notes.txt in the exporter's format, meta.json from cutoffs.jsonl. No
                BigQuery: for the run VM. The exporter's registry_dates/ side file (raw governing dates, for its leak
@@ -17,6 +21,7 @@ first treatment - 7 days, written by the shared exporter (vista-onc-labelers com
 
     OMP_NUM_THREADS=2 nice -n 19 ~/code/vista_eval_vlm-radprog/.venv/bin/python scripts/build_data.py splits
     OMP_NUM_THREADS=2 nice -n 19 ~/code/vista_eval_vlm-radprog/.venv/bin/python scripts/build_data.py cohort
+    OMP_NUM_THREADS=2 nice -n 19 ~/code/vista-eval-clinical-survival/.venv/bin/python scripts/build_data.py survival
     python scripts/build_data.py export --dry-run          (then, with Phil's go: export --go)
     uv run --with duckdb==1.5.6 --with pandas python scripts/build_data.py rehydrate      (run VM)
 
@@ -162,6 +167,52 @@ def cmd_cohort(_args) -> int:
     return 0
 
 
+SURVIVAL_SQL = f"""
+SELECT s.person_id, s.time_to_event_days, s.event_observed, DATE(s.embed_time) = DATE(d.embed_time) AS same_clock
+FROM `{LABEL_TABLE}` s
+JOIN `{LABEL_TABLE}` d ON d.person_id = s.person_id AND d.task = @task AND d.label IN (0, 1)
+  AND d.image_series_uid IS NOT NULL
+WHERE s.task = 'os_survival' AND s.person_id IN UNNEST(@pids)
+"""
+
+
+def cmd_survival(_args) -> int:
+    from google.cloud import bigquery
+
+    task_ids = {r["id"] for s in SPLITS for r in read_jsonl(CT_DATA_DIR / "splits" / f"{s}.jsonl")}
+    to_id = {int(m["person_id"]): m["id"] for m in read_jsonl(ID_MAP) if m["id"] in task_ids}
+    client = bigquery.Client(project=PROJECT)
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("task", "STRING", TASK),
+        bigquery.ArrayQueryParameter("pids", "INT64", sorted(to_id))])
+    rows = list(client.query(SURVIVAL_SQL, job_config=cfg).result())
+    if len({r["person_id"] for r in rows}) != len(rows):
+        raise SystemExit("more than one os_survival row for a patient")
+    if not all(r["same_clock"] for r in rows):
+        raise SystemExit(f"{sum(not r['same_clock'] for r in rows)} patients' os_survival clock differs from the yes/no label's")
+    bad = [r for r in rows if r["time_to_event_days"] is None or r["time_to_event_days"] < 0 or r["event_observed"] not in (0, 1)]
+    if bad:
+        raise SystemExit(f"{len(bad)} os_survival rows without a usable time and event")
+    out = sorted(({"id": to_id[r["person_id"]], "time_days": float(r["time_to_event_days"]),
+                   "event": int(r["event_observed"])} for r in rows), key=lambda r: r["id"])
+    MOUNT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with (MOUNT_DATA_DIR / "survival.jsonl").open("w", encoding="utf-8") as f:
+        for r in out:
+            f.write(json.dumps(r) + "\n")
+    have = {r["id"]: r for r in out}
+    pools = json.loads((CT_DATA_DIR / "pools.json").read_text())
+    for s in SPLITS:
+        ids = [r["id"] for r in read_jsonl(CT_DATA_DIR / "splits" / f"{s}.jsonl")]
+        n = sum(i in have for i in ids)
+        ev = sum(have[i]["event"] for i in ids if i in have)
+        line = f"{s}: {n} of {len(ids)} patients have os_survival ({ev} deaths)"
+        if s in pools:
+            line += f"; pool {sum(i in have for i in pools[s])} of {len(pools[s])}"
+        print(line)
+    print(f"written {MOUNT_DATA_DIR / 'survival.jsonl'} ({len(out)} patients)")
+    return 0
+
+
 def exporter_cmd(*extra: str) -> list[str]:
     if not EXPORTER.is_file():
         raise SystemExit(f"no exporter at {EXPORTER}: set OMOP_EXPORT_REPO to a vista-onc-labelers checkout with it")
@@ -173,6 +224,8 @@ def copy_answer_key(src: Path, dest: Path) -> None:
     (dest / "splits").mkdir(parents=True, exist_ok=True)
     for n in [f"splits/{s}.jsonl" for s in SPLITS] + ["pools.json"]:
         shutil.copyfile(src / n, dest / n)
+    if (src / "survival.jsonl").is_file():  # the survival mode's answer key (build_data.py survival)
+        shutil.copyfile(src / "survival.jsonl", dest / "survival.jsonl")
 
 
 def cmd_export(args) -> int:
@@ -302,9 +355,10 @@ def main() -> int:
     e = sub.add_parser("export")
     e.add_argument("--go", action="store_true", help="Phil approved the export")
     e.add_argument("--dry-run", action="store_true")
+    sub.add_parser("survival")
     sub.add_parser("rehydrate")
     args = ap.parse_args()
-    return {"splits": cmd_splits, "cohort": cmd_cohort, "export": cmd_export, "rehydrate": cmd_rehydrate}[args.cmd](args)
+    return {"splits": cmd_splits, "cohort": cmd_cohort, "survival": cmd_survival, "export": cmd_export, "rehydrate": cmd_rehydrate}[args.cmd](args)
 
 
 if __name__ == "__main__":
