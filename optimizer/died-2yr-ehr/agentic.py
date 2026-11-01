@@ -191,7 +191,10 @@ def program_spec(forbidden):
         # Files read-only so the session cannot edit its evidence; the folder stays writable so a resume can
         # clear it.
         if config.SUMMARY_ONLY:  # the summary and nothing else: no record, no OMOP tables, no guide
-            Path(folder).chmod(0o755)
+            # Leave the call folder's permissions as the runner set them: on Vertex it chmods the folder 0o777 so the
+            # container user (the credential's owner, not the host user) can write its output here. Chmod'ing it to
+            # 0o755 stripped that write and the session refused to start (live cost check 2026-11-01). The record
+            # branch below likewise never touches the folder itself, only the files/subfolders it stages read-only.
             shutil.copy2(config.SUMMARY_DIR / f"{call.payload['id']}.txt", Path(folder) / SUMMARY)
             (Path(folder) / SUMMARY).chmod(0o444)
             return
