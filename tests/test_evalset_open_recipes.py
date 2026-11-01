@@ -96,6 +96,15 @@ def test_answer_logprobs_finds_the_boxed_letter():
     assert run.answer_logprobs(c, run.ANSWER_TOKENS["final_answer"]) is None
 
 
+def test_answer_logprobs_prefers_the_letter_over_the_word_after_it():
+    # OctoMed's real form (control 11-01): "\boxed{B: No}". The choice is the letter; the word after it is decided.
+    c = _completion(["</think>", "\\boxed", "{", "B", ":", " No", "}"])
+    assert json.loads(run.answer_logprobs(c, run.ANSWER_TOKENS["boxed_choice"]))["position"] == 3
+    # No letter written: fall back to the word.
+    c = _completion(["\\boxed", "{", "Yes", "}"])
+    assert json.loads(run.answer_logprobs(c, run.ANSWER_TOKENS["boxed_choice"]))["position"] == 2
+
+
 def test_ablation_variants_apply():
     f = Path("/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/evalset_v1/arms/open_vlm_fair_eval.yaml")
     if not f.exists():

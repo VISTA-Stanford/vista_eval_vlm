@@ -404,22 +404,28 @@ def openai_content(m):
     return out
 
 
-#: Tokens that carry the final answer, per answer form: yes/no words, or OctoMed's option letters (A = yes, B = no).
-ANSWER_TOKENS = {"final_answer": ("yes", "no"), "schema": ("yes", "no"), "boxed_choice": ("a", "b", "yes", "no")}
+#: Tokens that carry the final answer, per answer form, as tiers tried in order: yes/no words, or OctoMed's option
+#: letters first (A = yes, B = no) and its yes/no words only when no letter was written. OctoMed writes
+#: "\boxed{B: No}": the choice is made at the letter, and the word after it is already decided (p = 1), so the letter
+#: must win even though the word comes later (control run 11-01: reading the word gave p_yes of only 0 or 1).
+ANSWER_TOKENS = {"final_answer": (("yes", "no"),), "schema": (("yes", "no"),),
+                 "boxed_choice": (("a", "b"), ("yes", "no"))}
 
 
-def answer_logprobs(completion, tokens=("yes", "no")):
-    """JSON {position, top: {token: logprob}} at the last generated token that reads as an answer (``tokens``), or None."""
+def answer_logprobs(completion, tiers=(("yes", "no"),)):
+    """JSON {position, top: {token: logprob}} at the last generated token that reads as an answer, trying each tier
+    of answer tokens in order (``ANSWER_TOKENS``), or None."""
     lps = getattr(completion, "logprobs", None)
     if not lps:
         return None
-    for i in range(len(completion.token_ids) - 1, -1, -1):
-        pos = lps[i] or {}
-        chosen = pos.get(completion.token_ids[i])
-        tok = getattr(chosen, "decoded_token", "") or ""
-        if tok.strip().lower().strip("*.'\"{}()") in tokens:
-            return json.dumps({"position": i, "top": {str(getattr(v, "decoded_token", k)): float(v.logprob)
-                                                      for k, v in pos.items()}})
+    for tokens in tiers:
+        for i in range(len(completion.token_ids) - 1, -1, -1):
+            pos = lps[i] or {}
+            chosen = pos.get(completion.token_ids[i])
+            tok = getattr(chosen, "decoded_token", "") or ""
+            if tok.strip().lower().strip("*.'\"{}()") in tokens:
+                return json.dumps({"position": i, "top": {str(getattr(v, "decoded_token", k)): float(v.logprob)
+                                                          for k, v in pos.items()}})
     return None
 
 
