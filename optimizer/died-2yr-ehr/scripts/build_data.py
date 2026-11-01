@@ -208,25 +208,60 @@ def cmd_rehydrate(_args) -> int:
     pdir, part = DATA_DIR / "patients", STAGE / "rehydrate"
     shutil.rmtree(part, ignore_errors=True)
     part.mkdir(parents=True)
-    con = duckdb.connect()
-    # Insertion order off: the partitioned COPY of the measurement table ran out of memory at 4 GB with it on
-    # (phil-sllm-02, 2026-10-27), and row order within a patient's table carries no meaning.
-    con.execute("SET memory_limit = '4GB'; SET threads = 2; SET partitioned_write_max_open_files = 20000; "
-                "SET preserve_insertion_order = false")
-    con.execute(f"SET temp_directory = '{STAGE / 'spill'}'")
+    def connect_configured():
+        c = duckdb.connect()
+        # Insertion order off: the partitioned COPY of the measurement table ran out of memory at 4 GB with it on
+        # (phil-sllm-02, 2026-10-27), and row order within a patient's table carries no meaning.
+        c.execute("SET memory_limit = '16GB'; SET threads = 2; SET partitioned_write_max_open_files = 20000; "
+                  "SET preserve_insertion_order = false")
+        c.execute(f"SET temp_directory = '{STAGE / 'spill'}'")
+        return c
+    # A fresh connection per table: the partitioned COPY pins buffers the reused connection never releases, so
+    # memory grows across tables and OOMs at the limit no matter how high (4/16/40 GB all died on the same table,
+    # phil-sllm-02, 2026-11-01). Reconnecting caps peak memory at the single largest table.
+    # DuckDB 1.5.6's partitioned COPY also buffers roughly (columns x partitions) of data at once, so the wide
+    # registry tables (up to 448 columns x ~5,549 patients) OOM at any memory limit. Those are written per patient
+    # with pyarrow instead; the narrow tables keep the fast partitioned COPY. Both put id last, as COPY does.
+    WIDE_COLS = 32
+
+    def write_per_id(src: Path, t: str) -> None:
+        import pyarrow.parquet as pq
+        import pyarrow.compute as pc
+        tbl = pq.read_table(src)
+        tbl = tbl.take(pc.sort_indices(tbl, sort_keys=[("id", "ascending")]))
+        tbl = tbl.select([c for c in tbl.column_names if c != "id"] + ["id"])  # id last, as PARTITION_BY writes it
+        pids = tbl.column("id").to_pylist()
+        start, n = 0, len(pids)
+        while start < n:
+            end = start
+            while end < n and pids[end] == pids[start]:
+                end += 1
+            d = pdir / pids[start]
+            d.mkdir(parents=True, exist_ok=True)
+            pq.write_table(tbl.slice(start, end - start), d / f"{t}.parquet")
+            start = end
+
     rows = {}
     for t in tables:
         src = archive / "tables" / f"{t}.parquet"
+        con = connect_configured()
         rows[t] = con.execute(f"SELECT count(*) FROM read_parquet('{src}')").fetchone()[0]
-        con.execute(f"COPY (SELECT * FROM read_parquet('{src}')) TO '{part / t}' (FORMAT parquet, PARTITION_BY (id))")
-        for d in (part / t).glob("id=*"):
-            files = list(d.glob("*.parquet"))
-            assert len(files) == 1, f"{t}: {len(files)} files for one patient"
-            (pdir / d.name.removeprefix("id=")).mkdir(parents=True, exist_ok=True)
-            shutil.move(str(files[0]), pdir / d.name.removeprefix("id=") / f"{t}.parquet")
-        shutil.rmtree(part / t)
+        ncols = len(con.execute(f"DESCRIBE SELECT * FROM read_parquet('{src}')").fetchall())
+        if ncols > WIDE_COLS:
+            con.close()
+            write_per_id(src, t)
+        else:
+            con.execute(f"COPY (SELECT * FROM read_parquet('{src}')) TO '{part / t}' (FORMAT parquet, PARTITION_BY (id))")
+            con.close()
+            for d in (part / t).glob("id=*"):
+                files = list(d.glob("*.parquet"))
+                assert len(files) == 1, f"{t}: {len(files)} files for one patient"
+                (pdir / d.name.removeprefix("id=")).mkdir(parents=True, exist_ok=True)
+                shutil.move(str(files[0]), pdir / d.name.removeprefix("id=") / f"{t}.parquet")
+            shutil.rmtree(part / t)
         print(f"{t}: {rows[t]:,} rows", flush=True)
     if "note" in tables:  # notes.txt exactly as export_omop.write_notes_txt writes it
+        con = connect_configured()
         cur = con.execute("SELECT id, note_id, note_datetime, note_date, COALESCE(note_type, 'ORDER: ' || order_type), "
                           f"note_text FROM read_parquet('{archive / 'tables' / 'note.parquet'}') "
                           "ORDER BY id, note_datetime, note_id")
@@ -240,11 +275,13 @@ def cmd_rehydrate(_args) -> int:
                 fh.write(f"===== NOTE {nid} | {ndt or nd} | {ntype} =====\n{text or ''}\n\n")
         if fh:
             fh.close()
+        con.close()
     for i in ids:  # every patient has a folder and a meta.json, as the exporter writes them
         (pdir / i).mkdir(parents=True, exist_ok=True)
         (pdir / i / "meta.json").write_text(json.dumps({"id": i, "cutoff": cutoffs[i]}) + "\n")
     # The check: every archived row reached a patient file, the archive's counts agree, nothing but patients.
     bad = 0
+    con = connect_configured()
     want = json.loads((archive / "counts.json").read_text()).get("rows_per_table", {})
     for t in tables:
         got = con.execute(f"SELECT count(*) FROM read_parquet('{pdir}/*/{t}.parquet')").fetchone()[0]
