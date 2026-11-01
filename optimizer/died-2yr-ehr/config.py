@@ -43,10 +43,17 @@ HORIZONS = (("died_within_1_year", "label_1yr", "1 year"), ("died_within_2_years
 #: most, scored by AUROC averaged over the two horizons (Phil 2026-10-31, spec
 #: planning/vista_eval_vlm/2026-10-31-died-2yr-ehr-probability.md). Chooses the seed, the optimizer's brief and
 #: instructions, the scorer, the default work folder, the rounds and the TRAIN schedule below.
+#: "survival" (Phil 2026-11-01, spec planning/vista_eval_vlm/2026-11-01-died-ehr-survival.md): a whole survival curve
+#: from the record's last day (first treatment - 7 days), scored like the benchmark's survival models against v1.7
+#: os_survival: integrated Brier on a monthly grid (lower is better; the climb score), C-index over all follow-up.
 ANSWER = os.environ.get("ANSWER", "yesno")  # DECIDE
-if ANSWER not in ("yesno", "probability"):
-    raise SystemExit(f"ANSWER must be yesno or probability, not {ANSWER!r}")
-PROBABILITY = ANSWER == "probability"
+if ANSWER not in ("yesno", "probability", "survival"):
+    raise SystemExit(f"ANSWER must be yesno, probability or survival, not {ANSWER!r}")
+#: Survival mode extends the probability mode's setting (Phil 2026-11-01: everything else as the probability run):
+#: PROBABILITY stays True for the run settings below (rounds, TRAIN schedule, stops, dollar limits); SURVIVAL picks
+#: the seed, brief, instructions, scorer and work folder.
+SURVIVAL = ANSWER == "survival"
+PROBABILITY = ANSWER in ("probability", "survival")
 #: The task data on the shared mount (inside the secure environment): splits/{train,val,test}.jsonl
 #: ({"id", "label"}), pools.json (the fixed TRAIN and VAL pools, the CT task's own) and the shared exporter's
 #: archive of every patient's record. scripts/build_data.py writes it.
@@ -76,13 +83,14 @@ AGENTIC = PROGRAM_MODE == "agentic"
 
 #: The labeling program the optimizer starts from (program-v0), and the files it may edit.
 #: The seed is the plain question and the folder layout, no clinical hints (Phil 2026-10-21); tools/ starts empty.
-SEED_PROGRAM_DIR = HERE / (("program_agentic_probability" if PROBABILITY else "program_agentic") if AGENTIC else "program")
+_ANSWER_SUFFIX = "_survival" if SURVIVAL else "_probability" if PROBABILITY else ""
+SEED_PROGRAM_DIR = HERE / (f"program_agentic{_ANSWER_SUFFIX}" if AGENTIC else "program")
 EDITABLE_FILES = ("instructions.md", "tools") if AGENTIC else ("label.py",)  # DECIDE: what the optimizer may change
 CONTRACT_FILES: tuple[str, ...] = ()  # files shipped with the program that it must never change
 #: The optimizer's task brief (prompts: docs/guide/prompts.md).
-TASK_BRIEF = HERE / "context" / (("task_agentic_probability.md" if PROBABILITY else "task_agentic.md") if AGENTIC else "task.md")
+TASK_BRIEF = HERE / "context" / (f"task_agentic{_ANSWER_SUFFIX}.md" if AGENTIC else "task.md")
 #: The optimizer's standing instructions (its system prompt), one per answer type.
-OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / ("optimizer_instructions_probability.md" if PROBABILITY else "optimizer_instructions.md")
+OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / f"optimizer_instructions{_ANSWER_SUFFIX}.md"
 
 #: agentic only: the model each patient's session runs on, how many run at once, and each one's cap.
 PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-sonnet-5-5")  # DECIDE: pinned id, same as CT (Phil 2026-10-21)
@@ -98,7 +106,14 @@ PROGRAM_CALL_TIMEOUT_SECONDS = 900
 # --------------------------------------------------------------------------------------------------
 #: Balanced accuracy at each horizon, averaged over the two: forced answers, macro balanced accuracy, as the
 #: eval set scores every model (spec planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md, Decided: Score).
-METRIC_NAME = "auroc" if PROBABILITY else "balanced_accuracy"  # DECIDE (probability: Phil 2026-10-31)
+#: Survival: integrated Brier, LOWER is better (Phil 2026-11-01); the engine reads the direction from the score, and
+#: run.py's no-new-best rule from HIGHER_IS_BETTER.
+METRIC_NAME = "integrated_brier" if SURVIVAL else "auroc" if PROBABILITY else "balanced_accuracy"  # DECIDE (probability: Phil 2026-10-31)
+HIGHER_IS_BETTER = not SURVIVAL
+#: Survival mode's answer key: {"id", "time_days", "event"} per patient, vista_bench v1.7 os_survival (clock first
+#: treatment - 7 days, the record's last day), written by scripts/build_data.py survival. A patient with no
+#: os_survival row (140 of 5,549) is left out of survival mode: not staged, not scored, not in the pools.
+SURVIVAL_KEY = DATA_DIR / "survival.jsonl"
 
 # --------------------------------------------------------------------------------------------------
 # The optimizer
@@ -154,7 +169,8 @@ if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: handy for
 #: Its own folder for the yes/no version: the old folder (alo-tasks/<task>) holds the probability-era runs and its
 #: program-v0 is the probability seed, so reusing it would start a new run from the wrong instructions (2026-10-28).
 #: Probability runs get their own folders too (program-v0 there is the probability seed), one per input arm.
-_DEFAULT_WORKDIR = (f"{TASK_NAME}-prob" + ("-summary" if WITH_SUMMARY else "")) if PROBABILITY else f"{TASK_NAME}-yesno"
+_DEFAULT_WORKDIR = ((f"{TASK_NAME}-surv" if SURVIVAL else f"{TASK_NAME}-prob") + ("-summary" if WITH_SUMMARY else "")
+                    if PROBABILITY else f"{TASK_NAME}-yesno")
 WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / _DEFAULT_WORKDIR)).resolve()
 
 # --------------------------------------------------------------------------------------------------

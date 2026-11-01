@@ -114,11 +114,12 @@ def schedule(layout):
     return DataSchedule(ScheduleConfig(**config.SCHEDULE), ad.TaskSource(layout.batches))
 
 
-def rounds_without_best(rows: list[dict], metric: str) -> int:
+def rounds_without_best(rows: list[dict], metric: str, higher_is_better: bool = True) -> int:
     """How many rounds in a row, counting back from the latest, set no new best VAL score. The best starts at the
     first round's base score (the start version's VAL, e.g. the seed's zero-shot); a failed version counts as no new
     best. A row still ``saved_unmeasured`` (the engine writes it before that version's VAL pass) is skipped: its round
-    has not been scored yet, and counting it stopped a dry run before the version it had just paid for was scored."""
+    has not been scored yet, and counting it stopped a dry run before the version it had just paid for was scored.
+    ``higher_is_better`` False (survival's integrated Brier) makes a lower score the new best."""
     if not rows:
         return 0
     best, streak = rows[0].get("base_metric"), 0
@@ -126,7 +127,7 @@ def rounds_without_best(rows: list[dict], metric: str) -> int:
         if row.get("status") == "saved_unmeasured":
             continue
         value = row.get(metric)
-        if value is not None and (best is None or value > best):
+        if value is not None and (best is None or (value > best if higher_is_better else value < best)):
             best, streak = value, 0
         else:
             streak += 1
@@ -154,6 +155,38 @@ def run_spend(archive: Path, run_id: str) -> dict[int, float]:
     return by_iter
 
 
+def unreadable_answers(archive: Path, run_id: str) -> dict[str, int]:
+    """Survival mode: failed or unreadable answers in this run's finished passes, by pass folder (answers.json beside
+    receipts carrying the run id). Counts only."""
+    out = {}
+    for answers in Path(archive).glob("iter-*/answers.json"):
+        receipts = list((answers.parent / "receipts").glob("*.json"))
+        try:
+            if not any(json.loads(f.read_text(encoding="utf-8")).get("run_id") == run_id for f in receipts):
+                continue
+            bad = sum(1 for a in json.loads(answers.read_text(encoding="utf-8"))["answers"].values() if a.get("error"))
+        except (OSError, ValueError, KeyError):
+            continue
+        if bad:
+            out[answers.parent.name] = bad
+    return out
+
+
+def survival_after_pass(inputs, artifacts) -> None:
+    """Survival mode, after every pass and before the loop scores it (the engine's after_pass hook): a failed pass, a
+    failed session or an unreadable curve stops the run there, so no round is ever scored with a stand-in and the
+    last round's VAL pass is checked too (Phil 2026-11-01: no fallback score; evaluator 2026-11-01). Network stops
+    never get here: the engine halts those passes as resumable before they finish, writing no failed answer."""
+    if artifacts.status != "ok":
+        raise LoopStop(f"the {inputs.split} pass failed ({artifacts.status}): stop and look", reason="unreadable_curve")
+    answers = json.loads(Path(artifacts.artifact_refs[0].path).read_text(encoding="utf-8"))["answers"]
+    bad = sorted({a["error"] for a in answers.values() if a.get("error")})
+    if bad:
+        n = sum(1 for a in answers.values() if a.get("error"))
+        raise LoopStop(f"{n} failed or unreadable curve(s) in the {inputs.split} pass ({', '.join(bad)}); stop and "
+                       f"look: no fallback score", reason="unreadable_curve")
+
+
 def stop_rule(summary_path: Path, archive: Path | None = None, run_id: str | None = None):
     """A before-pass hook enforcing, before the next pass spends anything on patients:
     config.STOP_AFTER_ROUNDS_WITHOUT_BEST from the run summary the engine rewrites after every round (so a resumed run
@@ -166,7 +199,13 @@ def stop_rule(summary_path: Path, archive: Path | None = None, run_id: str | Non
             rows = json.loads(Path(summary_path).read_text(encoding="utf-8")).get("iters", [])
         except (OSError, ValueError):
             rows = []
-        streak = rounds_without_best(rows, config.METRIC_NAME)
+        if config.SURVIVAL and archive is not None:  # Phil 2026-11-01: any failed session or unreadable curve stops it
+            bad = unreadable_answers(archive, run_id)
+            if bad:
+                first = sorted(bad)[0]
+                raise LoopStop(f"{sum(bad.values())} failed or unreadable curve(s) in {len(bad)} pass(es) (first: {first}, "
+                               f"{bad[first]}); stop and look: no fallback score", reason="unreadable_curve")
+        streak = rounds_without_best(rows, config.METRIC_NAME, config.HIGHER_IS_BETTER)
         if limit and streak >= limit:
             raise LoopStop(f"{streak} rounds in a row set no new best {config.METRIC_NAME} (limit {limit}); "
                            f"the best version so far is the winner", reason="no_new_best")
@@ -212,8 +251,10 @@ def driver_config(layout, *, run_id, iterations, agent, runner, release_builder,
         setup_owners=setup_owners, unsealed=unsealed, program_mode=program_mode,
         pin_command=f"python {HERE / 'run.py'} pins", start=start, resume=resume,
         before_pass=((stop_rule(layout.summary(run_id), layout.program_outputs / "archive", run_id),)
-                     if (config.STOP_AFTER_ROUNDS_WITHOUT_BEST or config.RUN_BUDGET_USD or config.ROUND_BUDGET_USD)
+                     if (config.STOP_AFTER_ROUNDS_WITHOUT_BEST or config.RUN_BUDGET_USD or config.ROUND_BUDGET_USD
+                         or config.SURVIVAL)
                      else ()),
+        after_pass=(survival_after_pass,) if config.SURVIVAL else (),
         loop_options={
             # Without loop_ops the loop writes no release files and the optimizer works blind.
             "loop_ops": LocalLoopOps(layout.repo),
@@ -248,15 +289,35 @@ def drive(cfg: DriverConfig) -> int:
 SCRIPTED_EDITS: dict = {}  # agentic: the scripted edit appends a comment to instructions.md
 
 
+_UNREADABLE_SENT: list[str] = []  # dry run only: DRY_RUN_UNREADABLE sends one unreadable answer, the first
+
+
 def stub_answer(pid: str) -> dict:
     """The dry run's stand-in answer for one patient: right at both horizons when the id ends in an even hex digit,
     "no" at both otherwise, and an unreadable answer when it ends in "f" (scored wrong). So a pass's balanced
     accuracy is a number scripts/check_task.py works out independently from the gold (a constant stand-in would
     score 0.5 whatever the scorer did)."""
+    gold = next((r for r in ad.read_split("val") + ad.read_split("train") if r["id"] == pid), None)
+    if config.SURVIVAL and os.environ.get("DRY_RUN_UNREADABLE") == "1" and not _UNREADABLE_SENT:
+        # check_task pushes one rising curve (the run's first answer) through the real driver: the run must stop
+        # before scoring that pass
+        _UNREADABLE_SENT.append(pid)
+        return {"status": "ok", "id": pid, "reason": "dry-run stand-in", "reasons": [], "curve": None,
+                "error": "rising_curve"}
+    if config.SURVIVAL:
+        # No unreadable stand-in here: one would stop the dry run (run.stop_rule); check_task tests that stop.
+        # Even: drops to 0.1 at the death or stays at 0.9 past a censoring (informative); odd: the average curve.
+        even = int(pid[-1], 16) % 2 == 0
+        if even:
+            m = gold["time_days"] / ad.DAYS_PER_MONTH
+            curve = [[0, 1.0], [m, 0.1 if gold["event"] else 0.9], [130, 0.05 if gold["event"] else 0.85]]
+        else:
+            curve = [list(p) for p in zip(*ad.average_curve())] + [[130, ad.average_curve()[1][-1]]]
+            curve = [p for k, p in enumerate(curve) if k == 0 or p[0] > curve[k - 1][0]]
+        return {"status": "ok", "id": pid, "reason": "dry-run stand-in", "reasons": [], "curve": curve}
     if pid[-1] == "f":
         return {"status": "ok", "id": pid, "error": "not_a_probability" if config.PROBABILITY else "not_yes_or_no",
                 "reason": "dry-run stand-in"}
-    gold = next(r for r in ad.read_split("val") + ad.read_split("train") if r["id"] == pid)
     even = int(pid[-1], 16) % 2 == 0
     if config.PROBABILITY:  # even: 0.8 if died, 0.2 if lived (ranked right); odd: 0.3 for everyone (one tie block)
         return {"status": "ok", "id": pid, "reason": "dry-run stand-in", "reasons": [],
@@ -664,7 +725,18 @@ def cmd_score_val(args) -> int:
     entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha,
              config.METRIC_NAME: score.primary_metric.value, "n": score.breakdown["n"], "look": len(earlier) + 1,
              "arm": arm, "scope": scope, "answers": artifacts.artifact_refs[0].path}
-    if config.PROBABILITY:  # per horizon, for the spec's table beside the baselines (rescore re-reads the answers)
+    if config.SURVIVAL:  # the whole breakdown; a pass with any unreadable curve is recorded as such, not as a score
+        entry["answer"] = "survival"
+        entry["breakdown"] = score.breakdown
+        if score.breakdown["program_errors"]:
+            entry[config.METRIC_NAME] = None
+            entry["unreadable"] = score.breakdown["program_errors"]
+            with ledger_path.open("a") as f:
+                f.write(json.dumps(entry) + "\n")
+            print(json.dumps(entry, indent=2))
+            print(f"STOP: {entry['unreadable']} failed or unreadable curve(s): no score recorded; look at them first")
+            return 1
+    elif config.PROBABILITY:  # per horizon, for the spec's table beside the baselines (rescore re-reads the answers)
         entry["answer"] = "probability"
         entry["horizons"] = per_horizon(score)
     with ledger_path.open("a") as f:
@@ -707,7 +779,8 @@ def cmd_rescore(args) -> int:
         score = ad.TaskScorer().score(arts, split, {})
         row = {"pass": name, "split": split, config.METRIC_NAME: round(score.primary_metric.value, 4),
                **{k: v for k, v in score.breakdown.items() if not isinstance(v, dict)}}
-        row.update(per_horizon(score) if config.PROBABILITY else
+        row.update({k: v for k, v in score.breakdown.items() if isinstance(v, dict)} if config.SURVIVAL else
+                   per_horizon(score) if config.PROBABILITY else
                    {k: v for k, v in score.breakdown.items() if isinstance(v, dict)})
         out.append(row)
         print(json.dumps(row))

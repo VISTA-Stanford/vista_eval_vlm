@@ -9,6 +9,8 @@ read-only program, writes a short findings note, then ``output.json`` with two f
 patient die within 1 year, and within 2 years, of diagnosis; and a reason. With ``config.PROBABILITY`` the two
 answers are instead a 0-100 chance at each horizon (stored as 0..1), plus up to ``MAX_REASONS`` reasons: the record
 facts that moved the probability most, each naming the record file it came from and its date (Phil 2026-10-31).
+With ``config.SURVIVAL`` the answer is a survival curve from the record's last day, as points (months, chance alive),
+plus the same reasons (Phil 2026-11-01); ``curve_of`` decides what is readable.
 ``summarize`` writes the same ``{"answers": {...}}`` file the rules-based runner writes (one yes/no per horizon,
 True/False, or None when unreadable), so the scorer, the mistake builder and ``run.py test`` read one format.
 """
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 from pathlib import Path
 
@@ -34,7 +37,8 @@ GUIDE_SRC = Path(__file__).resolve().parent / "context" / "patient_data_guide.md
 #: ``prompt`` below, or a pass run under the old wording is served again. The guide's hash is part of it, so an
 #: edit to the guide also stops old passes being served.
 PROMPT_TAG = (f"died-2yr-ehr-v3-guide-{hashlib.sha256(GUIDE_SRC.read_bytes()).hexdigest()[:10]}"
-              + ("-summary-v1" if config.WITH_SUMMARY else "") + ("-prob-v1" if config.PROBABILITY else ""))
+              + ("-summary-v1" if config.WITH_SUMMARY else "")
+              + ("-surv-v1" if config.SURVIVAL else "-prob-v1" if config.PROBABILITY else ""))
 #: Probability mode: at most this many reasons are kept per answer (the prompt asks for 3 to 5).
 MAX_REASONS = 5
 #: The patient summary's name in the session's record folder (config.WITH_SUMMARY only).
@@ -50,6 +54,14 @@ RECORD = "record"
 #: The share of TRAIN patients who died within each horizon (718 and 1,188 of 3,886), stated in the prompt (Phil
 #: 2026-10-21: the cohort's death rate). From splits/train.jsonl; scripts/build_data.py prints it.
 TRAIN_DEATH_RATE = {"1 year": "18.5%", "2 years": "30.6%"}
+#: Survival mode: TRAIN's Kaplan-Meier survival from the record's last day (3,788 TRAIN patients with an os_survival
+#: time), stated in the prompt as the cohort's average curve. scripts/check_task.py recomputes it from the key.
+TRAIN_SURVIVAL = {"1 year": "79.9%", "2 years": "68.1%", "3 years": "60.8%", "5 years": "50.9%", "10 years": "32.5%"}
+#: Survival mode: the curve the prompt asks for runs to this month; a curve is unreadable only if it stops before
+#: adapters.cover_months() (TRAIN's scoring window end, about 74.5 months).
+ASK_MONTHS = 120
+#: Survival mode: at most this many points in a curve.
+MAX_POINTS = 2000
 #: The OMOP tables the exporter writes (no death table), in the order the prompt lists them.
 OMOP_TABLES = ("person", "observation_period", "visit_occurrence", "visit_detail", "condition_occurrence",
                "procedure_occurrence", "drug_exposure", "drug_era", "device_exposure", "episode", "image_occurrence",
@@ -91,6 +103,31 @@ def percent(value) -> float | None:
     return value / 100 if 0 <= value <= 100 else None
 
 
+def curve_of(value, cover: float) -> tuple[list[list[float]] | None, str | None]:
+    """Survival mode: a stated curve as [[month, survival], ...], or (None, why) when unreadable. Readable means 1 to
+    MAX_POINTS points, each two finite numbers (not bools), months from 0 and strictly increasing, survival within
+    0-1 and never rising, and the last point at or past ``cover`` months. A point may also be {"month", "survival"}."""
+    if not isinstance(value, list) or not 0 < len(value) <= MAX_POINTS:
+        return None, "not_a_curve"
+    pts = []
+    for p in value:
+        if isinstance(p, dict):
+            p = [p.get("month"), p.get("survival")]
+        if (not isinstance(p, (list, tuple)) or len(p) != 2
+                or any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in p)):
+            return None, "not_a_curve"
+        pts.append([float(p[0]), float(p[1])])
+    if pts[0][0] < 0 or any(b[0] <= a[0] for a, b in zip(pts, pts[1:])):
+        return None, "not_a_curve"
+    if any(not 0 <= y <= 1 for _m, y in pts):
+        return None, "outside_0_1"
+    if any(b[1] > a[1] + 1e-9 for a, b in zip(pts, pts[1:])):
+        return None, "rising_curve"
+    if pts[-1][0] < cover:
+        return None, "too_short"
+    return pts, None
+
+
 def reasons_of(value) -> list[dict]:
     """Probability mode: the stated reasons, kept as {"fact", "file", "date"} strings (anything else in an item is
     dropped, an item that is not an object is skipped); never scored. scripts/check_reasons.py checks them."""
@@ -130,7 +167,24 @@ def program_spec(forbidden):
         # The per-call wrapper: not optimized. Container paths only. The facts every version needs (the question,
         # the cutoff, the folder layout, the death rate) live here; the method lives in instructions.md.
         rec = f"{paths.call}/{RECORD}"
-        if config.PROBABILITY:
+        if config.SURVIVAL:
+            question = (
+                f"The question: how likely is this patient to be alive, from any cause of death, at each point in the "
+                f"years after the last day of their record? Give it as a survival curve.")
+            cohort = ("Of the patients in this group, counted from that same day, "
+                      + ", ".join(f"{v} were alive at {k}" for k, v in TRAIN_SURVIVAL.items()) + ".")
+            answer_rules = (
+                f'one line: {{"survival_curve": [[<months after the record\'s last day>, <chance alive then, 0 to 1>], '
+                f'...], "reasons": [{{"fact": "<one fact from the record>", "file": "<the record file it is in, e.g. '
+                f'notes.txt or measurement.parquet>", "date": "<its date, YYYY-MM-DD>"}}, ...], "pass_id": "{pass_id}"}}. '
+                f"The curve is points: months from 0 and strictly increasing, the chance never rising from one point "
+                f"to the next, every chance between 0 and 1, running to at least month {ASK_MONTHS}, as many points "
+                f"as you like up to {MAX_POINTS} (you may compute them with code). It is read as a step curve: between "
+                f"two points the chance is the earlier point's, and 1 before the first. A curve that rises, leaves 0 "
+                f"to 1, or stops early counts as no answer. In \"reasons\" list the 3 to 5 facts from the record that "
+                f"shaped the curve most, most important first, each with the file you read it in and the date it "
+                f"carries (every one is on or before the record's last day).")
+        elif config.PROBABILITY:
             keys = ", ".join(f'"{key}": <a whole number from 0 to 100>' for key, _gold, _words in config.HORIZONS)
             ask = ("Give each as the chance, from 0 to 100, that it happened.")
             answer_rules = (
@@ -147,14 +201,17 @@ def program_spec(forbidden):
                 f'one line: {{{keys}, "reason": "<one line: the findings you relied on>", "pass_id": "{pass_id}"}}. '
                 f"Each answer must be exactly yes or no: no probabilities, no hedging; an answer that is not one of the "
                 f"two words is scored as wrong.")
+        if not config.SURVIVAL:
+            question = (f"The questions: did this patient die, of any cause, within 1 year of their cancer diagnosis? "
+                        f"And within 2 years? {ask}")
+            cohort = (f"Of the patients in this group, {TRAIN_DEATH_RATE['1 year']} died within 1 year and "
+                      f"{TRAIN_DEATH_RATE['2 years']} within 2 years.")
         return (
             f"Follow the instructions in {paths.program}/{ENTRY}; any tools are in {paths.program}/tools/ (run "
             f"Python with python3 -B).\n\n"
-            f"The questions: did this patient die, of any cause, within 1 year of their cancer diagnosis? And within "
-            f"2 years? {ask} The patient has a thoracic cancer. Their medical record is the folder "
+            f"{question} The patient has a thoracic cancer. Their medical record is the folder "
             f"{rec}/ and it stops 7 days before their first cancer treatment: nothing dated after that day is in it. "
-            f"Of the patients in this group, {TRAIN_DEATH_RATE['1 year']} died within 1 year and "
-            f"{TRAIN_DEATH_RATE['2 years']} within 2 years.\n\n"
+            f"{cohort}\n\n"
             f"The folder (read-only):\n"
             f"- notes.txt: every clinical note in date order, each starting with a header line that begins "
             f"'===== NOTE'. Search it with grep.\n"
@@ -185,14 +242,23 @@ def program_spec(forbidden):
     def summarize(archive, receipts):
         answers = {}
         for r in receipts:
-            said, reason, error = {key: None for key, _g, _w in config.HORIZONS}, None, r.get("failed")
+            said, reason, error = ({"curve": None} if config.SURVIVAL else {key: None for key, _g, _w in config.HORIZONS},
+                                   None, r.get("failed"))
             reasons: list[dict] = []
             out = next((o["path"] for o in r.get("outputs", []) if o["rel"] == OUTPUT), None)
             log = next((o["path"] for o in r.get("outputs", []) if o["rel"] == FINDINGS), None)
             if out and not error:
                 try:
                     body = json.loads(Path(out).read_text(encoding="utf-8"))
-                    if config.PROBABILITY:
+                    if config.SURVIVAL:
+                        from adapters import cover_months
+
+                        curve, why = curve_of(body.get("survival_curve"), cover_months())
+                        said = {"curve": curve}
+                        reasons = reasons_of(body.get("reasons"))
+                        reason = "; ".join(r["fact"] for r in reasons)[:500]
+                        error = why
+                    elif config.PROBABILITY:
                         said = {key: percent(body.get(key)) for key, _g, _w in config.HORIZONS}
                         reasons = reasons_of(body.get("reasons"))
                         reason = "; ".join(r["fact"] for r in reasons)[:500]

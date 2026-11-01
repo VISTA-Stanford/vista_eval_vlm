@@ -14,11 +14,18 @@
                  tie-heavy answer sets (failed answers at 0.5) and the VAL pool, the right-side-of-death-rate flag,
                  and that output.json is read as a 0-100 number per horizon (anything else an error) with its
                  reasons kept, capped and cleaned.
+                 With ANSWER=survival, 3 and 4 instead check C-index, Brier, integrated Brier and time-dependent AUC
+                 against scikit-survival computed directly (random tie-heavy sets and the VAL pool), the scoring months
+                 against vista-eval's rule worked out with numpy, the average curve against scikit-survival's
+                 Kaplan-Meier, the mistakes file, the stated TRAIN survival against the key, and that output.json's
+                 curve is read only when it is well formed (anything else an error that stops the run).
                    5. prints one patient's per-call prompt, with placeholder container paths
 
     cd optimizer/died-2yr-ehr && uv run --project $AGENTIC_LABEL_OPT --with scikit-learn --with pandas --with pyarrow \\
         python scripts/check_task.py synth /tmp/died2yr-ehr-synth
     TASK_DATA_DIR=/tmp/died2yr-ehr-synth uv run ... python scripts/check_task.py check
+    ANSWER=survival TASK_DATA_DIR=... uv run --project $AGENTIC_LABEL_OPT --with scikit-learn --with scikit-survival \\
+        --with pandas --with pyarrow python scripts/check_task.py check
 """
 
 from __future__ import annotations
@@ -51,6 +58,13 @@ def cmd_synth(root: Path) -> int:
         (root / "splits" / f"{s}.jsonl").write_text("".join(json.dumps({"id": i, "label": y, "label_1yr": y1}) + "\n"
                                                              for i, sp, y, y1 in pts if sp == s))
     (root / "pools.json").write_text(json.dumps({s: sorted(i for i, sp, *_ in pts if sp == s) for s in ("train", "val")}))
+    # Survival mode's answer key (made-up times in days; 1 death, 0 censored). TRAIN deaths at 200 and 600 days put
+    # the scoring months at about 10-18.
+    times = {"synth0000000000a2": (200, 1), "synth0000000000b3": (2000, 0), "synth0000000000c4": (1500, 0),
+             "synth0000000000d6": (600, 1), "synth0000000000e8": (300, 1), "synth0000000000f1": (1800, 0),
+             "synth000000000102": (900, 0), "synth000000000114": (700, 1)}
+    (root / "survival.jsonl").write_text("".join(json.dumps({"id": i, "time_days": float(t), "event": e}) + "\n"
+                                                 for i, (t, e) in times.items()))
     rng = random.Random(0)
     for n, (i, _s, y, _y1) in enumerate(pts):
         d = root / "patients" / i
@@ -103,7 +117,7 @@ def cmd_check() -> int:
         spec.stage(Call(pid, {"id": pid}), Path(tmp), "p0")
         staged = Path(tmp) / agentic.RECORD
         names = {p.name for p in staged.iterdir()}
-        want = {p.name for p in src.iterdir()}
+        want = {p.name for p in src.iterdir()} | ({agentic.SUMMARY} if config.WITH_SUMMARY else set())
         ro = all(not (p.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)) for p in staged.iterdir())
         everything = {p.name for p in Path(tmp).rglob("*")}
         report("staging copies exactly the patient's record files", names == want, f"{len(names)} files")
@@ -141,7 +155,9 @@ def cmd_check() -> int:
         finally:
             config.DATA_DIR = orig
 
-    if config.PROBABILITY:
+    if config.SURVIVAL:
+        check_survival(report, spec)
+    elif config.PROBABILITY:
         check_probability(report, spec)
     else:
         check_yes_no(report, spec)
@@ -286,6 +302,193 @@ def check_probability(report, spec) -> None:
            ad.prob({"died_within_1_year": 0.9, "error": "x"}, "died_within_1_year") == 0.5)
 
 
+def check_survival(report, spec) -> None:
+    """Checks 3 and 4 for ANSWER=survival, worked out independently with scikit-survival and numpy."""
+    import numpy as np
+    import config
+    import adapters as ad
+    import agentic
+    from sksurv.metrics import brier_score, concordance_index_censored, cumulative_dynamic_auc, integrated_brier_score
+    from sksurv.nonparametric import kaplan_meier_estimator
+    from sksurv.util import Surv
+
+    rng = np.random.default_rng(3)
+
+    # 3a. Harrell's C == sksurv on random sets with tied times, tied risks and ties between a death and a censoring
+    worst = 0.0
+    for _ in range(200):
+        n = int(rng.integers(5, 200))
+        t = rng.integers(1, 40, n).astype(float)
+        e = rng.random(n) < 0.6
+        if not e.any():
+            continue
+        r = np.round(rng.normal(size=n), 1)
+        worst = max(worst, abs(ad.c_index(list(t), list(e), list(r)) - concordance_index_censored(e, t, r)[0]))
+    report("C-index == sksurv concordance_index_censored on 200 random tie-heavy sets", worst < 1e-12,
+           f"max |diff| {worst:.1e}")
+
+    # 3b. Brier at each time, integrated Brier and time-dependent AUC == sksurv, on random step curves
+    worst_b = worst_i = worst_a = 0.0
+    sets = 0
+    for _ in range(100):
+        ntr, nte = int(rng.integers(30, 300)), int(rng.integers(20, 200))
+        ttr = rng.integers(1, 3000, ntr).astype(float)
+        etr = rng.random(ntr) < 0.5
+        tte = np.minimum(rng.integers(1, 3000, nte).astype(float), ttr.max() - 1)
+        ete = rng.random(nte) < 0.5
+        lo, hi = max(ttr.min(), tte.min()) + 1, min(np.percentile(ttr[etr], 90), tte.max() - 1)
+        if hi <= lo + 10 or ete.sum() < 2:
+            continue
+        times = np.unique(np.round(np.linspace(lo, hi, int(rng.integers(2, 12)))))
+        surv = np.sort(np.round(rng.random((nte, len(times))), 1), axis=1)[:, ::-1]  # non-increasing, many ties
+        ytr, yte = Surv.from_arrays(etr, ttr), Surv.from_arrays(ete, tte)
+        cens = ad.Censoring(list(ttr), list(etr))
+        _, sk_b = brier_score(ytr, yte, surv, times)
+        ours_b = [ad.brier_at(list(tte), list(ete), list(surv[:, k]), float(tm), cens) for k, tm in enumerate(times)]
+        worst_b = max(worst_b, float(np.max(np.abs(np.array(ours_b) - sk_b))))
+        if len(times) >= 2:
+            sk_i = integrated_brier_score(ytr, yte, surv, times)
+            worst_i = max(worst_i, abs(ad.trapezoid(ours_b, list(times)) / (times[-1] - times[0]) - sk_i))
+        for k, tm in enumerate(times):
+            risk = 1 - surv[:, k]
+            if not ((tte <= tm) & ete).any() or not (tte > tm).any():
+                continue
+            sk_a, _ = cumulative_dynamic_auc(ytr, yte, risk, [tm])
+            worst_a = max(worst_a, abs(ad.dynamic_auc_at(list(tte), list(ete), list(risk), float(tm), cens) - float(sk_a[0])))
+        sets += 1
+    report(f"Brier at each time == sksurv brier_score on {sets} random curve sets", sets > 50 and worst_b < 1e-10,
+           f"max |diff| {worst_b:.1e}")
+    report("integrated Brier == sksurv integrated_brier_score", worst_i < 1e-10, f"max |diff| {worst_i:.1e}")
+    report("time-dependent AUC == sksurv cumulative_dynamic_auc", worst_a < 1e-10, f"max |diff| {worst_a:.1e}")
+
+    # 3c. the scoring months follow vista-eval's rule (numpy), and the task score on the VAL pool == sksurv directly
+    train = ad.read_split("train")
+    pool = sorted(ad.pools()["val"])
+    rows = {r["id"]: r for r in ad.read_split("val")}
+    ttr = np.array([r["time_days"] for r in train])
+    etr = np.array([bool(r["event"]) for r in train])
+    tev = np.array([rows[i]["time_days"] for i in pool])
+    eev = np.array([bool(rows[i]["event"]) for i in pool])
+    upper = min(float(np.percentile(ttr[etr], 90)) * 0.999,
+                min(ttr[etr].max(), tev[eev].max() if eev.any() else ttr[etr].max()) * 0.999)
+    lower = max(ttr.min(), tev.min()) + 1e-6
+    want_months = [m for m in range(1, 121) if lower <= m * 30.44 <= upper]
+    months = ad.scoring_months(train, [rows[i] for i in pool])
+    report("scoring months == vista-eval's rule worked out with numpy", months == want_months and len(months) >= 2,
+           f"months {months[0]}-{months[-1]} ({len(months)})")
+    km_x, km_p = kaplan_meier_estimator(etr, ttr / ad.DAYS_PER_MONTH)
+    ax, ay = ad.average_curve()
+    report("average curve == sksurv Kaplan-Meier on TRAIN", np.allclose(ax[1:], km_x) and np.allclose(ay[1:], km_p)
+           and ax[0] == 0.0 and ay[0] == 1.0, f"{len(km_x)} steps")
+    answers = {}
+    for n, i in enumerate(pool):  # informative, flat, average; a few unreadable
+        m = rows[i]["time_days"] / ad.DAYS_PER_MONTH
+        curve = ([[0, 1.0], [m * 0.8, 0.3 if rows[i]["event"] else 0.8], [130, 0.2]] if n % 3 == 0 else
+                 [[0, 1.0], [6, 0.9], [24, 0.7], [60, 0.5], [130, 0.3]] if n % 3 == 1 else
+                 [list(p) for p in zip(ax, ay)] + [[130.0, ay[-1]]])
+        curve = [p for k, p in enumerate(curve) if k == 0 or p[0] > curve[k - 1][0]]
+        bad = n % 11 == 5
+        answers[i] = {"curve": None if bad else curve, "error": "rising_curve" if bad else None, "reasons": [],
+                      "reason": "", "findings_log": None}
+    score, correct = _score_file(answers, "val")
+    days = np.array(months) * ad.DAYS_PER_MONTH
+    grid = {i: (ad.curve_at(answers[i]["curve"], months) if answers[i]["curve"] else
+                [float(ay[np.searchsorted(ax, mm, side="right") - 1]) for mm in months]) for i in pool}
+    S = np.array([grid[i] for i in pool])
+    want_ibs = integrated_brier_score(Surv.from_arrays(etr, ttr), Surv.from_arrays(eev, tev), S, days)
+    want_c = concordance_index_censored(eev, tev, -S.mean(axis=1))[0]
+    report("task score on the VAL pool == sksurv integrated Brier (unreadable answers at the average curve)",
+           abs(score.primary_metric.value - want_ibs) < 1e-10 and score.primary_metric.higher_is_better is False,
+           f"{score.primary_metric.value:.4f} vs {want_ibs:.4f}; lower is better")
+    report("C-index on the VAL pool == sksurv with risk = minus the curve's mean over the scoring months",
+           abs(score.breakdown["c_index"] - round(want_c, 4)) < 1e-9, f"{score.breakdown['c_index']} vs {want_c:.4f}")
+    nbad = sum(1 for a in answers.values() if a["error"])
+    report("breakdown counts unreadable answers and gives the average curve's own score",
+           score.breakdown["program_errors"] == nbad and score.breakdown.get("error_rising_curve", 0) == nbad
+           and "integrated_brier" in score.breakdown["average_curve"], f"{nbad} unreadable")
+    report("per-example: failed = None, others right or wrong",
+           all((correct[i] is None) == bool(answers[i]["error"]) for i in pool))
+
+    # 3d. the mistakes file: gold death and follow-up, the curve at 12/24/36/60 months, reasons; a confident wrong-way
+    #     curve is a mistake (worse than the average curve on that patient)
+    from engine.schemas import ArtifactRef, RunArtifacts
+
+    trows = {r["id"]: r for r in train}
+    real = len(train) > 1000
+    if real:  # deaths between months 6 and 48 and censorings past month 90, so the window sees every one; alternating
+        mo = {i: trows[i]["time_days"] / ad.DAYS_PER_MONTH for i in ad.pools()["train"]}
+        died = [i for i in sorted(mo) if trows[i]["event"] and 6 < mo[i] < 48][:2]
+        alive = [i for i in sorted(mo) if not trows[i]["event"] and mo[i] > 90][:2]
+        died.sort(key=lambda i: mo[i])
+        # k even right-way, k odd wrong-way, one death and one censoring each way. The wrong-way death is the earlier:
+        # the window ends just before the last death scored (vista-eval's rule), so the later one is outside it.
+        tids = [died[1], alive[0], alive[1], died[0]]
+    else:  # synthetic: too few patients for a scoring window; only the fields are checked
+        tids = sorted(ad.pools()["train"])[:4]
+    tans = {}
+    for k, i in enumerate(tids):  # even: the right way (drops just after a death, stays high past a censoring); odd: wrong way
+        m = trows[i]["time_days"] / ad.DAYS_PER_MONTH
+        died = bool(trows[i]["event"])
+        if k % 2 == 0:
+            curve = [[0, 1.0], [m + 0.01, 0.02], [130, 0.01]] if died else [[0, 1.0], [130, 0.98]]
+        else:
+            curve = [[0, 0.98], [130, 0.98]] if died else [[0, 0.02], [130, 0.01]]
+        tans[i] = {"curve": curve, "error": None, "reason": "x", "findings_log": None,
+                   "reasons": [{"fact": "f", "file": "notes.txt", "date": "2020-01-01"}]}
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "answers.json"
+        f.write_text(json.dumps({"answers": tans}))
+        arts = RunArtifacts(batch_id="b", status="ok", artifact_refs=(ArtifactRef(path=str(f), sha256="0" * 64),))
+        tscore = ad.TaskScorer().score(arts, "train", {"_iter": 1})
+        corpus = ad.mistake_corpus(Path(tmp) / "fb")(arts, tscore)
+        entries = {e["id"]: e for e in json.loads(Path(corpus.ref).read_text())}
+    ok = all("gold_died" in e and "gold_months_followed" in e and "survival_at_12m" in e and e["reasons"]
+             and "said_died_within_1_year" not in e for e in entries.values())
+    wrong_way = [entries[i]["mistake"] for k, i in enumerate(tids) if k % 2 == 1]
+    right_way = [entries[i]["mistake"] for k, i in enumerate(tids) if k % 2 == 0]
+    report("mistakes file: gold, follow-up, curve at 12-60 months, reasons"
+           + ("; a confident wrong-way curve is a mistake, a right-way one is not" if real else " (synthetic: fields only)"),
+           ok and len(entries) == len(tids) and (not real or (all(wrong_way) and not any(right_way))),
+           f"{sum(e['mistake'] for e in entries.values())} of {len(entries)} mistakes")
+
+    # 3e. the cohort survival the prompt states == Kaplan-Meier of the real key's TRAIN (skipped on synthetic data)
+    if len(train) > 1000:
+        got = {k: f"{100 * float(km_p[np.searchsorted(km_x, m, side='right') - 1]):.1f}%" for k, m in
+               (("1 year", 12), ("2 years", 24), ("3 years", 36), ("5 years", 60), ("10 years", 120))}
+        report("prompt's TRAIN survival == Kaplan-Meier of the key", got == agentic.TRAIN_SURVIVAL, str(got))
+        report("cover months = TRAIN's window end", 70 < ad.cover_months() < 80, f"{ad.cover_months():.1f}")
+
+    # 4. reading output.json's curve
+    cover = ad.cover_months()
+    far = max(cover + 1, 130.0)
+    cases = [([[0, 1], [12, 0.8], [far, 0.4]], None), ([{"month": 0, "survival": 1}, {"month": far, "survival": 0.5}], None),
+             ([[0, 1], [12, 0.8], [24, 0.8], [far, 0.0]], None),                       # flat stretches and 0 are fine
+             ([[0, 1], [12, 0.8], [24, 0.81], [far, 0.5]], "rising_curve"),
+             ([[0, 1], [12, 1.2], [far, 0.5]], "outside_0_1"), ([[0, 1], [12, -0.1], [far, 0]], "outside_0_1"),
+             ([[0, 1], [12, 0.8], [cover - 1, 0.5]], "too_short"),
+             ([[0, 1], [12, 0.8], [12, 0.7], [far, 0.5]], "not_a_curve"),              # months must increase
+             ([[-1, 1], [far, 0.5]], "not_a_curve"), ([[0, True], [far, 0.5]], "not_a_curve"),
+             ([[0, "1"], [far, 0.5]], "not_a_curve"), ([[0, float("nan")], [far, 0.5]], "not_a_curve"),
+             ([], "not_a_curve"), ("[[0,1]]", "not_a_curve"), (None, "not_a_curve"),
+             ([[k * far / 2000, 1 - k / 2001] for k in range(2001)], "not_a_curve")]   # over MAX_POINTS
+    ok, why = True, ""
+    with tempfile.TemporaryDirectory() as tmp:
+        for n, (curve, want_err) in enumerate(cases):
+            out = Path(tmp) / f"o{n}.json"
+            out.write_text(json.dumps({"survival_curve": curve, "reasons": [{"fact": "f", "file": "notes.txt",
+                                                                               "date": "2020-01-01"}]}))
+            manifest = spec.summarize(tmp, [{"call_id": "c", "outputs": [{"rel": agentic.OUTPUT, "path": str(out)}]}])
+            got = json.loads(Path(manifest).read_text())["answers"]["c"]
+            good = (got["error"] == want_err and (got["curve"] is None) == (want_err is not None)
+                    and len(got["reasons"]) == 1)
+            ok &= good
+            why += "" if good else f" case {n}: {got['error']}"
+    report("output.json's curve read only when well formed; rising, outside 0-1, short or malformed = error", ok,
+           f"{len(cases)} cases{why}")
+    report("a curve is read as a step curve, 1 before its first point",
+           ad.curve_at([[2, 0.9], [5, 0.5]], [1, 2, 4.9, 5, 9]) == [1.0, 0.9, 0.9, 0.5, 0.5])
+
+
 def check_run_rules(report) -> None:
     """6. run.py's stops, on hand-built run-summary rows and receipts: the no-new-best count and the dollar limits."""
     import config
@@ -308,6 +511,12 @@ def check_run_rules(report) -> None:
     ]
     got = [run.rounds_without_best(r, config.METRIC_NAME) for r, _ in cases]
     report("no-new-best count on 8 hand-built run summaries", got == [w for _, w in cases], f"{got}")
+    low = [  # lower is better (survival's integrated Brier): the same shapes with the direction flipped
+        ([row(1, m, 0.17, base=0.18)], 0), ([row(1, m, 0.18, base=0.18)], 1),
+        ([row(1, m, 0.19, base=0.18), row(2, m, 0.185, base=0.18)], 2),
+        ([row(1, m, 0.19, base=0.18), row(2, m, 0.17, base=0.18)], 0)]
+    got = [run.rounds_without_best(r, config.METRIC_NAME, higher_is_better=False) for r, _ in low]
+    report("no-new-best count with lower-is-better scores", got == [w for _, w in low], f"{got}")
 
     saved = (config.STOP_AFTER_ROUNDS_WITHOUT_BEST, config.RUN_BUDGET_USD, config.ROUND_BUDGET_USD,
              config.OPTIMIZER_SESSION_BUDGET_USD)
@@ -336,21 +545,52 @@ def check_run_rules(report) -> None:
             receipt("iter-1-train-aa", 100, 0.10)   # $10
             receipt("iter-1-val-bb", 200, 0.10)     # $20 -> round 1 $30
             receipt("iter-1-val-cc", 300, 0.10, run_id="other")  # another run's sessions: not counted
-            r1 = [row(1, m, 0.70)]
+            # lower-is-better (survival): the same rows mirrored, so round 1 beats the start and round 2 beats round 1
+            hb = config.HIGHER_IS_BETTER
+            r1 = [row(1, m, 0.70 if hb else 0.30, base=0.60 if hb else 0.40)]
             ok = stops(r1) is None
             receipt("iter-2-train-dd", 400, 0.10)   # round 2: $40 so far, not yet scored
             ok &= stops(r1 + [row(2, "saved_unmeasured", None)]) is None
             receipt("iter-2-val-ee", 200, 0.10)     # round 2 now $60, scored -> over $50
-            ok &= stops(r1 + [row(2, m, 0.72)]) == "round_over_budget"
-            ok &= stops(r1 + [row(2, m, 0.72)], rule=(2, 90.0, 0.0, 3.0)) == "run_over_budget"  # $90 + 2 x $3 > $90
-            ok &= stops(r1 + [row(2, m, 0.72)], rule=(2, 0.0, 0.0, 3.0)) is None  # all off
+            ok &= stops(r1 + [row(2, m, 0.72 if hb else 0.28, base=0.60 if hb else 0.40)]) == "round_over_budget"
+            ok &= stops(r1 + [row(2, m, 0.72 if hb else 0.28, base=0.60 if hb else 0.40)], rule=(2, 90.0, 0.0, 3.0)) == "run_over_budget"  # $90 + 2 x $3 > $90
+            ok &= stops(r1 + [row(2, m, 0.72 if hb else 0.28, base=0.60 if hb else 0.40)], rule=(2, 0.0, 0.0, 3.0)) is None  # all off
             spend = run.run_spend(archive, "r1")
             ok &= {k: round(v, 6) for k, v in spend.items()} == {1: 30.0, 2: 60.0}
             report("dollar stops: round over $50 and run over its limit stop; other runs and unscored rounds don't count",
                    ok, f"spend by round {spend}")
+            if config.SURVIVAL:  # any failed or unreadable answer in this run's passes stops the next pass
+                def answers(pass_name, n_bad):
+                    (archive / pass_name / "answers.json").write_text(json.dumps({"answers": {
+                        f"p{k}": {"curve": None if k < n_bad else [[0, 1]], "error": "too_short" if k < n_bad else None}
+                        for k in range(5)}}))
+                answers("iter-1-train-aa", 0)
+                answers("iter-1-val-cc", 2)  # another run's pass: not counted
+                ok2 = stops(r1, rule=(2, 0.0, 0.0, 3.0)) is None
+                answers("iter-2-val-ee", 1)
+                ok2 &= stops(r1, rule=(2, 0.0, 0.0, 3.0)) == "unreadable_curve"
+                ok2 &= run.unreadable_answers(archive, "r1") == {"iter-2-val-ee": 1}
+                report("an unreadable curve in this run's passes stops the run; another run's doesn't", ok2)
+
         finally:
             (config.STOP_AFTER_ROUNDS_WITHOUT_BEST, config.RUN_BUDGET_USD, config.ROUND_BUDGET_USD,
              config.OPTIMIZER_SESSION_BUDGET_USD) = saved
+
+    if config.SURVIVAL:  # 7. through the real driver: one rising curve in the first pass stops the run before scoring it
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "DRY_RUN_UNREADABLE": "1", "TASK_WORKDIR": str(Path(tmp) / "wd")}
+            proc = subprocess.run([sys.executable, "-B", "run.py", "dry-run", "--iterations", "2"], cwd=HERE, env=env,
+                                  capture_output=True, text=True, timeout=900)
+            out = proc.stdout + proc.stderr
+            summaries = list(Path(tmp).glob("wd-dryrun/private/runs/dry-run/run_summary.json"))
+            rows = json.loads(summaries[0].read_text()).get("iters", []) if summaries else []
+            scored = [r for r in rows if r.get(config.METRIC_NAME) is not None]
+            report("dry run through the driver: one unreadable curve stops the run before that pass is scored",
+                   proc.returncode == 3 and "STOPPED (unreadable_curve)" in out and not scored,
+                   f"exit {proc.returncode}; {len(scored)} scored rounds; "
+                   + next((l for l in out.splitlines() if l.startswith("STOPPED")), "no STOPPED line"))
 
 
 def check_yes_no(report, spec) -> None:

@@ -12,7 +12,10 @@ Copied from died-2yr-ct: the scorer, pools and release builder are the same; onl
 instead of a CT) and what ``mistake_corpus`` copies per mistake differ. Since 2026-10-27 each patient gets two forced
 yes/no answers (death within 1 and within 2 years), scored by balanced accuracy averaged over the two. With
 ``config.PROBABILITY`` (2026-10-31) each answer is a 0..1 probability per horizon, scored by AUROC averaged over the
-two; the probability-era scorer (this file at d76914c) is the base.
+two; the probability-era scorer (this file at d76914c) is the base. With ``config.SURVIVAL`` (2026-11-01) each answer is a
+survival curve, scored against v1.7 os_survival by integrated Brier (lower is better) on a monthly grid and C-index over
+all follow-up, re-implementing vista-eval's survival scoring (``src/vistaeval/metrics/survival.py``, scikit-survival's
+formulas) in plain Python so the engine needs no new package; scripts/check_task.py checks it equals scikit-survival.
 """
 
 from __future__ import annotations
@@ -43,7 +46,7 @@ from engine.schemas import (
 )
 
 import worker as worker_module
-from config import CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, HORIZONS, METRIC_NAME, PROBABILITY, TASK_NAME
+from config import CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, HORIZONS, METRIC_NAME, PROBABILITY, SURVIVAL, TASK_NAME
 
 SPLITS = ("train", "val", "test")
 
@@ -61,7 +64,23 @@ def read_split(split: str) -> list[dict]:
     if split not in SPLITS:
         raise ValueError(f"unknown split {split!r}")
     path = DATA_DIR / "splits" / f"{split}.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if SURVIVAL:  # only patients with an os_survival time, each row carrying it ("time_days", "event")
+        key = survival_key()
+        rows = [{**r, **key[r["id"]]} for r in rows if r["id"] in key]
+    return rows
+
+
+@lru_cache(maxsize=None)
+def survival_key() -> dict[str, dict]:
+    """Survival mode's answer key: id -> {"time_days", "event"} (v1.7 os_survival, clock = the record's last day)."""
+    path = DATA_DIR / "survival.jsonl"
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            r = json.loads(line)
+            out[r["id"]] = {"time_days": float(r["time_days"]), "event": int(r["event"])}
+    return out
 
 
 def patient_dir(pid: str) -> Path:
@@ -74,7 +93,11 @@ def patient_dir(pid: str) -> Path:
 def pools() -> dict[str, frozenset]:
     """The fixed TRAIN (400) and VAL (200) pools: the CT task's, copied by scripts/build_data.py, so the two tasks
     score on the same patients. The schedule draws from nothing else."""
-    return {k: frozenset(v) for k, v in json.loads((DATA_DIR / "pools.json").read_text(encoding="utf-8")).items()}
+    out = {k: frozenset(v) for k, v in json.loads((DATA_DIR / "pools.json").read_text(encoding="utf-8")).items()}
+    if SURVIVAL:  # 390 of 400 TRAIN and 197 of 200 VAL have an os_survival time (2026-11-01)
+        key = survival_key()
+        out = {k: frozenset(i for i in v if i in key) for k, v in out.items()}
+    return out
 
 
 def rows_for(inputs: RunInputs) -> list[dict]:
@@ -149,7 +172,8 @@ class _Runner:
         try:
             for row in rows:  # the label never leaves the host
                 reply = worker.request({"id": row["id"]})
-                answers[row["id"]] = {**{key: reply.get(key) for key, _g, _w in HORIZONS},
+                answers[row["id"]] = {**({"curve": reply.get("curve"), "reasons": reply.get("reasons") or []} if SURVIVAL
+                                         else {key: reply.get(key) for key, _g, _w in HORIZONS}),
                                       "reason": reply.get("reason"), "error": reply.get("error"), "findings_log": None}
         except Exception as exc:  # noqa: BLE001 - a hang or a dead worker is the version's fault: a failed version
             hung = "timed out" in str(exc)
@@ -308,6 +332,39 @@ def probability_scores(gold_rows: dict, answers: dict) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------------------------------
+# Survival mode: a curve per patient, scored like vista-eval's survival models (the maths: survival_metrics.py)
+# --------------------------------------------------------------------------------------------------
+
+from survival_metrics import (  # noqa: E402,F401  (re-exported: the scorer, run.py and check_task use them from here)
+    DAYS_PER_MONTH, GRID_MONTHS, NEAR_AVERAGE, REPORT_MONTHS, Censoring, brier_at, brier_contributions, c_index,
+    curve_at, dynamic_auc_at, kaplan_meier, per_patient_brier, percentile, scoring_months, step_value,
+    survival_metrics, trapezoid, window_upper_days,
+)
+
+
+@lru_cache(maxsize=None)
+def cover_months() -> float:
+    """How far every curve must reach, in months: TRAIN's own window end (about 74.5 months), never short of any
+    scoring window, which can only end earlier. A curve that stops before it is unreadable."""
+    return window_upper_days(read_split("train")) / DAYS_PER_MONTH
+
+
+@lru_cache(maxsize=None)
+def average_curve() -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """The no-information answer: TRAIN's Kaplan-Meier curve, as (months, survival) points."""
+    rows = read_split("train")
+    xs, ys = kaplan_meier([r["time_days"] / DAYS_PER_MONTH for r in rows], [r["event"] for r in rows])
+    return tuple([0.0, *xs]), tuple([1.0, *ys])
+
+
+def answer_curve(answer: dict) -> list[float] | None:
+    """A survival answer on GRID_MONTHS, or None when the session failed or its curve was unreadable."""
+    if answer.get("error") or not answer.get("curve"):
+        return None
+    return curve_at(answer["curve"], GRID_MONTHS)
+
+
 def balanced_accuracy(pairs: list[tuple[int, bool]]) -> float:
     """Mean of the recall of each class present, for (gold, right) pairs: (sensitivity + specificity) / 2 when
     both classes are present, as sklearn's balanced_accuracy_score. 0.0 for no pairs."""
@@ -337,6 +394,8 @@ class TaskScorer:
     def score(self, artifacts: RunArtifacts, split: str, task_config: dict) -> ScoreResult:
         gold = {r["id"]: r for r in read_split(split)}
         answers = _answers(artifacts)
+        if SURVIVAL:
+            return self._score_survival(gold, answers, task_config, split)
         if PROBABILITY:
             return self._score_probability(gold, answers, task_config, split)
         per = horizon_scores(gold, answers)
@@ -372,12 +431,60 @@ class TaskScorer:
             task_config={**task_config, "_split": split},
         )
 
+    @staticmethod
+    def _survival_parts(gold: dict, answers: dict):
+        """(rows, curves on GRID_MONTHS, average curve on GRID_MONTHS, TRAIN rows). An unreadable or failed answer
+        is filled with the average curve so a number exists; any one stops the run before the next pass
+        (run.stop_rule), so no decision rests on it (Phil 2026-11-01: no fallback score)."""
+        train = read_split("train")
+        avg = curve_at(list(zip(*average_curve())), GRID_MONTHS)
+        rows = [gold[i] for i in answers]
+        curves = {i: (answer_curve(a) or avg) for i, a in answers.items()}
+        return rows, curves, avg, train
+
+    def _score_survival(self, gold: dict, answers: dict, task_config: dict, split: str) -> ScoreResult:
+        rows, curves, avg, train = self._survival_parts(gold, answers)
+        ours = survival_metrics(rows, curves, train)
+        base = survival_metrics(rows, {r["id"]: avg for r in rows}, train)
+        months = scoring_months(train, rows)
+        near = sum(1 for i in answers if months and answer_curve(answers[i]) is not None
+                   and max(abs(curves[i][GRID_MONTHS.index(m)] - avg[GRID_MONTHS.index(m)]) for m in months) <= NEAR_AVERAGE)
+        readable = [i for i in answers if answer_curve(answers[i]) is not None]
+        errors = Counter(a["error"] for a in answers.values() if a.get("error"))
+        value = ours.get("integrated_brier", float("nan"))
+        r4 = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in ours.items()}
+        return ScoreResult(
+            primary_metric=PrimaryMetric(name=METRIC_NAME, value=value, higher_is_better=False),
+            breakdown={**r4, "censored": len(rows) - ours["deaths"],
+                       "program_errors": sum(errors.values()), **{f"error_{k}": v for k, v in sorted(errors.items())},
+                       "readable_curves": len(readable),
+                       "near_average_curve": near,
+                       "distinct_curves": len({tuple(round(x, 4) for x in curves[i]) for i in readable}),
+                       "average_curve": {k: (round(v, 4) if isinstance(v, float) else v) for k, v in base.items()
+                                         if k == "integrated_brier" or k.startswith("brier_")}},
+            task_config={**task_config, "_split": split},
+        )
+
+    def survival_mistakes(self, gold: dict, answers: dict) -> dict[str, bool]:
+        """Survival mode: a patient is a mistake when its curve does worse than the average curve on that patient
+        (its mean censoring-weighted Brier term over the scoring months), or its session failed. Picks only what
+        the optimizer studies closely; the score does not use it."""
+        rows, curves, avg, train = self._survival_parts(gold, answers)
+        months = scoring_months(train, rows)
+        ours = per_patient_brier(rows, curves, train, months)
+        base = per_patient_brier(rows, {r["id"]: avg for r in rows}, train, months)
+        return {i: bool(answers[i].get("error")) or ours[i] > base[i] + 1e-12 for i in answers}
+
     def per_example_correct(self, artifacts: RunArtifacts, split: str) -> dict:
         """Right or wrong per example on a TRAIN pass (the data schedule retires examples answered right
         N times in a row): right only when both horizons are right. ``None`` for an example whose call failed."""
         gold = {r["id"]: r for r in read_split(split)}
+        answers = _answers(artifacts)
+        if SURVIVAL:
+            wrong = self.survival_mistakes(gold, answers)
+            return {i: (None if a["error"] else not wrong[i]) for i, a in answers.items()}
         return {i: (None if a["error"] else all(right(a, key, gold[i][field]) for key, field, _w in HORIZONS))
-                for i, a in _answers(artifacts).items()}
+                for i, a in answers.items()}
 
 
 # ==================================================================================================
@@ -424,8 +531,12 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
         records.mkdir(parents=True, exist_ok=True)
         answers = _answers(artifacts)
         entries = []
+        surv_wrong = TaskScorer().survival_mistakes(rows, answers) if SURVIVAL else {}
         for i, a in sorted(answers.items()):
-            wrong_at = [words for key, field, words in HORIZONS if not right(a, key, rows[i][field])]
+            if SURVIVAL:
+                wrong_at = ["curve worse than the average curve"] if surv_wrong[i] else []
+            else:
+                wrong_at = [words for key, field, words in HORIZONS if not right(a, key, rows[i][field])]
             mistake = bool(a["error"]) or bool(wrong_at)
             files, traces = [], []
             if mistake:
@@ -444,6 +555,15 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
                     dest = records / f"{i}-trace-{f.name}"
                     _copy_over(f, dest)
                     traces.append(str(dest))
+            if SURVIVAL:
+                grid = answer_curve(a)
+                entries.append({"id": i, "gold_died": rows[i]["event"],
+                                "gold_months_followed": round(rows[i]["time_days"] / DAYS_PER_MONTH, 1),
+                                **{f"survival_at_{m}m": (None if grid is None else round(grid[GRID_MONTHS.index(m)], 3))
+                                   for m in REPORT_MONTHS},
+                                "error": a["error"], "reasons": a.get("reasons") or [], "mistake": mistake,
+                                "wrong_at": wrong_at, "record_files": files, "trace_files": traces})
+                continue
             entries.append({"id": i,
                             **{f"gold_{key}": rows[i][field] for key, field, _w in HORIZONS},
                             **({f"probability_{key}": (None if a["error"] else round(prob(a, key), 3))
@@ -455,6 +575,10 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
         path = out / "train_mistakes.json"
         path.write_text(json.dumps(entries, indent=1), encoding="utf-8")
         last = HORIZONS[-1][0]  # grouped by the 2-year outcome: died by 1 year, died in year 2, alive at 2 years
+        if SURVIVAL:  # grouped by whether the death was seen
+            counts = Counter(("died" if e["gold_died"] else "censored") + ("_mistake" if e["mistake"] else "_right")
+                             for e in entries)
+            return MistakeCorpus(ref=str(path), counts={"total": sum(e["mistake"] for e in entries), **counts})
         counts = Counter(("died_1yr" if e[f"gold_{HORIZONS[0][0]}"] else "died_2yr" if e[f"gold_{last}"] else "lived")
                          + ("_mistake" if e["mistake"] else "_right") for e in entries)
         return MistakeCorpus(ref=str(path), counts={"total": sum(e["mistake"] for e in entries), **counts})

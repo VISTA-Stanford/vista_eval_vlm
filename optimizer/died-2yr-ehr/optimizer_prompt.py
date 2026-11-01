@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, PROBABILITY, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF  # run.py sets ITERATIONS
+from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, PROBABILITY, SURVIVAL, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF  # run.py sets ITERATIONS
 
 HERE = Path(__file__).resolve().parent
 INSTRUCTIONS = OPTIMIZER_INSTRUCTIONS
@@ -71,7 +71,13 @@ def build_prompt(iter_n: int, paths) -> str:
          "- Give a tool the folder a session sees (`record/`): `mkdir -p /tmp/rec/<id> && for f in <files>/<id>-*; do\n"
          "  case $f in *-trace-*) ;; *) cp $f /tmp/rec/<id>/${f##*/<id>-};; esac; done`, then run your tool on\n"
          "  `/tmp/rec/<id>` (tools live in `{program}/tools/`). notes.txt can be long: grep it rather than reading it whole.\n"
-         + ("- Every TRAIN patient of the pass is in the mistakes file with its gold and the probability it was given at\n"
+         + ("- Every TRAIN patient of the pass is in the mistakes file with its gold (died or censored, months followed)\n"
+            "  and its curve at 12, 24, 36 and 60 months, and its stated reasons. A mistake is a curve that did worse on\n"
+            "  that patient than the average curve would have. The integrated Brier rewards honest levels over time as\n"
+            "  well as ranking, so a confident wrong curve costs most: look at those first, and at how far the curves\n"
+            "  spread from the average overall. Only mistakes come with their record and transcript.\n"
+            if SURVIVAL else
+            "- Every TRAIN patient of the pass is in the mistakes file with its gold and the probability it was given at\n"
             "  each horizon, and its stated reasons. A mistake is a probability on the wrong side of that horizon's\n"
             "  death rate (`wrong_at` says which). AUROC rewards ranking every patient who died above every one who\n"
             "  lived, so a confident wrong probability costs most: look at the most confident wrong ones first, and\n"

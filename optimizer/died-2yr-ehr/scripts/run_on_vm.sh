@@ -14,6 +14,9 @@
 # ANSWER=probability (with WITH_SUMMARY=1 for the summary arm) runs the probability version: 0-100 answers scored by
 # AUROC, defaults RUN_ID prob-summary-r1 (prob-r1 without the summary), ITERATIONS 10, its own work folder, and a stop
 # after 2 rounds with no new best VAL, which ends the run as finished (Phil 2026-10-31).
+# ANSWER=survival (Phil 2026-11-01) runs the survival-curve version the same way: integrated Brier against os_survival,
+# defaults RUN_ID surv-summary-r1 (surv-r1 without the summary), its own work folder; a failed session or unreadable
+# curve stops it (STOPPED (unreadable_curve)) for a person to look, never resumed.
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
 # baselines scored on the same VAL pool (baselines_val_pool.json).
@@ -30,8 +33,9 @@ DATA=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7
 export TASK_DATA_DIR=${TASK_DATA_DIR:-$HOME/data/died-2yr-ehr-v1_7}
 export ANSWER=${ANSWER:-yesno}
 export WITH_SUMMARY=${WITH_SUMMARY:-0}
-if [ "$ANSWER" = probability ]; then
-    if [ "$WITH_SUMMARY" = 1 ]; then ARM=prob-summary; else ARM=prob; fi
+if [ "$ANSWER" = probability ] || [ "$ANSWER" = survival ]; then
+    PREFIX=prob; [ "$ANSWER" = survival ] && PREFIX=surv
+    if [ "$WITH_SUMMARY" = 1 ]; then ARM=$PREFIX-summary; else ARM=$PREFIX; fi
     RUN_ID=${RUN_ID:-$ARM-r1}
     export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-2}  # spec: 2 at a time (sllm-01's network gate)
     ITERATIONS=${ITERATIONS:-10}  # Phil 2026-10-31; the stop rule usually ends it sooner
@@ -104,6 +108,8 @@ PIN=$(sed -n 's/^ENGINE_PIN = "\([0-9a-f]\{40\}\)".*/\1/p' "$TASK_DIR/config.py"
 # A probability launch on a checkout without the answer setting would quietly run the yes/no task.
 if [ "$ANSWER" != yesno ]; then grep -q '^ANSWER = os.environ.get("ANSWER"' "$TASK_DIR/config.py" \
     || fail "ANSWER=$ANSWER but origin/$BRANCH has no answer setting in config.py (is the probability branch merged?)"; fi
+if [ "$ANSWER" = survival ]; then grep -q '"survival")' "$TASK_DIR/config.py" \
+    || fail "ANSWER=survival but origin/$BRANCH has no survival mode in config.py (is feat/died-ehr-survival merged?)"; fi
 [ -n "$PIN" ] || fail "no ENGINE_PIN in config.py"
 
 # The engine, at the task's pin.
@@ -131,6 +137,12 @@ n=$(find "$TASK_DATA_DIR/patients" -mindepth 1 -maxdepth 1 -type d | wc -l)
 [ "$n" -eq 5549 ] || fail "expected 5549 patient folders in $TASK_DATA_DIR/patients, found $n"
 cmp -s "$DATA/pools.json" "$TASK_DATA_DIR/pools.json" || fail "local pools.json differs from the mount's"
 echo "records: $n patients in $TASK_DATA_DIR"
+if [ "$ANSWER" = survival ]; then  # the survival answer key (build_data.py survival), beside the splits
+    [ -f "$DATA/survival.jsonl" ] || fail "no $DATA/survival.jsonl (run build_data.py survival)"
+    cp "$DATA/survival.jsonl" "$TASK_DATA_DIR/survival.jsonl"
+    cmp -s "$DATA/survival.jsonl" "$TASK_DATA_DIR/survival.jsonl" || fail "local survival.jsonl differs from the mount's"
+    echo "survival key: $(wc -l < "$TASK_DATA_DIR/survival.jsonl") patients"
+fi
 if [ "$WITH_SUMMARY" = 1 ]; then
     (cd "$TASK_DIR" && uv run -q --no-project --with "duckdb<2" python -B scripts/pull_summaries.py --local-only) >/dev/null \
         || fail "copying the summaries from the mount"
@@ -157,9 +169,14 @@ echo "$out" | grep -qE "^FINISHED|^STOPPED \(no_new_best\)" && ! echo "$out" | g
 echo "$out" | grep "best program-v0"
 
 mkdir -p "$RESULTS"
+if [ "$ANSWER" = survival ]; then
+    (cd "$TASK_DIR" && uv run -q --no-project --with pandas --with pyarrow --with scikit-learn python -B scripts/score_baselines.py \
+        survival --ids pool --out "$RESULTS/baselines_val_pool.json") | tail -14 || fail "score_baselines survival"
+else
 (cd "$TASK_DIR" && uv run -q --no-project --with pandas --with pyarrow --with scikit-learn python -B scripts/score_baselines.py \
     score --ids pool $([ "$ANSWER" = probability ] && echo --horizons both) --out "$RESULTS/baselines_val_pool.json") \
     | tail -24 || fail "score_baselines"
+fi
 
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: run not started)"; exit 0; fi
 mkdir -p "$TASK_WORKDIR"
