@@ -12,6 +12,7 @@
     python templates/new_task/run.py report --run-id r1
     python templates/new_task/run.py test --tag program-v3   score ONE chosen version on TEST, once
     python templates/new_task/run.py score-val --tag program-v3   score one version on all 811 VAL patients
+    python templates/new_task/run.py rescore --run <work folder>   $0: every archived VAL pass, full breakdown
 
 Exit codes for ``run``/``dry-run``: 0 finished, 3 stopped (the reason is printed and in the run
 summary), 2 paused, 1 anything else.
@@ -113,6 +114,80 @@ def schedule(layout):
     return DataSchedule(ScheduleConfig(**config.SCHEDULE), ad.TaskSource(layout.batches))
 
 
+def rounds_without_best(rows: list[dict], metric: str) -> int:
+    """How many rounds in a row, counting back from the latest, set no new best VAL score. The best starts at the
+    first round's base score (the start version's VAL, e.g. the seed's zero-shot); a failed version counts as no new
+    best. A row still ``saved_unmeasured`` (the engine writes it before that version's VAL pass) is skipped: its round
+    has not been scored yet, and counting it stopped a dry run before the version it had just paid for was scored."""
+    if not rows:
+        return 0
+    best, streak = rows[0].get("base_metric"), 0
+    for row in rows:
+        if row.get("status") == "saved_unmeasured":
+            continue
+        value = row.get(metric)
+        if value is not None and (best is None or value > best):
+            best, streak = value, 0
+        else:
+            streak += 1
+    return streak
+
+
+ITER_PASS = re.compile(r"^iter-(\d+)-")
+
+
+def run_spend(archive: Path, run_id: str) -> dict[int, float]:
+    """Dollars of patient sessions this run id paid for, by round, from the receipts of every finished pass under
+    ``archive`` (program-outputs/archive). Failed and retried passes count: they were paid for."""
+    by_iter: dict[int, float] = {}
+    for receipts in Path(archive).glob("iter-*/receipts"):
+        m = ITER_PASS.match(receipts.parent.name)
+        for f in receipts.glob("*.json"):
+            try:
+                r = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if r.get("run_id") != run_id or not m:
+                continue
+            by_iter[int(m.group(1))] = by_iter.get(int(m.group(1)), 0.0) + sum(
+                float(s.get("cost_usd") or 0.0) for s in r.get("stages", []))
+    return by_iter
+
+
+def stop_rule(summary_path: Path, archive: Path | None = None, run_id: str | None = None):
+    """A before-pass hook enforcing, before the next pass spends anything on patients:
+    config.STOP_AFTER_ROUNDS_WITHOUT_BEST from the run summary the engine rewrites after every round (so a resumed run
+    counts the same rounds; the optimizer's session for that round may already have run), and the dollar stops
+    config.RUN_BUDGET_USD and ROUND_BUDGET_USD from the run's receipts."""
+    limit = config.STOP_AFTER_ROUNDS_WITHOUT_BEST
+
+    def check(inputs):
+        try:
+            rows = json.loads(Path(summary_path).read_text(encoding="utf-8")).get("iters", [])
+        except (OSError, ValueError):
+            rows = []
+        streak = rounds_without_best(rows, config.METRIC_NAME)
+        if limit and streak >= limit:
+            raise LoopStop(f"{streak} rounds in a row set no new best {config.METRIC_NAME} (limit {limit}); "
+                           f"the best version so far is the winner", reason="no_new_best")
+        if archive is not None and (config.RUN_BUDGET_USD or config.ROUND_BUDGET_USD):
+            spend = run_spend(archive, run_id)
+            done = {r.get("iter") for r in rows if r.get("status") in ("measured", "failed")}
+            over = [i for i in sorted(spend) if i in done and spend[i] > config.ROUND_BUDGET_USD]
+            if config.ROUND_BUDGET_USD and over:
+                raise LoopStop(f"round {over[0]} cost ${spend[over[0]]:.2f} in patient sessions, over the "
+                               f"${config.ROUND_BUDGET_USD:.0f} a round limit: stop and ask", reason="round_over_budget")
+            started = max([*spend, *[r.get("iter") or 0 for r in rows]], default=0)
+            total = sum(spend.values()) + started * config.OPTIMIZER_SESSION_BUDGET_USD
+            if config.RUN_BUDGET_USD and total > config.RUN_BUDGET_USD:
+                raise LoopStop(f"this run has spent about ${total:.2f} (patient sessions plus each round's optimizer "
+                               f"budget), over the ${config.RUN_BUDGET_USD:.0f} limit: stop and ask",
+                               reason="run_over_budget")
+        return None
+
+    return check
+
+
 def driver_config(layout, *, run_id, iterations, agent, runner, release_builder, setup_owners, unsealed=(),
                   program_mode=None, resume=False, start=StartPoint.NEWEST_GOOD) -> DriverConfig:
     store = ad.TaskStore()
@@ -136,6 +211,9 @@ def driver_config(layout, *, run_id, iterations, agent, runner, release_builder,
         engine_pin=config.ENGINE_PIN, engine_root=config.ENGINE_ROOT, engine_capabilities=CAPABILITIES,
         setup_owners=setup_owners, unsealed=unsealed, program_mode=program_mode,
         pin_command=f"python {HERE / 'run.py'} pins", start=start, resume=resume,
+        before_pass=((stop_rule(layout.summary(run_id), layout.program_outputs / "archive", run_id),)
+                     if (config.STOP_AFTER_ROUNDS_WITHOUT_BEST or config.RUN_BUDGET_USD or config.ROUND_BUDGET_USD)
+                     else ()),
         loop_options={
             # Without loop_ops the loop writes no release files and the optimizer works blind.
             "loop_ops": LocalLoopOps(layout.repo),
@@ -176,9 +254,13 @@ def stub_answer(pid: str) -> dict:
     accuracy is a number scripts/check_task.py works out independently from the gold (a constant stand-in would
     score 0.5 whatever the scorer did)."""
     if pid[-1] == "f":
-        return {"status": "ok", "id": pid, "error": "not_yes_or_no", "reason": "dry-run stand-in"}
+        return {"status": "ok", "id": pid, "error": "not_a_probability" if config.PROBABILITY else "not_yes_or_no",
+                "reason": "dry-run stand-in"}
     gold = next(r for r in ad.read_split("val") + ad.read_split("train") if r["id"] == pid)
     even = int(pid[-1], 16) % 2 == 0
+    if config.PROBABILITY:  # even: 0.8 if died, 0.2 if lived (ranked right); odd: 0.3 for everyone (one tie block)
+        return {"status": "ok", "id": pid, "reason": "dry-run stand-in", "reasons": [],
+                **{key: ((0.8 if gold[field] else 0.2) if even else 0.3) for key, field, _w in config.HORIZONS}}
     return {"status": "ok", "id": pid, "reason": "dry-run stand-in",
             **{key: (bool(gold[field]) if even else False) for key, field, _w in config.HORIZONS}}
 
@@ -581,7 +663,10 @@ def cmd_score_val(args) -> int:
     score = ad.TaskScorer().score(artifacts, "val", {})
     entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha,
              config.METRIC_NAME: score.primary_metric.value, "n": score.breakdown["n"], "look": len(earlier) + 1,
-             "arm": arm, "scope": scope}
+             "arm": arm, "scope": scope, "answers": artifacts.artifact_refs[0].path}
+    if config.PROBABILITY:  # per horizon, for the spec's table beside the baselines (rescore re-reads the answers)
+        entry["answer"] = "probability"
+        entry["horizons"] = per_horizon(score)
     with ledger_path.open("a") as f:
         f.write(json.dumps(entry) + "\n")
     print(json.dumps(entry, indent=2))
@@ -589,6 +674,47 @@ def cmd_score_val(args) -> int:
 
 
 # ==================================================================================================
+
+
+def per_horizon(score) -> dict:
+    """The per-horizon numbers of a probability score, without the calibration table."""
+    return {w.replace(" ", ""): {k: v for k, v in score.breakdown[w.replace(" ", "")].items()
+                                 if k != "calibration_by_decile"} for _k, _f, w in config.HORIZONS}
+
+
+def cmd_rescore(args) -> int:
+    """$0: score archived answers.json files again (a pass of a run, or a score-val look) and print the full
+    breakdown: per horizon AUROC or balanced accuracy, and for probabilities the ties (distinct values, share on the
+    most common one), Brier and the impossible 1-year-above-2-year count. Split from the pass name (-val- or
+    -train-) unless --split. Counts only."""
+    from engine.schemas import ArtifactRef, RunArtifacts
+
+    paths = list(args.answers)
+    if args.run:
+        paths += sorted((args.run / "program-outputs" / "archive").glob(f"{args.passes}/answers.json"))
+    if not paths:
+        print("no answers.json given or found")
+        return 1
+    out = []
+    for path in paths:
+        name = path.parent.name
+        split = args.split or next((s for s in ("val", "test", "train") if f"-{s}-" in name or name.startswith(f"{s}-")),
+                                   None)
+        if split is None:
+            print(f"{name}: can't tell the split from the pass name; give --split")
+            return 1
+        arts = RunArtifacts(batch_id="rescore", status="ok", artifact_refs=(ArtifactRef(path=str(path), sha256="0" * 64),))
+        score = ad.TaskScorer().score(arts, split, {})
+        row = {"pass": name, "split": split, config.METRIC_NAME: round(score.primary_metric.value, 4),
+               **{k: v for k, v in score.breakdown.items() if not isinstance(v, dict)}}
+        row.update(per_horizon(score) if config.PROBABILITY else
+                   {k: v for k, v in score.breakdown.items() if isinstance(v, dict)})
+        out.append(row)
+        print(json.dumps(row))
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    return 0
 
 
 def run_id_arg(value: str) -> str:
@@ -628,11 +754,17 @@ def main(argv=None) -> int:
     sv = sub.add_parser("score-val", help="score one chosen version on all of VAL, not the 200-patient pool")
     sv.add_argument("--tag", required=True)
     sv.add_argument("--pool", action="store_true", help="the 200-patient VAL pool the rounds use, not all of VAL")
+    rs = sub.add_parser("rescore", help="$0: re-score archived answers.json files and print the full breakdown")
+    rs.add_argument("answers", nargs="*", type=Path)
+    rs.add_argument("--run", type=Path, help="a work folder: its archived passes matching --passes")
+    rs.add_argument("--passes", default="iter-*-val-*", help="glob over pass folders (default every VAL pass)")
+    rs.add_argument("--split", choices=("train", "val", "test"))
+    rs.add_argument("--out", type=Path)
     args = p.parse_args(argv)
     return {
         "init": cmd_init, "dry-run": cmd_dry_run, "print-prompt": cmd_print_prompt, "build-images": cmd_build_images,
         "pins": cmd_pins, "check-token": cmd_check_token, "run": cmd_run, "report": cmd_report, "test": cmd_test,
-        "score-val": cmd_score_val,
+        "score-val": cmd_score_val, "rescore": cmd_rescore,
     }[args.cmd](args)
 
 

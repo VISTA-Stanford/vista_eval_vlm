@@ -10,6 +10,9 @@
 # Vertex-only service account key at ~/.config/alo/vertex-sa.json (mode 600). Settings, all optional, on the same line:
 # RUN_ID (yesno-r1), ITERATIONS (5), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20), START (a version tag to start a new run
 # from, e.g. program-v5; default the newest good version), TASK_SCHEDULE (JSON, e.g. a bigger TRAIN); SETUP_ONLY=1 stops before the run.
+# ANSWER=probability (with WITH_SUMMARY=1 for the summary arm) runs the probability version: 0-100 answers scored by
+# AUROC, defaults RUN_ID prob-summary-r1 (prob-r1 without the summary), ITERATIONS 10, its own work folder, and a stop
+# after 2 rounds with no new best VAL, which ends the run as finished (Phil 2026-10-31).
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
 # baselines scored on the same VAL pool (baselines_val_pool.json).
@@ -25,6 +28,15 @@ ENGINE_WT=$ENGINE/.claude/worktrees/mortality-engine
 DATA=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7
 # The local working copy the task reads (config.DATA_DIR): rebuilt from $DATA/archive by build_data.py rehydrate.
 export TASK_DATA_DIR=${TASK_DATA_DIR:-$HOME/data/died-2yr-ehr-v1_7}
+export ANSWER=${ANSWER:-yesno}
+export WITH_SUMMARY=${WITH_SUMMARY:-0}
+if [ "$ANSWER" = probability ]; then
+    if [ "$WITH_SUMMARY" = 1 ]; then ARM=prob-summary; else ARM=prob; fi
+    RUN_ID=${RUN_ID:-$ARM-r1}
+    export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-2}  # spec: 2 at a time (sllm-01's network gate)
+    ITERATIONS=${ITERATIONS:-10}  # Phil 2026-10-31; the stop rule usually ends it sooner
+    export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/died-2yr-ehr-$ARM}  # config.WORKDIR's default
+fi
 RUN_ID=${RUN_ID:-yesno-r1}  # not `first`: that name is a probability-era run on both VMs
 ITERATIONS=${ITERATIONS:-5}  # Phil 2026-10-28, as the CT task
 MAX_RESUMES=${MAX_RESUMES:-20}
@@ -32,7 +44,6 @@ export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-3}
 export AGENTIC_LABEL_OPT=$ENGINE_WT
 export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/died-2yr-ehr-yesno}  # the old folder holds the probability-era seed (config.WORKDIR)
 # WITH_SUMMARY=1: each record also holds the patient summary (config.WITH_SUMMARY); give it its own TASK_WORKDIR.
-export WITH_SUMMARY=${WITH_SUMMARY:-0}
 RESULTS=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/$(hostname)/$RUN_ID
 LOG=$TASK_WORKDIR/$RUN_ID-run.log
 
@@ -56,6 +67,7 @@ if [ "${1:-}" = "--loop" ]; then
         alo run --run-id "$RUN_ID" --iterations "$ITERATIONS" ${START:+--start "$START"} "${mode[@]}" 2>&1 | tee "$TASK_WORKDIR/last-pass.log" || true
         publish
         if grep -q "^FINISHED" "$TASK_WORKDIR/last-pass.log"; then echo "FINISHED"; exit 0; fi
+        if grep -q "STOPPED (no_new_best)" "$TASK_WORKDIR/last-pass.log"; then echo "FINISHED (stop rule: no new best)"; exit 0; fi
         if grep -q "STOPPED (proxy_died)" "$TASK_WORKDIR/last-pass.log" && [ "$attempt" -lt "$MAX_RESUMES" ]; then
             attempt=$((attempt + 1)); mode=(--resume)
             sleep 150  # the NAT holds a closed connection's port for 120 s
@@ -90,6 +102,9 @@ else
     git -C "$VLM" worktree add -q --detach "$TASK_WT" "origin/$BRANCH"
 fi
 PIN=$(sed -n 's/^ENGINE_PIN = "\([0-9a-f]\{40\}\)".*/\1/p' "$TASK_DIR/config.py")
+# A probability launch on a checkout without the answer setting would quietly run the yes/no task.
+if [ "$ANSWER" != yesno ]; then grep -q '^ANSWER = os.environ.get("ANSWER"' "$TASK_DIR/config.py" \
+    || fail "ANSWER=$ANSWER but origin/$BRANCH has no answer setting in config.py (is the probability branch merged?)"; fi
 [ -n "$PIN" ] || fail "no ENGINE_PIN in config.py"
 
 # The engine, at the task's pin.
@@ -137,13 +152,15 @@ alo pins --write | tail -1 || fail "pins --write"
 if [ "${ALO_ROUTE:-anthropic}" != vertex ]; then
     alo check-token | grep -q ": PASS" || fail "check-token did not PASS (try: cd $TASK_DIR && uv run --project $ENGINE_WT python run.py check-token)"
 fi
-out=$(alo dry-run 2>&1) || fail "dry-run exited non-zero"
-echo "$out" | grep -q "^FINISHED" && ! echo "$out" | grep -q " FAIL " || { echo "$out" | tail -20; fail "dry-run"; }
+rc=0; out=$(alo dry-run 2>&1) || rc=$?
+[ "$rc" = 0 ] || [ "$rc" = 3 ] || fail "dry-run exited $rc"  # 3 = stopped (the probability stop rule can end it)
+echo "$out" | grep -qE "^FINISHED|^STOPPED \(no_new_best\)" && ! echo "$out" | grep -q " FAIL " || { echo "$out" | tail -20; fail "dry-run"; }
 echo "$out" | grep "best program-v0"
 
 mkdir -p "$RESULTS"
 (cd "$TASK_DIR" && uv run -q --no-project --with pandas --with pyarrow --with scikit-learn python -B scripts/score_baselines.py \
-    score --ids pool --out "$RESULTS/baselines_val_pool.json") | tail -9 || fail "score_baselines"
+    score --ids pool $([ "$ANSWER" = probability ] && echo --horizons both) --out "$RESULTS/baselines_val_pool.json") \
+    | tail -24 || fail "score_baselines"
 
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: run not started)"; exit 0; fi
 mkdir -p "$TASK_WORKDIR"

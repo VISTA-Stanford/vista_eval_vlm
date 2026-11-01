@@ -10,7 +10,9 @@
 
 Copied from died-2yr-ct: the scorer, pools and release builder are the same; only the patient folder (an EHR record
 instead of a CT) and what ``mistake_corpus`` copies per mistake differ. Since 2026-10-27 each patient gets two forced
-yes/no answers (death within 1 and within 2 years), scored by balanced accuracy averaged over the two.
+yes/no answers (death within 1 and within 2 years), scored by balanced accuracy averaged over the two. With
+``config.PROBABILITY`` (2026-10-31) each answer is a 0..1 probability per horizon, scored by AUROC averaged over the
+two; the probability-era scorer (this file at d76914c) is the base.
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ from engine.schemas import (
 )
 
 import worker as worker_module
-from config import CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, HORIZONS, METRIC_NAME, TASK_NAME
+from config import CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, HORIZONS, METRIC_NAME, PROBABILITY, TASK_NAME
 
 SPLITS = ("train", "val", "test")
 
@@ -232,10 +234,78 @@ def said(answer: dict, key: str) -> bool | None:
     return None if answer.get("error") or not isinstance(v, bool) else v
 
 
+#: Probability mode. A patient whose session failed (no output, unreadable, a number outside 0-100) is scored at
+#: this probability: the middle of the ranking, so a crash neither helps nor hides. Counted in the breakdown
+#: (Phil 2026-10-20 for the CT task; kept 2026-10-31).
+FAILED_PROBABILITY = 0.5
+#: Probability mode: "right" for one patient at one horizon, used only to pick which TRAIN patients the optimizer
+#: studies closely and which the schedule retires: a probability on the correct side of that horizon's TRAIN death
+#: rate (718 and 1,188 of 3,886, agentic.TRAIN_DEATH_RATE). AUROC, the score, does not use it.
+RIGHT_SIDE_THRESHOLD = {"died_within_1_year": 718 / 3886, "died_within_2_years": 1188 / 3886}
+
+
+def prob(answer: dict, key: str) -> float:
+    """Probability mode: the stated probability at one horizon, or FAILED_PROBABILITY when the call failed."""
+    v = answer.get(key)
+    if answer.get("error") or isinstance(v, bool) or not isinstance(v, (int, float)):
+        return FAILED_PROBABILITY
+    return float(v)
+
+
 def right(answer: dict, key: str, gold: int) -> bool:
-    """A failed or unreadable answer is wrong (eval-set spec, Decided: Score: unparseable or refused = wrong)."""
+    """A failed or unreadable answer is wrong (eval-set spec, Decided: Score: unparseable or refused = wrong).
+    Probability mode: right when the probability is on the correct side of the horizon's death rate."""
+    if PROBABILITY:
+        return not answer.get("error") and (prob(answer, key) >= RIGHT_SIDE_THRESHOLD[key]) == (gold == 1)
     v = said(answer, key)
     return v is not None and v == bool(gold)
+
+
+def auroc(pairs: list[tuple[int, float]]) -> float:
+    """Area under the ROC curve for (gold, probability) pairs: the chance a patient who died is ranked above
+    one who lived, ties counted half (the Mann-Whitney form). 0.5 when either class is missing."""
+    pos = sum(1 for g, _p in pairs if g == 1)
+    neg = len(pairs) - pos
+    if not pos or not neg:
+        return 0.5
+    ranked = sorted((p, g) for g, p in pairs)
+    rank_sum, i = 0.0, 0
+    while i < len(ranked):
+        j = i
+        while j < len(ranked) and ranked[j][0] == ranked[i][0]:
+            j += 1
+        mid = (i + 1 + j) / 2  # average 1-based rank of the tie block
+        rank_sum += mid * sum(1 for _p, g in ranked[i:j] if g == 1)
+        i = j
+    return (rank_sum - pos * (pos + 1) / 2) / (pos * neg)
+
+
+def probability_scores(gold_rows: dict, answers: dict) -> dict:
+    """Probability mode, per horizon: AUROC, Brier, the mean probability for those who died and lived, a 10-bin
+    calibration table, and how bunched the answers are (distinct values, share on the most common one), so a
+    reader can see when ties drive AUROC. Counts and short strings only, as the engine requires."""
+    out = {}
+    for key, field, words in HORIZONS:
+        pairs = [(gold_rows[i][field], prob(a, key)) for i, a in answers.items()]
+        died = [p for g, p in pairs if g == 1]
+        lived = [p for g, p in pairs if g == 0]
+        bins = Counter()
+        for g, p in pairs:
+            b = f"{min(int(p * 10), 9) / 10:.1f}"
+            bins[f"p{b}:n"] += 1
+            bins[f"p{b}:died"] += g
+        values = Counter(p for _g, p in pairs)
+        out[words.replace(" ", "")] = {
+            "auroc": auroc(pairs), "died": len(died), "lived": len(lived),
+            "mean_probability_died": round(sum(died) / len(died), 3) if died else None,
+            "mean_probability_lived": round(sum(lived) / len(lived), 3) if lived else None,
+            "brier": round(sum((p - g) ** 2 for g, p in pairs) / len(pairs), 4) if pairs else None,
+            "right_side_of_death_rate": sum(right(a, key, gold_rows[i][field]) for i, a in answers.items()),
+            "distinct_values": len(values),
+            "share_on_most_common_value": round(values.most_common(1)[0][1] / len(pairs), 3) if pairs else None,
+            "calibration_by_decile": dict(sorted(bins.items())),
+        }
+    return out
 
 
 def balanced_accuracy(pairs: list[tuple[int, bool]]) -> float:
@@ -267,6 +337,8 @@ class TaskScorer:
     def score(self, artifacts: RunArtifacts, split: str, task_config: dict) -> ScoreResult:
         gold = {r["id"]: r for r in read_split(split)}
         answers = _answers(artifacts)
+        if PROBABILITY:
+            return self._score_probability(gold, answers, task_config, split)
         per = horizon_scores(gold, answers)
         value = sum(h["balanced_accuracy"] for h in per.values()) / len(per) if answers else 0.0
         for h in per.values():  # rounded for reading only, after the score is taken
@@ -279,6 +351,23 @@ class TaskScorer:
                        # yes at 1 year but no at 2 years: impossible, so one of the two is wrong
                        "said_dead_by_1yr_alive_at_2yr": sum(1 for a in answers.values()
                                                             if said(a, k1) is True and said(a, k2) is False),
+                       **per},
+            task_config={**task_config, "_split": split},
+        )
+
+    def _score_probability(self, gold: dict, answers: dict, task_config: dict, split: str) -> ScoreResult:
+        per = probability_scores(gold, answers)
+        value = sum(h["auroc"] for h in per.values()) / len(per) if answers else 0.0
+        for h in per.values():
+            h["auroc"] = round(h["auroc"], 4)
+        (k1, *_), (k2, *_) = HORIZONS
+        return ScoreResult(
+            primary_metric=PrimaryMetric(name=METRIC_NAME, value=value, higher_is_better=True),
+            breakdown={"n": len(answers),
+                       "program_errors": sum(1 for a in answers.values() if a["error"]),
+                       # a higher chance of death by 1 year than by 2: impossible, the 2-year event includes the 1-year
+                       "p_1yr_above_p_2yr": sum(1 for a in answers.values()
+                                                if not a["error"] and prob(a, k1) > prob(a, k2)),
                        **per},
             task_config={**task_config, "_split": split},
         )
@@ -357,8 +446,11 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
                     traces.append(str(dest))
             entries.append({"id": i,
                             **{f"gold_{key}": rows[i][field] for key, field, _w in HORIZONS},
-                            **{f"said_{key}": ({True: "yes", False: "no"}.get(said(a, key))) for key, _f, _w in HORIZONS},
-                            "error": a["error"], "reason": a.get("reason"), "mistake": mistake,
+                            **({f"probability_{key}": (None if a["error"] else round(prob(a, key), 3))
+                                for key, _f, _w in HORIZONS} if PROBABILITY else
+                               {f"said_{key}": ({True: "yes", False: "no"}.get(said(a, key))) for key, _f, _w in HORIZONS}),
+                            "error": a["error"], "reason": a.get("reason"),
+                            **({"reasons": a.get("reasons") or []} if PROBABILITY else {}), "mistake": mistake,
                             "wrong_at": wrong_at, "record_files": files, "trace_files": traces})
         path = out / "train_mistakes.json"
         path.write_text(json.dumps(entries, indent=1), encoding="utf-8")
