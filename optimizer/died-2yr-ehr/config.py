@@ -70,6 +70,24 @@ DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", Path.home() / "data" / "died-2yr
 #: SUMMARY_DIR/<id>.txt. Off by default, so the yesno-r1 setup is unchanged. Under DATA_DIR, so the optimizer never
 #: sees it.
 WITH_SUMMARY = os.environ.get("WITH_SUMMARY", "0") == "1"  # DECIDE
+#: Bare summary-only arm (Phil 2026-11-01): give each session only what the frozen VLMs (Astra/Argon/MedGemma) got in
+#: the eval-set summary arm -- the eval-set summary prompt verbatim, the answer changed from yes/no to a probability
+#: (or a curve, for survival) -- and strip the optimizer of every hint, to test whether agent-based optimization can
+#: discover the base rate, the spread and what predicts death by sampling TRAIN itself. SUMMARY_ONLY stages only the
+#: summary (no record, notes or record guide) as the session's whole input; BARE strips the hints from the prompt and
+#: the brief and cuts the per-round scorecard to the headline AUROC and counts. SUMMARY_ONLY implies WITH_SUMMARY and
+#: BARE. Patients without a summary are left out. The survival session shares this machinery and adds the curve
+#: question and the Brier scorer branch on top (its WIP patch on the mount).
+SUMMARY_ONLY = os.environ.get("SUMMARY_ONLY", "0") == "1"
+#: BARE (the stripped seed, brief, optimizer instructions and scorecard) is implied by SUMMARY_ONLY and keyed to it
+#: everywhere today; it is a named alias only so a later full-record bare arm can wire it as its own lever then. Do
+#: not set it on its own yet: nothing but SUMMARY_ONLY drives the bare staging/scorecard, so a standalone BARE run
+#: would pick the bare assets but still stage the full record.
+BARE = SUMMARY_ONLY
+if SUMMARY_ONLY:
+    WITH_SUMMARY = True
+if SUMMARY_ONLY and not PROBABILITY:
+    raise SystemExit("SUMMARY_ONLY is built for ANSWER=probability or survival")
 SUMMARY_DIR = DATA_DIR / "summaries"
 #: The CT task's data and id map (id -> person_id): this task reuses its ids, labels, splits and pools.
 CT_DATA_DIR = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ct-v1_7")
@@ -83,7 +101,7 @@ AGENTIC = PROGRAM_MODE == "agentic"
 
 #: The labeling program the optimizer starts from (program-v0), and the files it may edit.
 #: The seed is the plain question and the folder layout, no clinical hints (Phil 2026-10-21); tools/ starts empty.
-_ANSWER_SUFFIX = "_survival" if SURVIVAL else "_probability" if PROBABILITY else ""
+_ANSWER_SUFFIX = ((("_survival" if SURVIVAL else "_probability") + ("_bare" if BARE else "")) if PROBABILITY else "")
 SEED_PROGRAM_DIR = HERE / (f"program_agentic{_ANSWER_SUFFIX}" if AGENTIC else "program")
 EDITABLE_FILES = ("instructions.md", "tools") if AGENTIC else ("label.py",)  # DECIDE: what the optimizer may change
 CONTRACT_FILES: tuple[str, ...] = ()  # files shipped with the program that it must never change
@@ -169,7 +187,8 @@ if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: handy for
 #: Its own folder for the yes/no version: the old folder (alo-tasks/<task>) holds the probability-era runs and its
 #: program-v0 is the probability seed, so reusing it would start a new run from the wrong instructions (2026-10-28).
 #: Probability runs get their own folders too (program-v0 there is the probability seed), one per input arm.
-_DEFAULT_WORKDIR = ((f"{TASK_NAME}-surv" if SURVIVAL else f"{TASK_NAME}-prob") + ("-summary" if WITH_SUMMARY else "")
+_DEFAULT_WORKDIR = ((f"{TASK_NAME}-surv" if SURVIVAL else f"{TASK_NAME}-prob")
+                    + ("-summaryonly" if SUMMARY_ONLY else "-summary" if WITH_SUMMARY else "")
                     if PROBABILITY else f"{TASK_NAME}-yesno")
 WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / _DEFAULT_WORKDIR)).resolve()
 

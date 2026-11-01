@@ -37,7 +37,7 @@ GUIDE_SRC = Path(__file__).resolve().parent / "context" / "patient_data_guide.md
 #: ``prompt`` below, or a pass run under the old wording is served again. The guide's hash is part of it, so an
 #: edit to the guide also stops old passes being served.
 PROMPT_TAG = (f"died-2yr-ehr-v3-guide-{hashlib.sha256(GUIDE_SRC.read_bytes()).hexdigest()[:10]}"
-              + ("-summary-v1" if config.WITH_SUMMARY else "")
+              + ("-summaryonly-bare-v1" if config.SUMMARY_ONLY else "-summary-v1" if config.WITH_SUMMARY else "")
               + ("-surv-v1" if config.SURVIVAL else "-prob-v1" if config.PROBABILITY else ""))
 #: Probability mode: at most this many reasons are kept per answer (the prompt asks for 3 to 5).
 MAX_REASONS = 5
@@ -138,6 +138,48 @@ def reasons_of(value) -> list[dict]:
     return out[:MAX_REASONS]
 
 
+#: config.SUMMARY_ONLY: the eval set's summary-arm opening for Astra/Argon/MedGemma, verbatim (vista_eval_vlm main
+#: src/evalset/cards/death.py summary_opening); scripts/check_task.py checks it against that file when it is there.
+BARE_OPENING = ("You are given a summary of this patient's record, written from the record up to one week before "
+                "first treatment.")
+
+
+def bare_prompt(call, paths, pass_id: str) -> str:
+    """config.SUMMARY_ONLY: the eval set's summary-arm prompt (opening, PATIENT SUMMARY, Question), with only the
+    answer changed from yes/no to a probability (or, for survival, a curve), plus the minimum a session needs to run
+    at all: where the program and its tools are, that the summary is also a file, and where to write. No cohort
+    numbers, no folder layout, no record guide, no hints (Phil 2026-11-01)."""
+    summary = (config.SUMMARY_DIR / f"{call.payload['id']}.txt").read_text(encoding="utf-8").strip()
+    if config.SURVIVAL:
+        question = ("Question: How likely is this patient to be alive, from any cause of death, at each point in the "
+                    "years after the last day of their record? Give a survival curve.")
+        answer_rules = (
+            f'{{"survival_curve": [[<months after the record\'s last day>, <chance alive then, 0 to 1>], ...], '
+            f'"reasons": [{{"fact": "<one fact from the summary>", "date": "<its date, YYYY-MM-DD, if it has one>"}}, '
+            f'...], "pass_id": "{pass_id}"}}. The curve is points: months from 0 and strictly increasing, the chance '
+            f"never rising, every chance between 0 and 1, running to at least month {ASK_MONTHS}, up to {MAX_POINTS} "
+            f"points. It is read as a step curve. A curve that rises, leaves 0 to 1, or stops early counts as no "
+            f"answer. In \"reasons\" list the 3 to 5 facts that shaped the curve most.")
+    else:
+        keys = ", ".join(f'"{key}": <a whole number from 0 to 100>' for key, _gold, _words in config.HORIZONS)
+        question = ("Question: Will this patient die, from any cause, within 1 year of their cancer diagnosis? And "
+                    "within 2 years?")
+        answer_rules = (
+            f'{{{keys}, "reasons": [{{"fact": "<one fact from the summary>", "date": "<its date, YYYY-MM-DD, if it '
+            f'has one>"}}, ...], "pass_id": "{pass_id}"}}. Each number is your probability in percent, 0 to 100; a '
+            f"number outside that range, or a word, counts as no answer. In \"reasons\" list the 3 to 5 facts from the "
+            f"summary that moved your probabilities most.")
+    return (
+        f"Follow the instructions in {paths.program}/{ENTRY}; any tools are in {paths.program}/tools/ (run Python "
+        f"with python3 -B). The summary below is also the file {paths.call}/{SUMMARY}.\n\n"
+        f"{BARE_OPENING}\n\nPATIENT SUMMARY:\n{summary}\n\n"
+        f"{question}\n\n"
+        f"Before answering, write {paths.call}/{FINDINGS}: a short note of what you used, with no names, dates or "
+        f"other identifiers. Then write {paths.call}/{OUTPUT} containing exactly one JSON object on one line: "
+        + answer_rules
+    )
+
+
 def program_spec(forbidden):
     from isolation.pass_outputs import Call
     from isolation.program_runner import ProgramSpec
@@ -148,6 +190,11 @@ def program_spec(forbidden):
     def stage(call, folder, pass_id):
         # Files read-only so the session cannot edit its evidence; the folder stays writable so a resume can
         # clear it.
+        if config.SUMMARY_ONLY:  # the summary and nothing else: no record, no OMOP tables, no guide
+            Path(folder).chmod(0o755)
+            shutil.copy2(config.SUMMARY_DIR / f"{call.payload['id']}.txt", Path(folder) / SUMMARY)
+            (Path(folder) / SUMMARY).chmod(0o444)
+            return
         dest = Path(folder) / RECORD
         dest.mkdir(parents=True)
         # Readable by others: on Vertex the container runs as the credential's owner, not the host user, and a
@@ -167,6 +214,8 @@ def program_spec(forbidden):
         # The per-call wrapper: not optimized. Container paths only. The facts every version needs (the question,
         # the cutoff, the folder layout, the death rate) live here; the method lives in instructions.md.
         rec = f"{paths.call}/{RECORD}"
+        if config.SUMMARY_ONLY:  # the bare eval-set summary prompt, answer changed to a probability/curve
+            return bare_prompt(call, paths, pass_id)
         if config.SURVIVAL:
             question = (
                 f"The question: how likely is this patient to be alive, from any cause of death, at each point in the "

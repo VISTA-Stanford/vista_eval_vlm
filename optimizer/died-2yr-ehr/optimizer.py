@@ -268,11 +268,11 @@ def stage_files(layout: Layout) -> None:
     shutil.copy2(HERE / "worker.py", layout.worker_dir / "worker.py")
     layout.inputs.mkdir(parents=True, exist_ok=True)
     brief = config.TASK_BRIEF.read_text(encoding="utf-8")
-    if config.AGENTIC:
+    if config.AGENTIC and not config.SUMMARY_ONLY:  # summary only: no record, so no data map, and the brief is bare
         # The optimizer reads the same data map every session gets, verbatim, at the end of its brief.
         from agentic import GUIDE, GUIDE_SRC
         brief += f"\n\n---\n\n# Appendix: `{GUIDE}`, as every session sees it\n\n" + GUIDE_SRC.read_text(encoding="utf-8")
-    if config.WITH_SUMMARY:
+    if config.WITH_SUMMARY and not config.SUMMARY_ONLY:
         brief += (
             "\n\n---\n\n# This run: each record also holds `summary.txt`\n\n"
             "Every session's record folder also holds `summary.txt`: a summary of the same record, written earlier "

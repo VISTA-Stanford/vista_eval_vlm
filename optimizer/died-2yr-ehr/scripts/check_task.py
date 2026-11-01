@@ -112,24 +112,34 @@ def cmd_check() -> int:
     src = ad.patient_dir(pid)
     side = {p.name for p in (config.DATA_DIR / "registry_dates").glob("*")} if (config.DATA_DIR / "registry_dates").exists() else set()
 
-    # 1. staging copies the record files, read-only, and nothing else
+    # 1. staging copies the right files, read-only, and nothing else
     with tempfile.TemporaryDirectory() as tmp:
         spec.stage(Call(pid, {"id": pid}), Path(tmp), "p0")
-        staged = Path(tmp) / agentic.RECORD
-        names = {p.name for p in staged.iterdir()}
-        want = {p.name for p in src.iterdir()} | ({agentic.SUMMARY} if config.WITH_SUMMARY else set())
-        ro = all(not (p.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)) for p in staged.iterdir())
-        everything = {p.name for p in Path(tmp).rglob("*")}
-        report("staging copies exactly the patient's record files", names == want, f"{len(names)} files")
-        report("staged files are read-only", ro)
-        guide = Path(tmp) / agentic.GUIDE
-        report("the data guide sits beside the record, read-only, byte-identical to context/patient_data_guide.md",
-               guide.is_file() and guide.read_bytes() == agentic.GUIDE_SRC.read_bytes()
-               and not guide.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-               and {p.name for p in Path(tmp).iterdir()} == {agentic.RECORD, agentic.GUIDE})
-        report("nothing named registry_dates, and no side-file content path, in the session folder",
-               "registry_dates" not in everything and not any("registry_dates" in str(p) for p in Path(tmp).rglob("*")),
-               f"side folder present beside patients/: {bool(side)}")
+        if config.SUMMARY_ONLY:  # the summary and nothing else: no record folder, no data guide (the bare arm)
+            top = {p.name for p in Path(tmp).iterdir()}
+            summ = Path(tmp) / agentic.SUMMARY
+            ro = summ.is_file() and not (summ.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+            report("summary-only staging copies just summary.txt (no record folder, no data guide)",
+                   top == {agentic.SUMMARY}, str(sorted(top)))
+            report("the staged summary is read-only", ro)
+            report("no data guide and no record folder reach a summary-only session",
+                   not (Path(tmp) / agentic.GUIDE).exists() and not (Path(tmp) / agentic.RECORD).exists())
+        else:
+            staged = Path(tmp) / agentic.RECORD
+            names = {p.name for p in staged.iterdir()}
+            want = {p.name for p in src.iterdir()} | ({agentic.SUMMARY} if config.WITH_SUMMARY else set())
+            ro = all(not (p.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)) for p in staged.iterdir())
+            everything = {p.name for p in Path(tmp).rglob("*")}
+            report("staging copies exactly the patient's record files", names == want, f"{len(names)} files")
+            report("staged files are read-only", ro)
+            guide = Path(tmp) / agentic.GUIDE
+            report("the data guide sits beside the record, read-only, byte-identical to context/patient_data_guide.md",
+                   guide.is_file() and guide.read_bytes() == agentic.GUIDE_SRC.read_bytes()
+                   and not guide.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+                   and {p.name for p in Path(tmp).iterdir()} == {agentic.RECORD, agentic.GUIDE})
+            report("nothing named registry_dates, and no side-file content path, in the session folder",
+                   "registry_dates" not in everything and not any("registry_dates" in str(p) for p in Path(tmp).rglob("*")),
+                   f"side folder present beside patients/: {bool(side)}")
 
     # 2. a stray file or folder in a patient folder stops staging (planted in a copy of the data, never in place)
     with tempfile.TemporaryDirectory() as tmp:
@@ -167,7 +177,15 @@ def cmd_check() -> int:
     from isolation.program_runner import CallPaths
 
     print("\n--- per-call prompt ---")
-    print(spec.prompt(Call(pid, {"id": pid}), "label", CallPaths(program="/workspace/program", call="/workspace/call", ro={}), "PASS_ID"))
+    _p = spec.prompt(Call(pid, {"id": pid}), "label",
+                     CallPaths(program="/workspace/program", call="/workspace/call", ro={}), "PASS_ID")
+    if config.SUMMARY_ONLY:  # the summary-only prompt embeds the patient's real summary; never print PHI to the output
+        _s = (config.SUMMARY_DIR / f"{pid}.txt").read_text(encoding="utf-8").strip()
+        if _s and _s in _p:
+            _p = _p.replace(_s, "<<patient summary — redacted from this printout>>")
+        else:  # normalization drift: suppress the whole prompt rather than risk printing the real summary
+            _p = "<<summary-only prompt suppressed: could not confirm the embedded summary was redacted>>"
+    print(_p)
     print("--- end ---\n")
     print("ALL PASS" if not bad else f"{bad} FAILED")
     return 1 if bad else 0
@@ -225,34 +243,43 @@ def check_probability(report, spec) -> None:
     want = sum(roc_auc_score([rows[i][field] for i in pool], probs(key)) for key, field, _w in config.HORIZONS) / 2
     report("task score on the VAL pool == mean of sklearn's AUROC at 1 and 2 years",
            abs(score.primary_metric.value - want) < 1e-9, f"{score.primary_metric.value:.4f} vs {want:.4f}")
-    briers = [(score.breakdown[w.replace(" ", "")]["brier"],
-               round(brier_score_loss([rows[i][field] for i in pool], probs(key)), 4)) for key, field, w in config.HORIZONS]
-    report("Brier per horizon == sklearn's", all(a == b for a, b in briers), str(briers))
     thr = {"died_within_1_year": 718 / 3886, "died_within_2_years": 1188 / 3886}
     want_right = {i: None if answers[i]["error"] else all(
         (answers[i][key] >= thr[key]) == bool(rows[i][field]) for key, field, _w in config.HORIZONS) for i in pool}
     report("per-example right = on the correct side of each horizon's TRAIN death rate, failed = None",
            correct == want_right, f"{sum(v is True for v in correct.values())} right of {len(pool)}")
-    one = score.breakdown["1year"]
-    report("breakdown counts ties: distinct values and share on the most common value",
-           one["distinct_values"] == len({p for p in probs("died_within_1_year")})
-           and abs(one["share_on_most_common_value"] - max(probs("died_within_1_year").count(v) for v in
-                                                           set(probs("died_within_1_year"))) / len(pool)) < 1e-3)
+    if config.SUMMARY_ONLY:
+        # Bare arm: the scorecard is the headline AUROC and counts only (no calibration, Brier, mean-prob or ties),
+        # so the optimizer samples TRAIN for the rest (Phil 2026-11-01). AUROC and the parser are still checked above.
+        b = score.breakdown
+        report("bare scorecard: AUROC per horizon plus n / program_errors / p_1yr_above_p_2yr, and nothing more",
+               set(b) == {"n", "program_errors", "p_1yr_above_p_2yr", "1year", "2years"}
+               and all(set(b[w]) == {"auroc"} for w in ("1year", "2years")), str(sorted(b)))
+    else:
+        briers = [(score.breakdown[w.replace(" ", "")]["brier"],
+                   round(brier_score_loss([rows[i][field] for i in pool], probs(key)), 4))
+                  for key, field, w in config.HORIZONS]
+        report("Brier per horizon == sklearn's", all(a == b for a, b in briers), str(briers))
+        one = score.breakdown["1year"]
+        report("breakdown counts ties: distinct values and share on the most common value",
+               one["distinct_values"] == len({p for p in probs("died_within_1_year")})
+               and abs(one["share_on_most_common_value"] - max(probs("died_within_1_year").count(v) for v in
+                                                               set(probs("died_within_1_year"))) / len(pool)) < 1e-3)
 
-    # 3c. calibration bins (0.0-0.1 ... 0.9-1.0, with p = 1.0 in the top bin) and the impossible 1yr > 2yr count,
-    #     on hand-built answers over the first ten VAL patients
-    ten = [f"hand{k:02d}" for k in range(10)]  # made-up patients with their own gold, scored directly
-    p1 = [0.0, 0.05, 0.1, 0.35, 0.5, 0.99, 1.0, 1.0, 0.3, 0.2]
-    p2 = [0.1, 0.05, 0.2, 0.30, 0.6, 1.0, 1.0, 0.9, 0.3, 0.1]  # 1yr above 2yr at positions 3, 7, 9
-    hand = {i: {"died_within_1_year": a, "died_within_2_years": b, "error": None, "reason": "", "reasons": [],
-                "findings_log": None} for i, a, b in zip(ten, p1, p2)}
-    hgold = {i: {"label_1yr": k % 2, "label": 1 if k % 2 else k % 3 == 0} for k, i in enumerate(ten)}
-    hs = ad.TaskScorer()._score_probability(hgold, hand, {}, "val")
-    bins = hs.breakdown["1year"]["calibration_by_decile"]
-    want_bins = {"p0.0:n": 2, "p0.1:n": 1, "p0.2:n": 1, "p0.3:n": 2, "p0.5:n": 1, "p0.9:n": 3}
-    report("calibration bins: tenths, p = 1.0 in the top bin; impossible 1yr > 2yr pairs counted",
-           {k: v for k, v in bins.items() if k.endswith(":n")} == want_bins and hs.breakdown["p_1yr_above_p_2yr"] == 3,
-           f"{hs.breakdown['p_1yr_above_p_2yr']} impossible pairs")
+        # 3c. calibration bins (0.0-0.1 ... 0.9-1.0, with p = 1.0 in the top bin) and the impossible 1yr > 2yr count,
+        #     on hand-built answers over the first ten VAL patients
+        ten = [f"hand{k:02d}" for k in range(10)]  # made-up patients with their own gold, scored directly
+        p1 = [0.0, 0.05, 0.1, 0.35, 0.5, 0.99, 1.0, 1.0, 0.3, 0.2]
+        p2 = [0.1, 0.05, 0.2, 0.30, 0.6, 1.0, 1.0, 0.9, 0.3, 0.1]  # 1yr above 2yr at positions 3, 7, 9
+        hand = {i: {"died_within_1_year": a, "died_within_2_years": b, "error": None, "reason": "", "reasons": [],
+                    "findings_log": None} for i, a, b in zip(ten, p1, p2)}
+        hgold = {i: {"label_1yr": k % 2, "label": 1 if k % 2 else k % 3 == 0} for k, i in enumerate(ten)}
+        hs = ad.TaskScorer()._score_probability(hgold, hand, {}, "val")
+        bins = hs.breakdown["1year"]["calibration_by_decile"]
+        want_bins = {"p0.0:n": 2, "p0.1:n": 1, "p0.2:n": 1, "p0.3:n": 2, "p0.5:n": 1, "p0.9:n": 3}
+        report("calibration bins: tenths, p = 1.0 in the top bin; impossible 1yr > 2yr pairs counted",
+               {k: v for k, v in bins.items() if k.endswith(":n")} == want_bins and hs.breakdown["p_1yr_above_p_2yr"] == 3,
+               f"{hs.breakdown['p_1yr_above_p_2yr']} impossible pairs")
 
     # 3d. the optimizer's mistakes file carries each TRAIN patient's probabilities and reasons
     from engine.schemas import ArtifactRef, RunArtifacts

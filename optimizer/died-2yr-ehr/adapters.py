@@ -97,12 +97,16 @@ def pools() -> dict[str, frozenset]:
     if SURVIVAL:  # 390 of 400 TRAIN and 197 of 200 VAL have an os_survival time (2026-11-01)
         key = survival_key()
         out = {k: frozenset(i for i in v if i in key) for k, v in out.items()}
+    if config.SUMMARY_ONLY:  # the summary is the whole input, so only patients with a summary at their cutoff
+        out = {k: frozenset(i for i in v if (config.SUMMARY_DIR / f"{i}.txt").is_file()) for k, v in out.items()}
     return out
 
 
 def rows_for(inputs: RunInputs) -> list[dict]:
     """The examples a pass runs: a staged batch file (scheduled runs), or the whole split."""
     rows = read_split(inputs.split)
+    if config.SUMMARY_ONLY:  # a summary-only arm runs only patients with a summary at their cutoff
+        rows = [r for r in rows if (config.SUMMARY_DIR / f"{r['id']}.txt").is_file()]
     ref = Path(inputs.input_ref)
     if ref.suffix == ".json" and ref.is_file():
         wanted = set(json.loads(ref.read_text(encoding="utf-8"))["ids"])
@@ -417,9 +421,19 @@ class TaskScorer:
     def _score_probability(self, gold: dict, answers: dict, task_config: dict, split: str) -> ScoreResult:
         per = probability_scores(gold, answers)
         value = sum(h["auroc"] for h in per.values()) / len(per) if answers else 0.0
+        (k1, *_), (k2, *_) = HORIZONS
+        if config.SUMMARY_ONLY:  # bare: the headline AUROC and counts only; no calibration, Brier, mean-prob or ties
+            return ScoreResult(                 # it keeps the raw per-patient gold+prob and samples TRAIN for the rest
+                primary_metric=PrimaryMetric(name=METRIC_NAME, value=value, higher_is_better=True),
+                breakdown={"n": len(answers),
+                           "program_errors": sum(1 for a in answers.values() if a["error"]),
+                           "p_1yr_above_p_2yr": sum(1 for a in answers.values()
+                                                    if not a["error"] and prob(a, k1) > prob(a, k2)),
+                           **{w: {"auroc": round(per[w]["auroc"], 4)} for w in per}},
+                task_config={**task_config, "_split": split},
+            )
         for h in per.values():
             h["auroc"] = round(h["auroc"], 4)
-        (k1, *_), (k2, *_) = HORIZONS
         return ScoreResult(
             primary_metric=PrimaryMetric(name=METRIC_NAME, value=value, higher_is_better=True),
             breakdown={"n": len(answers),
@@ -533,19 +547,40 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
         entries = []
         surv_wrong = TaskScorer().survival_mistakes(rows, answers) if SURVIVAL else {}
         for i, a in sorted(answers.items()):
+            if config.SUMMARY_ONLY and not SURVIVAL:  # every TRAIN patient, right or wrong, with its summary and its
+                files, traces = [], []    # traces (no record, no prebuilt analysis): the optimizer samples the rest.
+                # (survival + summary-only uses the survival session's own bare branch; this one builds probabilities)
+                dest = records / f"{i}-summary.txt"
+                _copy_over(config.SUMMARY_DIR / f"{i}.txt", dest)
+                files.append(str(dest))
+                log = Path(a["findings_log"]) if a.get("findings_log") else None
+                for f in _trace_files(artifacts, i) + ([log] if log and log.is_file() else []):
+                    tdest = records / f"{i}-trace-{f.name}"
+                    _copy_over(f, tdest)
+                    traces.append(str(tdest))
+                wrong_at = [words for key, field, words in HORIZONS if not right(a, key, rows[i][field])]
+                entries.append({"id": i,
+                                **{f"gold_{key}": rows[i][field] for key, field, _w in HORIZONS},
+                                **{f"probability_{key}": (None if a["error"] else round(prob(a, key), 3))
+                                   for key, _f, _w in HORIZONS},
+                                "error": a["error"], "reasons": a.get("reasons") or [],
+                                "mistake": bool(a["error"]) or bool(wrong_at), "wrong_at": wrong_at,
+                                "record_files": files, "trace_files": traces})
+                continue
             if SURVIVAL:
                 wrong_at = ["curve worse than the average curve"] if surv_wrong[i] else []
             else:
                 wrong_at = [words for key, field, words in HORIZONS if not right(a, key, rows[i][field])]
             mistake = bool(a["error"]) or bool(wrong_at)
             files, traces = [], []
-            if mistake:
+            if mistake and not config.SUMMARY_ONLY:  # summary-only sessions never saw the record; never leak it
                 from agentic import record_files  # the same whitelist the sessions' staging uses
 
                 for f in record_files(patient_dir(i)):
                     dest = records / f"{i}-{f.name}"
                     _copy_over(f, dest)
                     files.append(str(dest))
+            if mistake:
                 if config.WITH_SUMMARY:  # the session's summary.txt, so the optimizer sees what it saw
                     dest = records / f"{i}-summary.txt"
                     _copy_over(config.SUMMARY_DIR / f"{i}.txt", dest)
