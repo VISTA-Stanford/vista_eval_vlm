@@ -88,8 +88,8 @@ byte-identical to before (checked 2026-11-01).
 
 | Decision | Answer |
 |---|---|
-| Answer | a survival curve from the record's last day: `survival_curve` = points `[months, chance alive 0-1]`, months from 0 strictly increasing, never rising, to month 120 asked (unreadable only if it stops before TRAIN's window end, 74.5 months), up to 2,000 points; read as a step curve (1 before the first point); plus 3-5 `reasons` |
-| Gold | v1.7 `os_survival` (`time_to_event_days`, `event_observed`; clock first treatment - 7 days, the record's last day) in `survival.jsonl` (`scripts/build_data.py survival`). 5,409 of 5,549 patients have it: TRAIN 3,788, VAL 796, TEST 825; pools TRAIN 390, VAL 197. The rest are left out of survival mode |
+| Answer | a survival curve from the record's last day: `survival_curve` = points `[months, chance alive 0-1]`, months from 0 strictly increasing, never rising, to month 120 asked (unreadable only if it stops before TRAIN's window end, about 74.6 months), up to 2,000 points; read as a step curve (1 before the first point); plus 3-5 `reasons` |
+| Gold | v1.7 `os_survival` (`time_to_event_days`, `event_observed`) in `survival.jsonl` (`scripts/build_data.py survival`), time counted from each record's own cut (`cutoffs.jsonl`): for 356 patients today's clock (first treatment - 7 days) is later than the record's cut (median 27 days, up to 475; first-treatment dates moved after the export), so their time is today's time plus that gap (Phil 2026-11-01). 5,482 of 5,549 patients have it: TRAIN 3,836, VAL 804, TEST 842; pools TRAIN 394, VAL 198 (summary-only: the same pools, all VAL 803). The rest are left out of survival mode. (The first key, 2026-11-01 morning, joined to the yes/no label rows and so dropped 73 censored patients and timed the 356 from today's clock; fixed the same day.) |
 | Score | integrated Brier, lower is better (the climb score): censoring-weighted Brier on months 1-120 kept inside vista-eval's stable range (0.999 x 90th percentile of TRAIN death times, capped below the last death scored; months 1-74 here), trapezoid / span. C-index over all follow-up with risk = minus the curve's mean over the scoring months (minus restricted mean survival: the Cox order for Cox curves). Brier and time-dependent AUC at 12/24/36/60 months reported. Plain Python in `survival_metrics.py`, checked equal to scikit-survival |
 | Reference | the average curve (TRAIN Kaplan-Meier) scored on the same patients in every breakdown |
 | Unreadable | a failed session or unreadable curve stops the run right after that pass, before it is scored (`run.survival_after_pass`, the engine's after-pass hook, reason `unreadable_curve`; the last round's VAL pass included). `run.stop_rule` also refuses a resumed run with one in its finished passes. `score-val` records no score when any curve is unreadable. Network stops never count: the engine halts those passes as resumable |
@@ -104,6 +104,19 @@ byte-identical to before (checked 2026-11-01).
 
 Python 3.12 for the check: scikit-survival does not build on the engine's 3.14 here (its `ecos` dependency needs a
 compiler). The engine itself runs survival mode on 3.14: the scorer needs no new package.
+
+### Survival, summary-only bare (`ANSWER=survival SUMMARY_ONLY=1`, Phil 2026-11-01)
+
+On the shared summary-only foundation (2413631). Each session gets only `summary.txt`, under the eval set's Astra/Argon
+summary prompt verbatim (opening + PATIENT SUMMARY + Question, `src/evalset/cards/death.py` on main) with the survival
+question and curve format in place of yes/no; no record, record guide, cohort survival numbers, persona or hints. The
+optimizer's brief and instructions (`context/task_agentic_survival_bare.md`, `prompts/optimizer_instructions_survival_bare.md`)
+keep the task, what the session sees, the curve format and the score, nothing else; its round report is the integrated
+Brier and counts only. Mistake sampling is kept (worse than the average curve on that patient), and every TRAIN patient,
+right or wrong, comes with its summary, findings note and transcript; no prebuilt tools. Pools TRAIN 394, VAL 198; all VAL
+803. Work folder `alo-tasks/died-2yr-ehr-surv-summaryonly`; run `surv-summaryonly-r1` (`run_on_vm.sh` names it from
+`SUMMARY_ONLY=1`). `check_task.py check` adds: the prompt carries the eval-set text verbatim (read from origin/main), and
+no cohort number or hint is in the prompt, seed, brief, instructions or per-round message.
 
 ## Reference scores (v1.7 linear probes, VAL AUROC; not comparable with the task's balanced accuracy)
 
