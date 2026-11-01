@@ -80,6 +80,31 @@ yes/no stays the default, and its prompt and prompt tag are byte-identical to be
     python scripts/check_reasons.py --run <work folder>                   share of reasons in a real file, pre-cutoff, found on that date
     ANSWER=probability python run.py rescore --run <work folder>          $0: each VAL pass per horizon (AUROC, ties, Brier)
 
+## Survival version (`ANSWER=survival`, Phil 2026-11-01)
+
+Spec: `planning/vista_eval_vlm/2026-11-01-died-ehr-survival.md` on the mount. Extends the probability version's run
+settings (rounds, TRAIN schedule, no-new-best and dollar stops); yes/no and probability prompts and tags are
+byte-identical to before (checked 2026-11-01).
+
+| Decision | Answer |
+|---|---|
+| Answer | a survival curve from the record's last day: `survival_curve` = points `[months, chance alive 0-1]`, months from 0 strictly increasing, never rising, to month 120 asked (unreadable only if it stops before TRAIN's window end, 74.5 months), up to 2,000 points; read as a step curve (1 before the first point); plus 3-5 `reasons` |
+| Gold | v1.7 `os_survival` (`time_to_event_days`, `event_observed`; clock first treatment - 7 days, the record's last day) in `survival.jsonl` (`scripts/build_data.py survival`). 5,409 of 5,549 patients have it: TRAIN 3,788, VAL 796, TEST 825; pools TRAIN 390, VAL 197. The rest are left out of survival mode |
+| Score | integrated Brier, lower is better (the climb score): censoring-weighted Brier on months 1-120 kept inside vista-eval's stable range (0.999 x 90th percentile of TRAIN death times, capped below the last death scored; months 1-74 here), trapezoid / span. C-index over all follow-up with risk = minus the curve's mean over the scoring months (minus restricted mean survival: the Cox order for Cox curves). Brier and time-dependent AUC at 12/24/36/60 months reported. Plain Python in `survival_metrics.py`, checked equal to scikit-survival |
+| Reference | the average curve (TRAIN Kaplan-Meier) scored on the same patients in every breakdown |
+| Unreadable | a failed session or unreadable curve stops the run right after that pass, before it is scored (`run.survival_after_pass`, the engine's after-pass hook, reason `unreadable_curve`; the last round's VAL pass included). `run.stop_rule` also refuses a resumed run with one in its finished passes. `score-val` records no score when any curve is unreadable. Network stops never count: the engine halts those passes as resumable |
+| Mistake | a curve that did worse on that patient than the average curve (its own censoring-weighted Brier over the scoring months) |
+| Seed, brief, instructions | `program_agentic_survival/`, `context/task_agentic_survival.md`, `prompts/optimizer_instructions_survival.md` |
+| Work folder | `alo-tasks/died-2yr-ehr-surv-summary` (`-surv` without the summary); run `surv-summary-r1` |
+| Baselines | vista-eval `configs/runs/v1_7/survival_monthly_grid/` (clinical Cox and XGBoost survival, clinical LLM Cox, patient-summary Cox, radiology-text and MOTOR probes re-fitted) write per-patient VAL and TEST curves to `results/v1_7/survival_monthly_grid/`; `score_baselines.py survival` scores them with `survival_metrics.py` |
+
+    ANSWER=survival TASK_DATA_DIR=/tmp/synth uv run -p 3.12 --project $AGENTIC_LABEL_OPT --with scikit-learn --with scikit-survival --with pandas --with pyarrow python scripts/check_task.py check
+    ANSWER=survival TASK_DATA_DIR=/tmp/synth uv run --project $AGENTIC_LABEL_OPT python run.py dry-run --iterations 4
+    python scripts/score_baselines.py survival --ids pool|val --out <file>     needs survival.jsonl and the grid rows
+
+Python 3.12 for the check: scikit-survival does not build on the engine's 3.14 here (its `ecos` dependency needs a
+compiler). The engine itself runs survival mode on 3.14: the scorer needs no new package.
+
 ## Reference scores (v1.7 linear probes, VAL AUROC; not comparable with the task's balanced accuracy)
 
 Reproduction: clinical_pretx 0.7766 published on all 1,124 VAL patients with a label, recomputed 0.7766.
