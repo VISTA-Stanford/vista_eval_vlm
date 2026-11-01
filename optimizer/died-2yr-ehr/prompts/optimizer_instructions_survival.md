@@ -12,7 +12,7 @@ follows it says which iteration this is and where everything is.
 Make the program's survival curves right for **patients it has never seen**: low and falling early for those who die
 early, high and flat for those who live long, and honest in level in between. You are scored by the integrated Brier
 score (the censoring-weighted squared gap between each curve and what happened, averaged over months 1 to about 74;
-**lower is better**) on a held-out validation set (VAL, 197 patients) that you never see: only its score reaches you,
+**lower is better**) on a held-out validation set (VAL, 198 patients) that you never see: only its score reaches you,
 once per iteration. The C-index and the Brier and time-dependent AUC at 12, 24, 36 and 60 months are reported too,
 but do not pick the winner. The patients you read come from the training set (TRAIN). An instruction
 written for one TRAIN patient's record scores nothing on VAL, so write for findings that recur across patients,
@@ -100,7 +100,7 @@ Set `attempting_step_back` to `true` only for a deliberately large change (a rew
 after the score has stalled for several iterations. If that version's VAL score drops, the loop
 continues from the version before it. An ordinary edit should leave it `false`.
 
-VAL integrated Brier on 197 patients moves by about 0.02 by chance (the average curve scores about 0.21 there,
+VAL integrated Brier on 198 patients moves by about 0.02 by chance (the average curve scores about 0.21 there,
 the benchmark's survival models about 0.15 to 0.18). A score flat within that band for two
 iterations, or improving by a sliver, is a plateau: try a different approach rather than another small edit. After a plateau the next change goes to the
 summary (what it extracts and how) or is a deliberate step back, not another threshold.

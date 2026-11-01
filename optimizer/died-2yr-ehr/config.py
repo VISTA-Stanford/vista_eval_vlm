@@ -128,9 +128,10 @@ PROGRAM_CALL_TIMEOUT_SECONDS = 900
 #: run.py's no-new-best rule from HIGHER_IS_BETTER.
 METRIC_NAME = "integrated_brier" if SURVIVAL else "auroc" if PROBABILITY else "balanced_accuracy"  # DECIDE (probability: Phil 2026-10-31)
 HIGHER_IS_BETTER = not SURVIVAL
-#: Survival mode's answer key: {"id", "time_days", "event"} per patient, vista_bench v1.7 os_survival (clock first
-#: treatment - 7 days, the record's last day), written by scripts/build_data.py survival. A patient with no
-#: os_survival row (140 of 5,549) is left out of survival mode: not staged, not scored, not in the pools.
+#: Survival mode's answer key: {"id", "time_days", "event"} per patient, vista_bench v1.7 os_survival with time counted
+#: from each record's own cut (cutoffs.jsonl; for 356 patients today's first-treatment clock is later, Phil 2026-11-01),
+#: written by scripts/build_data.py survival. A patient with no
+#: os_survival row (67 of 5,549) is left out of survival mode: not staged, not scored, not in the pools.
 SURVIVAL_KEY = DATA_DIR / "survival.jsonl"
 
 # --------------------------------------------------------------------------------------------------

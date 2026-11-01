@@ -21,7 +21,7 @@ a report before the cutoff: it is scored on its covered subset, with n reported.
         XGBoost, clinical LLM Cox, the patient-summary probe, the re-fitted radiology-text and MOTOR probes) and the
         average curve (TRAIN Kaplan-Meier), each scored on the task's patients by the agent's own scorer
         (survival_metrics.py): integrated Brier (lower is better) with a 95% bootstrap interval, C-index, Brier and
-        time-dependent AUC at 12/24/36/60 months. Patients with no os_survival time are left out (pool 197, VAL 796).
+        time-dependent AUC at 12/24/36/60 months. Patients with no os_survival time are left out (pool 198, VAL 804).
 
 Needs pandas, numpy and scikit-learn (the vista_eval_vlm radprog environment has them). Reads the CT task's
 private id map (id -> person_id) to join; prints aggregates only, never an id or a row.

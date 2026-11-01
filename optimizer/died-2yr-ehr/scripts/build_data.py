@@ -10,10 +10,10 @@ first treatment - 7 days, written by the shared exporter (vista-onc-labelers com
     export     run the exporter into the local working copy, leak-check it, and archive it to DATA/archive/.
                The first PHI write: an Expensive step that needs Phil's go, so it refuses without --go.
                --dry-run prices the queries instead (no download).
-    survival   query vista_bench v1.7 os_survival (time_to_event_days, event_observed; clock first treatment - 7 days,
-               the same embed_time as the yes/no labels) for every task patient and write DATA/survival.jsonl
-               ({"id", "time_days", "event"}): the survival mode's answer key. A patient with no os_survival row is
-               left out, and counted per split and pool (2026-11-01: 140 of 5,549).
+    survival   query vista_bench v1.7 os_survival (time_to_event_days, event_observed) for every task patient and write
+               DATA/survival.jsonl ({"id", "time_days", "event"}): the survival mode's answer key, time counted from
+               each record's own cut (cutoffs.jsonl; today's clock is later for 356 patients, Phil 2026-11-01). A
+               patient with no os_survival row is left out, and counted per split and pool (67 of 5,549).
     rehydrate  rebuild the local working copy (DATA_DIR) from the mount: splits, pools and every patient folder
                from DATA/archive/tables/, notes.txt in the exporter's format, meta.json from cutoffs.jsonl. No
                BigQuery: for the run VM. The exporter's registry_dates/ side file (raw governing dates, for its leak
@@ -167,12 +167,14 @@ def cmd_cohort(_args) -> int:
     return 0
 
 
+#: One os_survival row per task patient, with its clock date. No join to the yes/no label rows: that join (to
+#: died_any_cause_2_yr rows with a CT) silently dropped 73 task patients whose label row no longer carries a CT in
+#: today's table though they have a survival time (code review 2026-11-01). The clock is checked against the task's
+#: own cutoff instead (cutoffs.jsonl, the day each record is cut), which is what the survival mode needs.
 SURVIVAL_SQL = f"""
-SELECT s.person_id, s.time_to_event_days, s.event_observed, DATE(s.embed_time) = DATE(d.embed_time) AS same_clock
-FROM `{LABEL_TABLE}` s
-JOIN `{LABEL_TABLE}` d ON d.person_id = s.person_id AND d.task = @task AND d.label IN (0, 1)
-  AND d.image_series_uid IS NOT NULL
-WHERE s.task = 'os_survival' AND s.person_id IN UNNEST(@pids)
+SELECT person_id, time_to_event_days, event_observed, DATE(embed_time) AS clock
+FROM `{LABEL_TABLE}`
+WHERE task = 'os_survival' AND person_id IN UNNEST(@pids)
 """
 
 
@@ -182,18 +184,27 @@ def cmd_survival(_args) -> int:
     task_ids = {r["id"] for s in SPLITS for r in read_jsonl(CT_DATA_DIR / "splits" / f"{s}.jsonl")}
     to_id = {int(m["person_id"]): m["id"] for m in read_jsonl(ID_MAP) if m["id"] in task_ids}
     client = bigquery.Client(project=PROJECT)
-    cfg = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("task", "STRING", TASK),
-        bigquery.ArrayQueryParameter("pids", "INT64", sorted(to_id))])
+    cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ArrayQueryParameter("pids", "INT64", sorted(to_id))])
     rows = list(client.query(SURVIVAL_SQL, job_config=cfg).result())
     if len({r["person_id"] for r in rows}) != len(rows):
         raise SystemExit("more than one os_survival row for a patient")
-    if not all(r["same_clock"] for r in rows):
-        raise SystemExit(f"{sum(not r['same_clock'] for r in rows)} patients' os_survival clock differs from the yes/no label's")
+    # Time is counted from each record's own cut (Phil 2026-11-01): for 356 patients today's os_survival clock (first
+    # treatment - 7 days) is later than the day their record was cut (the first-treatment date moved after the export:
+    # median 27 days, up to 475). They were alive through that gap, so time from the cut = time + gap, event unchanged.
+    import datetime as _dt
+
+    cutoffs = {r["id"]: _dt.date.fromisoformat(r["cutoff"]) for r in read_jsonl(MOUNT_DATA_DIR / "cutoffs.jsonl")}
+    gap = {r["person_id"]: (r["clock"] - cutoffs[to_id[r["person_id"]]]).days for r in rows}
+    if any(g < 0 for g in gap.values()):  # a clock before the cut would mean the record runs past the survival start
+        raise SystemExit(f"{sum(g < 0 for g in gap.values())} patients' os_survival clock is before their record's cut")
+    moved = sorted(g for g in gap.values() if g)
+    print(f"os_survival rows: {len(rows)} of {len(to_id)} task patients; clock later than the record's cut for "
+          f"{len(moved)} (median {moved[len(moved) // 2] if moved else 0} days, max {moved[-1] if moved else 0}), "
+          f"their time counted from the cut")
     bad = [r for r in rows if r["time_to_event_days"] is None or r["time_to_event_days"] < 0 or r["event_observed"] not in (0, 1)]
     if bad:
         raise SystemExit(f"{len(bad)} os_survival rows without a usable time and event")
-    out = sorted(({"id": to_id[r["person_id"]], "time_days": float(r["time_to_event_days"]),
+    out = sorted(({"id": to_id[r["person_id"]], "time_days": float(r["time_to_event_days"]) + gap[r["person_id"]],
                    "event": int(r["event_observed"])} for r in rows), key=lambda r: r["id"])
     MOUNT_DATA_DIR.mkdir(parents=True, exist_ok=True)
     with (MOUNT_DATA_DIR / "survival.jsonl").open("w", encoding="utf-8") as f:

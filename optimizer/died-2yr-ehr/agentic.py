@@ -54,11 +54,11 @@ RECORD = "record"
 #: The share of TRAIN patients who died within each horizon (718 and 1,188 of 3,886), stated in the prompt (Phil
 #: 2026-10-21: the cohort's death rate). From splits/train.jsonl; scripts/build_data.py prints it.
 TRAIN_DEATH_RATE = {"1 year": "18.5%", "2 years": "30.6%"}
-#: Survival mode: TRAIN's Kaplan-Meier survival from the record's last day (3,788 TRAIN patients with an os_survival
+#: Survival mode: TRAIN's Kaplan-Meier survival from the record's last day (3,836 TRAIN patients with an os_survival
 #: time), stated in the prompt as the cohort's average curve. scripts/check_task.py recomputes it from the key.
-TRAIN_SURVIVAL = {"1 year": "79.9%", "2 years": "68.1%", "3 years": "60.8%", "5 years": "50.9%", "10 years": "32.5%"}
+TRAIN_SURVIVAL = {"1 year": "80.2%", "2 years": "68.5%", "3 years": "61.2%", "5 years": "51.2%", "10 years": "32.8%"}
 #: Survival mode: the curve the prompt asks for runs to this month; a curve is unreadable only if it stops before
-#: adapters.cover_months() (TRAIN's scoring window end, about 74.5 months).
+#: adapters.cover_months() (TRAIN's scoring window end, about 74.6 months).
 ASK_MONTHS = 120
 #: Survival mode: at most this many points in a curve.
 MAX_POINTS = 2000

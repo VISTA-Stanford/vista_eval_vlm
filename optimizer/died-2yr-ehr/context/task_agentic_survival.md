@@ -58,8 +58,8 @@ was known alive (censored: alive then, unknown after). In the mistakes file, `go
 censored patient, and `gold_months_followed` is the months from the record's last day to that death or last
 contact. Deaths from causes other than cancer count.
 
-Of the training patients, counted from the record's last day, 79.9% were alive at 1 year, 68.1% at 2 years, 60.8%
-at 3, 50.9% at 5 and 32.5% at 10 (the Kaplan-Meier curve of 3,788 TRAIN patients). That curve given to everyone is
+Of the training patients, counted from the record's last day, 80.2% were alive at 1 year, 68.5% at 2 years, 61.2%
+at 3, 51.2% at 5 and 32.8% at 10 (the Kaplan-Meier curve of 3,836 TRAIN patients). That curve given to everyone is
 the **average curve**: the answer with no information about the patient. Follow-up is long: a median of about 37
 months, some patients over 15 years.
 
@@ -95,7 +95,7 @@ Exactly as the benchmark scores its survival models, against those deaths and ce
 - **Brier and time-dependent AUC at 12, 24, 36 and 60 months**, reported.
 
 A session that fails or a curve that is unreadable stops the run (see the contract). The score that counts is on the
-validation patients (VAL, 197 patients), which you never see.
+validation patients (VAL, 198 patients), which you never see.
 
 The TRAIN breakdown gives the integrated Brier and the same numbers for the average curve on the same patients (beat
 that first), the C-index, Brier and AUC at 12, 24, 36 and 60 months, the number of deaths and censored patients, the
