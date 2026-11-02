@@ -37,17 +37,20 @@ misread. Do it with code and grep: a record can hold dozens of notes, and every 
 
 The program has two parts that work as one. In any iteration you may improve either or both.
 
-- **The summary.** Tools under `tools/` (and any instructions or skills that drive them) that read the whole
-  record in code, from the structured tables, the registry fields and the notes, and print a short patient summary
-  for the session: the information needed to judge this patient's risk of dying. It always opens with what is in
-  this record: which sources are present, how much of each and over what dates, and what was looked for and not
-  found. What goes in beyond that is yours to work out from what the sessions find and miss. Keep it efficient:
-  the tool does the reading, and the session reads only its output.
+- **The summary.** Built by the tools under `tools/` together with the session. The tools work in code: they
+  pull the structured tables and registry fields, and they find the clinical notes worth reading, by combining
+  search methods (for example a BM25 ranking written in plain Python or numpy, since no search package is
+  installed; regular expressions; each note's type and date). The session then reads the notes the tools pick, in
+  full, as a clinician would, and writes a short patient summary in its own words: the information needed to judge
+  this patient's risk of dying. Matching patterns alone misses what a note actually says. The summary always opens
+  with what is in this record: which sources are present, how much of each and over what dates, and what was looked
+  for and not found. What goes in beyond that, and which notes are worth reading, is yours to work out from what the
+  sessions find and miss. Never have a session read the whole notes file: a record can hold thousands of notes.
 - **The decision.** `instructions.md`: how the session turns that summary, plus any targeted look back into the
   record, into its yes/no answers.
 
 A session's budget and time limits are in `task.md`; check in the transcripts what sessions actually use. If they
-use a small part of it, a fuller summary is affordable. If the record also holds a ready-made patient summary,
+use a small part of it, spend more of it on reading the right notes. If the record also holds a ready-made patient summary,
 treat it as one input to yours, not a replacement for reading the record.
 
 ## Each iteration, in five steps
