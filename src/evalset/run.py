@@ -367,8 +367,19 @@ class VLLMBackend:
         # the images, as Google's quick-start notebook sends "SYSTEM INSTRUCTION: think silently if needed."
         convs = [([{"role": "system", "content": m.system}] if m.system else [])
                  + [{"role": "user", "content": openai_content(m)}] for m in send]
-        outs = self.llm.chat(convs, self.params, use_tqdm=True) if convs else []
-        res = [{"text": o.outputs[0].text, "log_probs": answer_logprobs(o.outputs[0], self.choice_tokens), "usage":
+        try:
+            outs = self.llm.chat(convs, self.params, use_tqdm=True) if convs else []
+        except ValueError:
+            # vLLM refused an input (11-01: a scan with 1024-px slices ran a prompt past max_model_len). Ask the calls
+            # one at a time, so only the refused one becomes an error row and the run goes on.
+            outs = []
+            for c in convs:
+                try:
+                    outs += self.llm.chat([c], self.params, use_tqdm=False)
+                except ValueError as e:
+                    outs.append(str(e).split("\n", 1)[0][:300])
+        res = [{"text": "", "error": o, "log_probs": None, "usage": {}} if isinstance(o, str) else
+               {"text": o.outputs[0].text, "log_probs": answer_logprobs(o.outputs[0], self.choice_tokens), "usage":
                 {"prompt_tokens": len(o.prompt_token_ids or []), "output_tokens": len(o.outputs[0].token_ids)}}
                for o in outs]
         for i in sorted(bad):  # put the unsent calls back in their places

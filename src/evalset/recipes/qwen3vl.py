@@ -30,6 +30,8 @@ RECIPE = Recipe(
     label_suffix="\n",
     answer_form="final_answer",
     answer_line="Answer with 'Final Answer: yes' or 'Final Answer: no'.",
-    settings=(("temperature", 0.0), ("max_new_tokens", 2000), ("logprobs", 20), ("max_model_len", 32768),
+    # 65,536 context: a few scans store 1,024-px slices (1,024 tokens each, ~52k for 50), answered at native pixels as
+    # Astra was sent them; 512-px scans use ~13k either way.
+    settings=(("temperature", 0.0), ("max_new_tokens", 2000), ("logprobs", 20), ("max_model_len", 65536),
               ("no_video", True), ("max_image_aspect", 200)),  # the processor's limit (smart_resize)
 )

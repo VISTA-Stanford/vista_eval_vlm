@@ -138,11 +138,31 @@ def test_image_the_processor_rejects_becomes_an_error_row_not_a_crash():
     assert get("octomed").setting("max_image_aspect") == 200
 
 
+def test_a_call_vllm_refuses_becomes_an_error_row_and_the_rest_are_answered():
+    # 11-01: a prompt past max_model_len raised ValueError for the whole batch and the run died.
+    r = get("qwen3vl")
+    msgs = [r.build(f"Q{i}? Answer yes or no.", [(None, [_png(512, 512)])]) for i in range(3)]
+
+    class FakeLLM:
+        def chat(self, convs, params, use_tqdm=True):
+            if any("Q1?" in str(c) for c in convs):
+                raise ValueError("The decoder prompt (length 51791) is longer than the maximum model length")
+            o = SimpleNamespace(text="Final Answer: no", token_ids=[0], logprobs=None)
+            return [SimpleNamespace(outputs=[o], prompt_token_ids=[0]) for _ in convs]
+
+    b = object.__new__(run.VLLMBackend)
+    b.recipe, b.llm, b.params, b.choice_tokens = r, FakeLLM(), None, run.ANSWER_TOKENS[r.answer_form]
+    out = b.ask_many(msgs)
+    assert [o["text"] for o in out] == ["Final Answer: no", "", "Final Answer: no"]
+    assert "maximum model length" in out[1]["error"]
+    assert int(r.setting("max_model_len")) >= 50 * 1024 + 2000
+
+
 def test_ablation_variants_apply():
     f = Path("/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/evalset_v1/arms/open_vlm_fair_eval.yaml")
     if not f.exists():
         pytest.skip("arms file lives on the mount")
-    for name, v, n, ctx in [("qwen3vl", "qwen3vl_85", 85, 32768), ("octomed", "octomed_10", 10, 16384),
+    for name, v, n, ctx in [("qwen3vl", "qwen3vl_85", 85, 65536), ("octomed", "octomed_10", 10, 16384),
                             ("octomed", "octomed_50", 50, 32768), ("octomed", "octomed_85", 85, 49152)]:
         r = arms.apply(get(name), v, arms.load(f, v)[0])
         assert r.n_slices == n and int(r.setting("max_model_len")) == ctx and r.name == f"{name}__{v}"
