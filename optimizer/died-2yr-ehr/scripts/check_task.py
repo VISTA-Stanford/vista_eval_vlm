@@ -505,12 +505,15 @@ def check_survival(report, spec) -> None:
     # 4. reading output.json's curve
     cover = ad.cover_months()
     far = max(cover + 1, 130.0)
+    # repair_curve fixes the cosmetic slips a session sometimes makes (a rising blip, a survival just outside 0-1, a
+    # duplicate month) so one bad answer does not throw the pass away (Phil 2026-11-02); a genuinely broken point, an
+    # empty/absent curve, a negative first month, a too-short curve or one over MAX_POINTS still errors.
     cases = [([[0, 1], [12, 0.8], [far, 0.4]], None), ([{"month": 0, "survival": 1}, {"month": far, "survival": 0.5}], None),
              ([[0, 1], [12, 0.8], [24, 0.8], [far, 0.0]], None),                       # flat stretches and 0 are fine
-             ([[0, 1], [12, 0.8], [24, 0.81], [far, 0.5]], "rising_curve"),
-             ([[0, 1], [12, 1.2], [far, 0.5]], "outside_0_1"), ([[0, 1], [12, -0.1], [far, 0]], "outside_0_1"),
+             ([[0, 1], [12, 0.8], [24, 0.81], [far, 0.5]], None),                      # rising blip -> clamped non-rising
+             ([[0, 1], [12, 1.2], [far, 0.5]], None), ([[0, 1], [12, -0.1], [far, 0]], None),  # out of 0-1 -> clamped
              ([[0, 1], [12, 0.8], [cover - 1, 0.5]], "too_short"),
-             ([[0, 1], [12, 0.8], [12, 0.7], [far, 0.5]], "not_a_curve"),              # months must increase
+             ([[0, 1], [12, 0.8], [12, 0.7], [far, 0.5]], None),                       # duplicate month -> deduped
              ([[-1, 1], [far, 0.5]], "not_a_curve"), ([[0, True], [far, 0.5]], "not_a_curve"),
              ([[0, "1"], [far, 0.5]], "not_a_curve"), ([[0, float("nan")], [far, 0.5]], "not_a_curve"),
              ([], "not_a_curve"), ("[[0,1]]", "not_a_curve"), (None, "not_a_curve"),
@@ -527,8 +530,20 @@ def check_survival(report, spec) -> None:
                     and len(got["reasons"]) == 1)
             ok &= good
             why += "" if good else f" case {n}: {got['error']}"
-    report("output.json's curve read only when well formed; rising, outside 0-1, short or malformed = error", ok,
-           f"{len(cases)} cases{why}")
+    report("output.json's curve: cosmetic slips (rising, out-of-0-1, duplicate month) repaired; broken, empty, "
+           "too-short or over-max = error", ok, f"{len(cases)} cases{why}")
+    # a JSON typo in the never-scored reasons must not lose the curve; a truly garbled file is still unreadable
+    with tempfile.TemporaryDirectory() as tmp:
+        bad_reasons = '{"survival_curve": [[0,1],[12,0.8],[%g,0.4]], "reasons": [,], "pass_id": "p"}' % far
+        (Path(tmp) / "s1.json").write_text(bad_reasons)
+        m1 = spec.summarize(tmp, [{"call_id": "c", "outputs": [{"rel": agentic.OUTPUT, "path": str(Path(tmp) / "s1.json")}]}])
+        a1 = json.loads(Path(m1).read_text())["answers"]["c"]
+        (Path(tmp) / "s2.json").write_text("not json at all {{{")
+        m2 = spec.summarize(tmp, [{"call_id": "c", "outputs": [{"rel": agentic.OUTPUT, "path": str(Path(tmp) / "s2.json")}]}])
+        a2 = json.loads(Path(m2).read_text())["answers"]["c"]
+        report("a reasons-field JSON typo is salvaged (curve read); a garbled output is unreadable",
+               a1["error"] is None and a1["curve"] is not None and a2["error"] == "unreadable_output",
+               f"salvaged={a1['error']}, garbled={a2['error']}")
     report("a curve is read as a step curve, 1 before its first point",
            ad.curve_at([[2, 0.9], [5, 0.5]], [1, 2, 4.9, 5, 9]) == [1.0, 0.9, 0.9, 0.5, 0.5])
 

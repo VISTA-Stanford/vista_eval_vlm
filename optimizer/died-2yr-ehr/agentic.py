@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import shutil
 from pathlib import Path
 
@@ -126,6 +127,65 @@ def curve_of(value, cover: float) -> tuple[list[list[float]] | None, str | None]
     if pts[-1][0] < cover:
         return None, "too_short"
     return pts, None
+
+
+def repair_curve(value):
+    """Read the obvious intent of a step survival curve, fixing the cosmetic slips a session sometimes makes so one
+    bad answer in a pass does not throw the whole pass away (Phil 2026-11-02): drop a point whose month is not above
+    the last kept one (a duplicate or out-of-order month), clamp each survival into 0-1, and make the curve never
+    rise (each survival is the lower of itself and the one before). It does NOT guess at substance: if any point is
+    not two finite numbers, or the value is not a non-empty list, it is returned unchanged so curve_of still rejects
+    a genuinely broken or absent curve (and the run still stops). Monotone, in-range curves pass through unchanged."""
+    if not isinstance(value, list) or not value:
+        return value
+    pts = []
+    for p in value:
+        if isinstance(p, dict):
+            p = [p.get("month"), p.get("survival")]
+        if (not isinstance(p, (list, tuple)) or len(p) != 2
+                or any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in p)):
+            return value  # a malformed point: don't guess, let curve_of reject the whole thing
+        pts.append([float(p[0]), float(p[1])])
+    cleaned, last_m, run = [], -math.inf, 1.0
+    for m, s in pts:
+        if m <= last_m:
+            continue
+        run = min(run, min(1.0, max(0.0, s)))
+        cleaned.append([m, run])
+        last_m = m
+    return cleaned
+
+
+def loads_lenient(raw: str) -> dict | None:
+    """Read a session's output.json, and if it is not quite valid JSON, recover what is scored anyway: a typo in the
+    reasons (which are never scored) must not lose the survival curve. On a parse failure, pull the survival_curve
+    array out by matching its brackets and read pass_id with a regex. Returns a dict (whole object when valid, or just
+    the recovered keys), or None when nothing usable is there (the caller then scores it unreadable)."""
+    try:
+        return json.loads(raw)
+    except ValueError:
+        pass
+    out: dict = {}
+    key = raw.find('"survival_curve"')
+    if key != -1:
+        start = raw.find("[", key)
+        if start != -1:
+            depth = 0
+            for j in range(start, len(raw)):
+                if raw[j] == "[":
+                    depth += 1
+                elif raw[j] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            out["survival_curve"] = json.loads(raw[start:j + 1])
+                        except ValueError:
+                            pass
+                        break
+    m = re.search(r'"pass_id"\s*:\s*"([^"]*)"', raw)
+    if m:
+        out["pass_id"] = m.group(1)
+    return out or None
 
 
 def reasons_of(value) -> list[dict]:
@@ -287,9 +347,11 @@ def program_spec(forbidden):
 
     def read_stamp(call, folder):
         try:
-            return json.loads((Path(folder) / OUTPUT).read_text(encoding="utf-8")).get("pass_id")
-        except (OSError, ValueError):
+            raw = (Path(folder) / OUTPUT).read_text(encoding="utf-8")
+        except OSError:
             return None
+        body = loads_lenient(raw)
+        return body.get("pass_id") if isinstance(body, dict) else None
 
     def summarize(archive, receipts):
         answers = {}
@@ -301,11 +363,14 @@ def program_spec(forbidden):
             log = next((o["path"] for o in r.get("outputs", []) if o["rel"] == FINDINGS), None)
             if out and not error:
                 try:
-                    body = json.loads(Path(out).read_text(encoding="utf-8"))
+                    _raw = Path(out).read_text(encoding="utf-8")
+                    body = loads_lenient(_raw) if config.SURVIVAL else json.loads(_raw)
+                    if body is None:
+                        raise ValueError("no recoverable output")
                     if config.SURVIVAL:
                         from adapters import cover_months
 
-                        curve, why = curve_of(body.get("survival_curve"), cover_months())
+                        curve, why = curve_of(repair_curve(body.get("survival_curve")), cover_months())
                         said = {"curve": curve}
                         reasons = reasons_of(body.get("reasons"))
                         reason = "; ".join(r["fact"] for r in reasons)[:500]
