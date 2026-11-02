@@ -356,14 +356,35 @@ class VLLMBackend:
         self.choice_tokens = ANSWER_TOKENS[recipe.answer_form]
 
     def ask_many(self, msgs):
+        # A call the model's processor would reject is answered with an error row instead of being sent: vLLM's
+        # engine dies on a processor error, taking the whole run down (11-01: one degenerate series whose slices
+        # are 1 x 512 px, past Qwen-family processors' 200:1 aspect limit). The row counts as unparsed and wrong.
+        recipe = getattr(self, "recipe", None)
+        cap = recipe.setting("max_image_aspect") if recipe is not None else None
+        bad = {i: why for i, m in enumerate(msgs) if cap and (why := image_problem(m, float(cap)))}
+        send = [m for i, m in enumerate(msgs) if i not in bad]
         # A system message goes first; MedGemma's chat template folds it into the start of the user turn, before
         # the images, as Google's quick-start notebook sends "SYSTEM INSTRUCTION: think silently if needed."
         convs = [([{"role": "system", "content": m.system}] if m.system else [])
-                 + [{"role": "user", "content": openai_content(m)}] for m in msgs]
-        outs = self.llm.chat(convs, self.params, use_tqdm=True)
-        return [{"text": o.outputs[0].text, "log_probs": answer_logprobs(o.outputs[0], self.choice_tokens), "usage":
-                 {"prompt_tokens": len(o.prompt_token_ids or []), "output_tokens": len(o.outputs[0].token_ids)}}
-                for o in outs]
+                 + [{"role": "user", "content": openai_content(m)}] for m in send]
+        outs = self.llm.chat(convs, self.params, use_tqdm=True) if convs else []
+        res = [{"text": o.outputs[0].text, "log_probs": answer_logprobs(o.outputs[0], self.choice_tokens), "usage":
+                {"prompt_tokens": len(o.prompt_token_ids or []), "output_tokens": len(o.outputs[0].token_ids)}}
+               for o in outs]
+        for i in sorted(bad):  # put the unsent calls back in their places
+            res.insert(i, {"text": "", "error": bad[i], "log_probs": None, "usage": {}})
+        return res
+
+
+def image_problem(m, max_aspect: float):
+    """Why the model's processor would reject this call's images (an aspect ratio past ``max_aspect``), or None."""
+    import io
+    from PIL import Image
+    for data in m.images:
+        w, h = Image.open(io.BytesIO(data)).size
+        if max(w, h) / max(1, min(w, h)) > max_aspect:
+            return f"image {w}x{h}: aspect ratio over {max_aspect:g}, which the processor rejects (not sent)"
+    return None
 
 
 def model_cache_dir() -> str:

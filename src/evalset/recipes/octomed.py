@@ -35,6 +35,6 @@ RECIPE = Recipe(
     answer_line="A: Yes\nB: No\nPlease reason step-by-step, and put your final answer within \\boxed{}.",
     system="You are a helpful assistant.",
     settings=(("temperature", 0.6), ("top_p", 0.95), ("seed", 20261101), ("max_new_tokens", 8192),
-              ("logprobs", 20), ("max_model_len", 32768), ("no_video", True),
+              ("logprobs", 20), ("max_model_len", 32768), ("no_video", True), ("max_image_aspect", 200),
               ("mm_processor_kwargs", (("min_pixels", 262144), ("max_pixels", 262144)))),
 )

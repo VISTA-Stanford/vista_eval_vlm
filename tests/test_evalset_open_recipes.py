@@ -106,6 +106,38 @@ def test_answer_logprobs_prefers_the_letter_over_the_word_after_it():
     assert json.loads(run.answer_logprobs(c, run.ANSWER_TOKENS["boxed_choice"]))["position"] == 2
 
 
+def _png(w, h):
+    import io
+    from PIL import Image
+    b = io.BytesIO()
+    Image.new("RGB", (w, h)).save(b, format="PNG")
+    return b.getvalue()
+
+
+def test_image_the_processor_rejects_becomes_an_error_row_not_a_crash():
+    # 11-01: a degenerate series with 1 x 512 px slices killed vLLM's engine mid-run (Qwen's 200:1 aspect limit).
+    r = get("qwen3vl")
+    good = r.build("Q? Answer yes or no.", [(None, [_png(512, 512), _png(512, 99)])])
+    bad = r.build("Q? Answer yes or no.", [(None, [_png(512, 512), _png(1, 512)])])
+    assert run.image_problem(good, 200) is None and "aspect ratio" in run.image_problem(bad, 200)
+
+    class FakeLLM:
+        def __init__(self):
+            self.sent = 0
+
+        def chat(self, convs, params, use_tqdm=True):
+            self.sent += len(convs)
+            o = SimpleNamespace(text="Final Answer: yes", token_ids=[0], logprobs=None)
+            return [SimpleNamespace(outputs=[o], prompt_token_ids=[0, 1]) for _ in convs]
+
+    b = object.__new__(run.VLLMBackend)
+    b.recipe, b.llm, b.params, b.choice_tokens = r, FakeLLM(), None, run.ANSWER_TOKENS[r.answer_form]
+    out = b.ask_many([good, bad, good])
+    assert b.llm.sent == 2 and out[1]["error"] and out[1]["text"] == ""
+    assert out[0]["text"] == out[2]["text"] == "Final Answer: yes"
+    assert get("octomed").setting("max_image_aspect") == 200
+
+
 def test_ablation_variants_apply():
     f = Path("/data/fries/users/padamson/mnt/su-vista-uscentral1/vistabench/vlm/evalset_v1/arms/open_vlm_fair_eval.yaml")
     if not f.exists():

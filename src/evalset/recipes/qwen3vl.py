@@ -31,5 +31,5 @@ RECIPE = Recipe(
     answer_form="final_answer",
     answer_line="Answer with 'Final Answer: yes' or 'Final Answer: no'.",
     settings=(("temperature", 0.0), ("max_new_tokens", 2000), ("logprobs", 20), ("max_model_len", 32768),
-              ("no_video", True)),
+              ("no_video", True), ("max_image_aspect", 200)),  # the processor's limit (smart_resize)
 )
