@@ -53,6 +53,12 @@ Read the summaries and the transcripts yourself. Do it with code and grep; every
    general terms (what to read in the summary, how to turn it into a curve). Never refer to a patient's id. If you add
    or change a tool, run it on a few TRAIN patients before you finish, and check what it costs a session in tokens and
    time.
+
+   Keep the program's method its own reading and clinical judgement of each summary; improve what it attends to in the
+   summary and how it shapes the curve. Do not replace that judgement with a fitted statistical model — discrete
+   factors read off the summary and fed to a points or hazard formula whose numbers you tune on the TRAIN patients.
+   Such coefficients fit the few hundred patients you tuned them on and transfer worse to unseen patients than the
+   program's own judgement does.
 5. **Record.** Write the change note (below) and update the notebook.
 
 ## The change note
