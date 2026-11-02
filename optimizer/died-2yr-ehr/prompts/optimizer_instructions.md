@@ -37,21 +37,27 @@ misread. Do it with code and grep: a record can hold dozens of notes, and every 
 
 The program has two parts that work as one. In any iteration you may improve either or both.
 
-- **The summary.** Built by the tools under `tools/` together with the session. The tools work in code: they
-  pull the structured tables and registry fields, and they find the clinical notes worth reading, by combining
-  search methods (for example a BM25 ranking written in plain Python or numpy, since no search package is
-  installed; regular expressions; each note's type and date). The session then reads the notes the tools pick, in
-  full, as a clinician would, and writes a short patient summary in its own words: the information needed to judge
-  this patient's risk of dying. Matching patterns alone misses what a note actually says. The summary always opens
-  with what is in this record: which sources are present, how much of each and over what dates, and what was looked
-  for and not found. What goes in beyond that, and which notes are worth reading, is yours to work out from what the
-  sessions find and miss. Never have a session read the whole notes file: a record can hold thousands of notes.
+- **The summary.** Everything the session knows about the patient reaches it through the summary, so this is
+  where most of the score is won or lost. How it is made is up to you: code that pulls the structured tables and
+  registry fields; search over the notes to find the ones worth reading (for example BM25 written in plain Python
+  or numpy, since no search package is installed, regular expressions, each note's type and date); the session
+  reading chosen notes in full and writing the summary in its own words; several passes; or anything else that
+  works. Matching patterns alone misses what a note actually says. The summary always opens with what is in this
+  record: which sources are present, how much of each and over what dates, and what was looked for and not found.
+  What goes in beyond that is yours to work out from what the sessions find and miss. Never have a session read the
+  whole notes file: a record can hold thousands of notes.
 - **The decision.** `instructions.md`: how the session turns that summary, plus any targeted look back into the
   record, into its yes/no answers.
 
-A session's budget and time limits are in `task.md`; check in the transcripts what sessions actually use. If they
-use a small part of it, spend more of it on reading the right notes. If the record also holds a ready-made patient summary,
-treat it as one input to yours, not a replacement for reading the record.
+A session's budget and time limits are in `task.md`; check in the transcripts what sessions actually use.
+Cost is not the goal: spending more of a session's budget is worth it when the score rises. If the record also
+holds a ready-made patient summary, treat it as one input to yours, not a replacement for reading the record.
+
+How good is your summary? Judge it against these, on the same 200 VAL patients: the bare question with no method
+scores about 0.70; the same bare question given a short LLM-written patient summary (about 600 characters, from a
+model that read the whole record) scores about 0.74; programs built on that summary have reached about 0.77. A
+program that reads the record itself should be able to match a summary written from the same record; if yours
+trails, the summary is the likely cause.
 
 ## Each iteration, in five steps
 
