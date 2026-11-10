@@ -16,7 +16,7 @@ engine's search proxy, which refuses patient-specific questions and logs every r
 `~/.config/alo/oauth_token`). `ALO_ROUTE=vertex` puts every session on Vertex holding the machine's `optimizer`
 login (no service account can be made); that login can read the labels, so the network block is the guard and the
 cost check runs the engine's after-run audit as the evidence (Phil 2026-10-28).
-Engine pin: agentic-label-opt main 0c39e1d, shared with died-2yr-ehr; Claude Code 2.1.307. The finished run
+Engine pin: agentic-label-opt bb216c2 (feat/vertex-login-plus-seat-pause, 2026-11-10; was main 0c39e1d), shared with died-2yr-ehr; Claude Code 2.1.307. The finished run
 `first` (probability, VAL AUROC 0.776) stays as history. **Real runs** (Phil 2026-10-28): 5 rounds, TRAIN 100 every
 round, VAL 200, in their own work folder (`alo-tasks/died-2yr-ct-yesno`, run `yesno-r1`); the chosen version and
 the seed are then scored once on all 811 VAL patients with `run.py score-val --tag <tag>`. Cost check: `bash scripts/cost_check.sh` (paid, ~$5,
@@ -68,6 +68,33 @@ comparison this kind of system allows. First of several vista_bench tasks.
 - Volumes: Hounsfield units, int16, reoriented to RAS (checked by eye on a rendered axial, coronal and
   sagittal slice), thin scans averaged into slabs of about 2.5 mm, no header carried over. About 4 s and
   roughly 20 MB per patient.
+
+## Probability version (`ANSWER=probability`, Phil 2026-11-10)
+
+Spec: `planning/vista_eval_vlm/2026-11-10-ct-agent-probability-climbs.md` on the mount; copies died-2yr-ehr's
+probability mode. One setting switches the task; yes/no stays the default, and its optimizer prompts, per-call
+prompt and prompt tag are byte-identical to before (checked 2026-11-10). Engine pin bb216c2
+(`feat/vertex-login-plus-seat-pause`, as died-2yr-ehr), which carries the before-pass hook the stops use.
+
+| Decision | Answer |
+|---|---|
+| Answer | a whole number 0-100 per horizon (stored 0..1), plus 3-5 `reasons` (`finding`, `where` in the scan), never scored |
+| Score | AUROC at each horizon (Mann-Whitney, ties half), averaged; a failed, unreadable or out-of-range answer scores 0.5. TRAIN breakdown adds Brier, mean probability by outcome, calibration by tenth, distinct values, share on the most common value; VAL shows the optimizer the headline only |
+| Mistake | a probability on the wrong side of the horizon's TRAIN death rate (718 and 1,188 of 3,886): only picks what the optimizer studies |
+| Seed, brief, instructions | `program_agentic_probability/` (the 74c5507^ probability seed with the 1-year horizon, same viewer, no clinical hints), `context/task_agentic_probability.md`, `prompts/optimizer_instructions_probability.md` |
+| Schedule, rounds | TRAIN `linear(100, 400, over=10)`, VAL the same 200; up to 10 rounds; stop after 2 rounds with no new best VAL (`run.py` enforces it before the next pass; `run_on_vm.sh` reports it as finished) |
+| Dollar stops | stop and ask past $200 a run or after a round over $50 (`RUN_BUDGET_USD`, `ROUND_BUDGET_USD`), from the run's receipts plus each round's optimizer budget, checked before each pass |
+| Work folder | `alo-tasks/died-2yr-ct-prob`; run `prob-r1` |
+
+    uv run --project $AGENTIC_LABEL_OPT --with scikit-learn python -B scripts/check_task.py check     yes/no checks
+    ANSWER=probability uv run --project $AGENTIC_LABEL_OPT --with scikit-learn python -B scripts/check_task.py check
+    ANSWER=probability uv run --project $AGENTIC_LABEL_OPT python run.py dry-run --iterations 4     ends STOPPED (no_new_best)
+    python scripts/score_baselines.py reproduce | score --ids pool|val     MerlinOnc probes + clinical XGBoost, 1 and 2 years
+    (CT probe results were regenerated 10-31 on the rewritten v1.7 label table, after this task's splits were built 10-27:
+     they cover 183 / 182 of the 200 VAL pool at 1 / 2 yr and disagree with the task label on 3 / 7. Each AUROC is against
+     the task's labels; compare the agent on the same 183 / 182 patients.)
+    ANSWER=probability python run.py rescore --run <work folder>          $0: each VAL pass per horizon (AUROC, ties, Brier)
+    ANSWER=probability bash scripts/cost_check.sh                         PAID (~$5, Phil's go)
 
 ## Reference scores
 
