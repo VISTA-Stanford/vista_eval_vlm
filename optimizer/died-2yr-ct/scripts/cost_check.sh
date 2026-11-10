@@ -5,8 +5,11 @@
 #
 #   bash optimizer/died-2yr-ct/scripts/cost_check.sh
 #
-# Pass: it ends "PASS: ..." (fewer than 1 in 20 sessions at the $0.50 cap, no unreadable answer, the run finished),
-# and the verdict is on the mount at died-2yr-ct-v1_7-runs/<host>/costcheck-<stamp>/cost_report.json.
+# Then the engine's after-run audit (scripts/audit_vertex_run.py) over the throwaway folder, on the run's route: no
+# session command naming the credential, gcloud, bq, BigQuery, storage or a non-model Vertex request, and no refused
+# or unexpected host in the saved network logs; with AUDIT_PRINCIPAL=<the login's email> also Google's records.
+# Pass: it ends "PASS: ..." (fewer than 1 in 20 sessions at the $0.50 cap, no unreadable answer, the run finished, the
+# audit passed), and the verdict and audit.txt are on the mount at died-2yr-ct-v1_7-runs/<host>/costcheck-<stamp>/cost_report.json.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ENGINE=${AGENTIC_LABEL_OPT:-$HOME/code/agentic-label-opt/.claude/worktrees/mortality-engine}
@@ -23,4 +26,15 @@ alo() { uv run -q --project "$ENGINE" python run.py "$@"; }
 alo init
 alo pins --write | tail -1
 alo run --run-id costcheck --start seed --iterations 1 || true  # judged below, from the receipts and the summary
-uv run -q --project "$ENGINE" python scripts/cost_report.py "$TASK_WORKDIR" "$OUT/cost_report.json"
+mkdir -p "$OUT"
+report=0
+uv run -q --project "$ENGINE" python scripts/cost_report.py "$TASK_WORKDIR" "$OUT/cost_report.json" || report=$?
+audit=0
+python3 -I "$ENGINE/scripts/audit_vertex_run.py" "$TASK_WORKDIR" --route "${ALO_ROUTE:-anthropic}" --skip private/archive \
+    ${AUDIT_PRINCIPAL:+--principal "$AUDIT_PRINCIPAL"} | tee "$OUT/audit.txt" || audit=$?
+if [ "$report" -eq 0 ] && [ "$audit" -eq 0 ]; then
+    echo "PASS: the cost check and the after-run audit both passed (route ${ALO_ROUTE:-anthropic})"
+else
+    echo "FAIL: cost check exit $report, after-run audit exit $audit (0 pass, 1 found something, 2 incomplete); see above"
+    exit 1
+fi
