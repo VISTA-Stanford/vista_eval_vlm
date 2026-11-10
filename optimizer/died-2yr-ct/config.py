@@ -23,7 +23,7 @@ if not (ENGINE_ROOT / "engine" / "driver.py").is_file():
     raise SystemExit(f"no engine at {ENGINE_ROOT}: set AGENTIC_LABEL_OPT to your agentic-label-opt checkout")
 #: The full 40-character engine commit this task was built and tested against
 #: (``git -C $AGENTIC_LABEL_OPT rev-parse HEAD``). Bump it on purpose, after re-running the dry run.
-ENGINE_PIN = "0c39e1dad115605718f51b021271d623da9262b8"  # DECIDE (main: shared route accepts the optimizer login, network log saved per pass, after-run audit, Vertex background traffic off, 2026-10-28)
+ENGINE_PIN = "bb216c2489ff63bebd8ad3f1acdcb9f969bb0e2f"  # DECIDE (feat/vertex-login-plus-seat-pause, as died-2yr-ehr: main's Vertex optimizer-login route, after-run audit and background-traffic-off merged with fix/seat-limit-pause's seat-limit pause, search-answer fixes and the before-pass hook the probability stop rules use, 2026-11-10)
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
@@ -37,6 +37,16 @@ TASK_NAME = "died-2yr-ct"  # DECIDE: short, lowercase, dashes; names the work fo
 LABELS = (0, 1)  # DECIDE
 #: The two questions: (answer key in output.json, gold field in splits/*.jsonl, words in the prompt).
 HORIZONS = (("died_within_1_year", "label_1yr", "1 year"), ("died_within_2_years", "label", "2 years"))
+#: What each patient's session answers. "yesno" (the default: two forced answers, balanced accuracy, every run from
+#: 2026-10-27 to 2026-11-10) or "probability": a 0-100 chance of death at each horizon plus the 3-5 things in the scan
+#: that moved it most, scored by AUROC averaged over the two horizons (Phil 2026-11-10, spec
+#: planning/vista_eval_vlm/2026-11-10-ct-agent-probability-climbs.md; copies died-2yr-ehr's probability mode).
+#: Chooses the seed, the optimizer's brief and instructions, the scorer, the default work folder, the rounds, the
+#: stop rules and the TRAIN schedule below.
+ANSWER = os.environ.get("ANSWER", "yesno")  # DECIDE
+if ANSWER not in ("yesno", "probability"):
+    raise SystemExit(f"ANSWER must be yesno or probability, not {ANSWER!r}")
+PROBABILITY = ANSWER == "probability"
 #: Built by scripts/build_data.py: splits/{train,val,test}.jsonl ({"id", "label", "label_1yr"}), pools.json (the fixed
 #: TRAIN and VAL pools) and patients/<id>/{ct.npz, meta.json}. On the shared mount (inside the secure
 #: environment): the VM's disk has too little room for the volumes.
@@ -48,12 +58,15 @@ PROGRAM_MODE = os.environ.get("PROGRAM_MODE", "agentic")  # DECIDE: Phil 2026-10
 AGENTIC = PROGRAM_MODE == "agentic"
 
 #: The labeling program the optimizer starts from (program-v0), and the files it may edit.
-#: The seed is the single-CT VLM question only, plus a slice viewer in tools/ (Phil 2026-10-20).
-SEED_PROGRAM_DIR = HERE / ("program_agentic" if AGENTIC else "program")
+#: The seed is the single-CT VLM question only, plus a slice viewer in tools/ (Phil 2026-10-20). Probability: the
+#: probability-era seed (74c5507^) with the 1-year horizon added, same viewer (Phil 2026-11-10).
+SEED_PROGRAM_DIR = HERE / (("program_agentic_probability" if PROBABILITY else "program_agentic") if AGENTIC else "program")
 EDITABLE_FILES = ("instructions.md", "tools") if AGENTIC else ("label.py",)  # DECIDE: what the optimizer may change
 CONTRACT_FILES: tuple[str, ...] = ()  # files shipped with the program that it must never change
 #: The optimizer's task brief (prompts: docs/guide/prompts.md).
-TASK_BRIEF = HERE / "context" / ("task_agentic.md" if AGENTIC else "task.md")
+TASK_BRIEF = HERE / "context" / (("task_agentic_probability.md" if PROBABILITY else "task_agentic.md") if AGENTIC else "task.md")
+#: The optimizer's standing instructions (its system prompt), one per answer type.
+OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / ("optimizer_instructions_probability.md" if PROBABILITY else "optimizer_instructions.md")
 
 #: agentic only: the model each patient's session runs on, how many run at once, and each one's cap.
 PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-sonnet-5-5")  # DECIDE: pinned id, Phil 2026-10-20
@@ -70,13 +83,24 @@ PROGRAM_CALL_TIMEOUT_SECONDS = 900
 #: Balanced accuracy at each horizon, averaged over the two: forced answers, macro balanced accuracy, as the
 #: eval set scores every model (spec planning/vista_eval_vlm/2026-10-26-vlm-agent-eval-set.md, Decided: Score).
 #: The finished run `first` (VAL AUROC 0.776, 2026-10-25) scored a probability by AUROC; it stays as history.
-METRIC_NAME = "balanced_accuracy"  # DECIDE
+#: Probability: AUROC at each horizon, averaged over the two (Phil 2026-11-10).
+METRIC_NAME = "auroc" if PROBABILITY else "balanced_accuracy"  # DECIDE
 
 # --------------------------------------------------------------------------------------------------
 # The optimizer
 # --------------------------------------------------------------------------------------------------
 OPTIMIZER_MODEL = os.environ.get("OPTIMIZER_MODEL", "claude-opus-5-5")  # DECIDE: Phil 2026-10-20
-ITERATIONS = int(os.environ.get("ITERATIONS", "5"))  # DECIDE
+ITERATIONS = int(os.environ.get("ITERATIONS", "10" if PROBABILITY else "5"))  # DECIDE (probability: Phil 2026-11-10)
+#: Stop the run once this many rounds in a row set no new best VAL score (the seed's zero-shot VAL counts as the
+#: first best). Enforced by run.py before the next pass, so a resume counts the same rounds. 0 = off (the yes/no
+#: default: those runs stopped by hand). Probability: 2 (Phil 2026-11-10, as died-2yr-ehr).
+STOP_AFTER_ROUNDS_WITHOUT_BEST = int(os.environ.get("STOP_AFTER_ROUNDS_WITHOUT_BEST", "2" if PROBABILITY else "0"))  # DECIDE
+#: Dollar stops, enforced by run.py before each pass (0 = off; the yes/no runs were watched by hand). The run total
+#: counts every patient session this run id paid for (the receipts) plus OPTIMIZER_SESSION_BUDGET_USD for each round
+#: started (an upper bound for the optimizer). A round = its TRAIN and VAL passes' patient sessions. Probability:
+#: stop past $200 a run or after a round over $50 (Phil 2026-11-10, spec).
+RUN_BUDGET_USD = float(os.environ.get("RUN_BUDGET_USD", "200" if PROBABILITY else "0"))  # DECIDE
+ROUND_BUDGET_USD = float(os.environ.get("ROUND_BUDGET_USD", "50" if PROBABILITY else "0"))  # DECIDE
 OPTIMIZER_SESSION_BUDGET_USD = float(os.environ.get("OPTIMIZER_SESSION_BUDGET_USD", "3.0"))  # DECIDE
 #: Claude Code --effort: at the default a Sonnet optimizer quit in 4-6 turns on recurrence (10-19).
 OPTIMIZER_EFFORT = os.environ.get("OPTIMIZER_EFFORT", "high")  # DECIDE: Phil 2026-10-20
@@ -86,7 +110,7 @@ OPTIMIZER_TIMEOUT_SECONDS = 2700
 #: patient-specific. Spec planning/agentic-label-opt/2026-10-22-search-proxy.md.
 OPTIMIZER_WEB_SEARCH = False  # DECIDE
 SEARCH_PROXY = True  # DECIDE
-SEARCH_REQUESTS_PER_ROUND = 6
+SEARCH_REQUESTS_PER_ROUND = 1000 if PROBABILITY else 6  # DECIDE: probability as died-2yr-ehr, no practical cap (spec 2026-11-10)
 #: Pass ``attempting_step_back: true`` in the change note to try a big change that is undone if VAL drops
 #: by more than this. 0.0 means any drop.
 STEP_BACK_REVERT_TOLERANCE = 0.0
@@ -102,6 +126,8 @@ TOKEN_BUDGET: int | None = None
 #: gives the optimizer more cases to learn from. The chosen version is then scored once on all 811 VAL patients
 #: (`run.py score-val`) for the reported number (Phil 2026-10-28).
 SCHEDULE: dict | None = {"train_size": "constant(100)", "val_size": "constant(200)"}  # DECIDE
+if PROBABILITY:  # TRAIN 100, 133, 167, ... 400 at round 10; VAL the same 200 (Phil 2026-11-10, as died-2yr-ehr)
+    SCHEDULE = {"train_size": "linear(100, 400, over=10)", "val_size": "constant(200)"}
 if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: handy for a cheap live check
     import json as _json
 
@@ -112,7 +138,9 @@ if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: handy for
 # --------------------------------------------------------------------------------------------------
 #: Its own folder for the yes/no version: the old folder (alo-tasks/<task>) holds the probability-era runs and its
 #: program-v0 is the probability seed, so reusing it would start a new run from the wrong instructions (2026-10-28).
-WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / f"{TASK_NAME}-yesno")).resolve()
+#: Probability runs get their own folder too (died-2yr-ct-prob): the old folder's program-v0 is the one-horizon seed.
+_DEFAULT_WORKDIR = f"{TASK_NAME}-prob" if PROBABILITY else f"{TASK_NAME}-yesno"
+WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / _DEFAULT_WORKDIR)).resolve()
 
 # --------------------------------------------------------------------------------------------------
 # Sealing: which model route and which images. docs/guide/decisions.md, "Which models it can use".

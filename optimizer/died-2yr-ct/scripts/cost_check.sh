@@ -4,6 +4,8 @@
 # (the seat by default; ALO_ROUTE=vertex for Vertex). Needs Phil's go. Judges itself with scripts/cost_report.py.
 #
 #   bash optimizer/died-2yr-ct/scripts/cost_check.sh
+#   ANSWER=probability bash optimizer/died-2yr-ct/scripts/cost_check.sh    the probability version (its seed, prompt
+#                                                                          and scorer; folders named costcheck-prob-<stamp>)
 #
 # Then the engine's after-run audit (scripts/audit_vertex_run.py) over the throwaway folder, on the run's route: no
 # session command naming the credential, gcloud, bq, BigQuery, storage or a non-model Vertex request, and no refused
@@ -14,6 +16,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ENGINE=${AGENTIC_LABEL_OPT:-$HOME/code/agentic-label-opt/.claude/worktrees/mortality-engine}
 STAMP=$(date +%m%d-%H%M)
+export ANSWER=${ANSWER:-yesno}  # config.ANSWER
+[ "$ANSWER" = probability ] && STAMP=prob-$STAMP
 export AGENTIC_LABEL_OPT=$ENGINE
 export TASK_WORKDIR=$HOME/.cache/alo-tasks/died-2yr-ct-costcheck-$STAMP
 export TASK_SCHEDULE='{"train_size": "constant(5)", "val_size": "constant(5)"}'

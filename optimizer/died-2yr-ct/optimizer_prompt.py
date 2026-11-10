@@ -14,10 +14,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from config import AGENTIC, EDITABLE_FILES, ITERATIONS, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF  # run.py sets ITERATIONS
+from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, PROBABILITY, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF  # run.py sets ITERATIONS
 
 HERE = Path(__file__).resolve().parent
-INSTRUCTIONS = HERE / "prompts" / "optimizer_instructions.md"
+INSTRUCTIONS = OPTIMIZER_INSTRUCTIONS  # optimizer_instructions_probability.md with ANSWER=probability
 
 #: Read-only files mounted into the optimizer's container, by name (see optimizer.build_agent).
 TASK_BRIEF_NAME = "task.md"
@@ -62,7 +62,7 @@ def build_prompt(iter_n: int, paths) -> str:
         "Start with step 1 of your standing instructions: check last iteration's prediction."
     )
     test = (
-        ("You cannot run the patients' sessions in here: each patient is read by its own session, outside\n"
+        (("You cannot run the patients' sessions in here: each patient is read by its own session, outside\n"
          "this container. You can read what each session did, look at the same CT, and run your tools on it.\n"
          "Every file a mistake lists is a flat file in `<files>/`, named `<id>-<file>`.\n"
          "- Read a session's findings note first: `<files>/<id>-trace-findings.md`. Then its session turn by turn\n"
@@ -72,10 +72,16 @@ def build_prompt(iter_n: int, paths) -> str:
          "  && cp <files>/<id>-meta.json /tmp/ct/<id>/meta.json`, then\n"
          "  `python3 -B {program}/tools/view_ct.py /tmp/ct/<id> --plane axial --count 16 --window lung --out /tmp/v.png`\n"
          "  and open `/tmp/v.png` with Read. Each image costs tokens: look at a handful of patients, not all.\n"
-         "- Every TRAIN patient of the pass is in the mistakes file, right or wrong at each horizon (`mistake` and\n"
-         "  `wrong_at` say which), with its yes/no answers: read the right ones' reasons too, since balanced\n"
-         "  accuracy counts the patients who died and those who lived equally. Only mistakes come with their CT\n"
-         "  and transcript.\n"
+         + ("- Every TRAIN patient of the pass is in the mistakes file with its gold and the probability it was given at\n"
+            "  each horizon, and its stated reasons. A mistake is a probability on the wrong side of that horizon's\n"
+            "  death rate (`wrong_at` says which). AUROC rewards ranking every patient who died above every one who\n"
+            "  lived, so a confident wrong probability costs most: look at the most confident wrong ones first, and\n"
+            "  at the spread of probabilities overall. Only mistakes come with their CT and transcript.\n"
+            if PROBABILITY else
+            "- Every TRAIN patient of the pass is in the mistakes file, right or wrong at each horizon (`mistake` and\n"
+            "  `wrong_at` say which), with its yes/no answers: read the right ones' reasons too, since balanced\n"
+            "  accuracy counts the patients who died and those who lived equally. Only mistakes come with their CT\n"
+            "  and transcript.\n"))
          .replace("{program}", paths.program).replace("<files>", f"{paths.feedback}/iter/{iter_n}/files"))
         if AGENTIC else
         TEST_RULES_BASED.format(program=paths.program, feedback=paths.feedback, iter_n=iter_n)

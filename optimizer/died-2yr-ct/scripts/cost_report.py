@@ -4,7 +4,7 @@
 
 Per pass (the seed's TRAIN pass, the first version's VAL pass, ...): patients, mean and highest cost, how many
 reached the per-patient cap (cost at 95% of it or more) or timed out, and how many answers were not a readable
-yes/no. PASS when fewer than 1 in 20 sessions reached the cap or timed out, no answer was unreadable, and every pass
+yes/no (or, with ANSWER=probability, a readable 0-100 probability at both horizons). PASS when fewer than 1 in 20 sessions reached the cap or timed out, no answer was unreadable, and every pass
 finished. Prints counts and dollars only, never an id or a record. Standard library only.
 """
 
@@ -54,7 +54,7 @@ def main(argv: list[str]) -> int:
     summary_file = next((work / "private" / "runs").glob("*/run_summary.json"), None)
     stop = json.loads(summary_file.read_text()).get("stop") if summary_file else "no run summary"
     ok = at_cap * 20 < sessions and unreadable == 0 and not stop
-    verdict = {"route": config.ROUTE.name, "cap_usd": cap, "sessions": sessions, "at_cap_or_timed_out": at_cap,
+    verdict = {"route": config.ROUTE.name, "answer": config.ANSWER, "cap_usd": cap, "sessions": sessions, "at_cap_or_timed_out": at_cap,
                "unreadable_or_failed": unreadable, "patient_sessions_usd": round(total, 2), "run_stop": stop,
                "passes": rows, "ok": ok}
     print(f"patient sessions ${total:.2f} over {sessions}; run stop: {stop or 'none (finished)'}")
