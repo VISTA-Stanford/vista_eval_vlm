@@ -18,6 +18,8 @@
 # defaults RUN_ID surv-summary-r1 (surv-r1 without the summary), its own work folder; a failed session or unreadable
 # curve stops it (STOPPED (unreadable_curve)) for a person to look, never resumed. SUMMARY_ONLY=1 runs the bare
 # summary-only arm of either answer: run id <prob|surv>-summaryonly-r1, work folder died-2yr-ehr-<prob|surv>-summaryonly.
+# PROBES=1 (with ANSWER=probability WITH_SUMMARY=1) runs the probe-tool arm: run id prob-summary-probes-r1, work folder
+# died-2yr-ehr-prob-summary-probes, the probe files copied from the mount (spec 2026-11-09-died-2yr-ehr-probe-tool.md).
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
 # baselines scored on the same VAL pool (baselines_val_pool.json).
@@ -36,9 +38,11 @@ export ANSWER=${ANSWER:-yesno}
 export WITH_SUMMARY=${WITH_SUMMARY:-0}
 export SUMMARY_ONLY=${SUMMARY_ONLY:-0}  # the bare summary-only arm (config.SUMMARY_ONLY; implies WITH_SUMMARY)
 if [ "$SUMMARY_ONLY" = 1 ]; then export WITH_SUMMARY=1; fi  # so the summaries are copied below, as config implies
+export PROBES=${PROBES:-0}  # the probe-tool arm (config.PROBES; probability + summary only): copies the probe files below
 if [ "$ANSWER" = probability ] || [ "$ANSWER" = survival ]; then
     PREFIX=prob; [ "$ANSWER" = survival ] && PREFIX=surv
     if [ "$SUMMARY_ONLY" = 1 ]; then ARM=$PREFIX-summaryonly; elif [ "$WITH_SUMMARY" = 1 ]; then ARM=$PREFIX-summary; else ARM=$PREFIX; fi
+    if [ "$PROBES" = 1 ]; then ARM=$ARM-probes; fi  # run id prob-summary-probes-r1; work folder as config.WORKDIR
     RUN_ID=${RUN_ID:-$ARM-r1}
     export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-2}  # spec: 2 at a time (sllm-01's network gate)
     ITERATIONS=${ITERATIONS:-10}  # Phil 2026-10-31; the stop rule usually ends it sooner
@@ -153,6 +157,13 @@ if [ "$WITH_SUMMARY" = 1 ]; then
         || fail "summaries missing for pool patients"
     echo "summaries: every TRAIN and VAL pool patient has one"
 fi
+if [ "$PROBES" = 1 ]; then  # the probe files, built on the mount by scripts/build_probe_tool.py
+    (cd "$TASK_DIR" && uv run -q --no-project --with pandas --with pyarrow --with scikit-learn python -B scripts/build_probe_tool.py --local-only) >/dev/null \
+        || fail "copying the probe files from the mount"
+    python3 -I -c "import json,os,sys; d=os.environ['TASK_DATA_DIR']; p=json.load(open(d+'/pools.json')); m=[i for k in ('train','val') for i in p[k] if not os.path.isfile(f'{d}/probes/{i}.json')]; sys.exit(f'{len(m)} pool patients have no probe file' if m else 0)" \
+        || fail "probe files missing for pool patients"
+    echo "probe files: every TRAIN and VAL pool patient has one"
+fi
 
 # Images, this machine's pins, the token, and the $0 dry run. A rebuild replaces the image under the same tag, so
 # a run of this task already going on this machine would lose its pinned image (it did, 2026-10-20): refuse.
@@ -178,7 +189,7 @@ if [ "$ANSWER" = survival ]; then
 else
 (cd "$TASK_DIR" && uv run -q --no-project --with pandas --with pyarrow --with scikit-learn python -B scripts/score_baselines.py \
     score --ids pool $([ "$ANSWER" = probability ] && echo --horizons both) --out "$RESULTS/baselines_val_pool.json") \
-    | tail -24 || fail "score_baselines"
+    | tail -40 || fail "score_baselines"
 fi
 
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: run not started)"; exit 0; fi

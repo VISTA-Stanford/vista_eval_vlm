@@ -5,7 +5,10 @@ For one scored VAL pass of the probe arm, per horizon:
      the instructions that mention it does not count);
   2. rank correlation (Spearman) of the agent's probability with the six-probe combination and with each probe;
   3. the share of patients where the agent is within 5 points of the combination;
-  4. patients where they differ by more than 15 points: how many, and AUROC of the agent vs the combination on them.
+  4. patients where they differ by more than 15 points: how many, and AUROC of the agent vs the combination on them;
+  5. weight shares: a least-squares fit of the agent's log-odds on the six probes' standardized log-odds (a missing
+     score at the mean, plus a missing flag each), each probe's share of the summed absolute
+     weights; descriptive, read with care (equal weights would give about 17% each).
 Failed sessions (no usable answer) are counted and left out of 2-4. Stop and come back (spec) if under half the
 sessions ran the tool, or the rank correlation with the combination is above 0.95.
 
@@ -68,6 +71,24 @@ def probe_scores(i: str, words: str) -> dict[str, float]:
             if p["horizons"][words]["available"]}
 
 
+def _logit(p):
+    p = np.clip(np.asarray(p, dtype=float), 1e-4, 1 - 1e-4)
+    return np.log(p / (1 - p))
+
+
+def weight_shares(ids: list[str], agent: np.ndarray, words: str) -> dict[str, float]:
+    """Each probe's share of the absolute weights when the agent's log-odds are regressed on the probes' log-odds."""
+    keys = [k for k, *_ in PROBES]
+    raw = pd.DataFrame([probe_scores(i, words) for i in ids], columns=keys, dtype=float)
+    z = _logit(raw.to_numpy())
+    z = np.where(raw.isna().to_numpy(), np.nan, z)
+    z = (z - np.nanmean(z, axis=0)) / np.nanstd(z, axis=0)
+    X = np.column_stack([np.nan_to_num(z), raw.isna().to_numpy().astype(float), np.ones(len(ids))])
+    coef, *_ = np.linalg.lstsq(X, _logit(agent), rcond=None)
+    w = np.abs(coef[: len(keys)])
+    return {k: round(float(v / w.sum()), 3) for k, v in zip(keys, w)} if w.sum() else {}
+
+
 def _auc(y, s):
     return float(roc_auc_score(y, s)) if 0 < np.sum(y) < len(y) else None
 
@@ -108,12 +129,14 @@ def main() -> int:
             if len(pairs) > 10:
                 per_probe[k] = {"n": len(pairs), "spearman": round(float(spearmanr(*zip(*pairs)).statistic), 3)}
         far = np.abs(agent - combo) > FAR
+        shares = weight_shares(ok, agent, words)
         h = {"n_scored": len(ok), "failed": failed,
              "spearman_with_combination": round(rho, 3),
              "within_5_points_share": round(float(np.mean(np.abs(agent - combo) <= NEAR)), 3),
              "over_15_points": {"n": int(far.sum()), "died": int(y[far].sum()),
                                 "agent_auroc": _auc(y[far], agent[far]), "combination_auroc": _auc(y[far], combo[far])},
-             "agent_auroc": _auc(y, agent), "combination_auroc": _auc(y, combo), "spearman_with_probe": per_probe}
+             "agent_auroc": _auc(y, agent), "combination_auroc": _auc(y, combo), "spearman_with_probe": per_probe,
+             "weight_share": shares}
         out["horizons"][words] = h
         if rho > STOP_CORRELATION:
             stop.append(f"{words}: rank correlation with the combination {rho:.3f} (rule: at most {STOP_CORRELATION})")
@@ -123,6 +146,7 @@ def main() -> int:
               f"{fa(h['combination_auroc'])}; Spearman with combination {rho:.3f}; within 5 points "
               f"{h['within_5_points_share']:.0%}; >15 points apart: {f['n']} patients ({f['died']} died), AUROC agent "
               f"{fa(f['agent_auroc'])} vs combination {fa(f['combination_auroc'])}")
+        print("    weight share by probe: " + ", ".join(f"{k} {v:.0%}" for k, v in shares.items()))
         print("    Spearman with each probe: " + ", ".join(f"{k} {v['spearman']:.2f} (n={v['n']})"
                                                       for k, v in per_probe.items()))
     out["stop_and_ask"] = stop
