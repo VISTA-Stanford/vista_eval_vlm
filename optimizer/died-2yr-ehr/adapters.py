@@ -612,6 +612,10 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
                     dest = records / f"{i}-summary.txt"
                     _copy_over(config.SUMMARY_DIR / f"{i}.txt", dest)
                     files.append(str(dest))
+                if config.PROBES:  # the session's probes.json, so the optimizer sees the scores it saw
+                    dest = records / f"{i}-probes.json"
+                    _copy_over(config.PROBES_DIR / f"{i}.json", dest)
+                    files.append(str(dest))
                 log = Path(a["findings_log"]) if a.get("findings_log") else None
                 for f in _trace_files(artifacts, i) + ([log] if log and log.is_file() else []):
                     dest = records / f"{i}-trace-{f.name}"

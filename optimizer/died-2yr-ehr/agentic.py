@@ -39,11 +39,14 @@ GUIDE_SRC = Path(__file__).resolve().parent / "context" / "patient_data_guide.md
 #: edit to the guide also stops old passes being served.
 PROMPT_TAG = (f"died-2yr-ehr-v3-guide-{hashlib.sha256(GUIDE_SRC.read_bytes()).hexdigest()[:10]}"
               + ("-summaryonly-bare-v1" if config.SUMMARY_ONLY else "-summary-v1" if config.WITH_SUMMARY else "")
-              + ("-surv-v1" if config.SURVIVAL else "-prob-v1" if config.PROBABILITY else ""))
+              + ("-surv-v1" if config.SURVIVAL else "-prob-v1" if config.PROBABILITY else "")
+              + ("-probes-v1" if config.PROBES else ""))
 #: Probability mode: at most this many reasons are kept per answer (the prompt asks for 3 to 5).
 MAX_REASONS = 5
 #: The patient summary's name in the session's record folder (config.WITH_SUMMARY only).
 SUMMARY = "summary.txt"
+#: The probe tool's file, beside the record (config.PROBES only).
+PROBES_FILE = "probes.json"
 #: The session's reasoning is not kept in its transcript (thinking blocks arrive empty), so it writes what it
 #: saw; the optimizer reads it beside the transcript for TRAIN mistakes.
 FINDINGS = "findings.md"
@@ -272,6 +275,10 @@ def program_spec(forbidden):
             (dest / SUMMARY).chmod(0o444)
         shutil.copy2(GUIDE_SRC, Path(folder) / GUIDE)
         (Path(folder) / GUIDE).chmod(0o444)
+        if config.PROBES:  # beside the record, fixed: the optimizer may change how it is used, never the scores
+            # Raises when a patient has no probe file: build_probe_tool.py writes one for every TRAIN and VAL patient.
+            shutil.copy2(config.PROBES_DIR / f"{call.payload['id']}.json", Path(folder) / PROBES_FILE)
+            (Path(folder) / PROBES_FILE).chmod(0o444)
 
     def prompt(call, stage_name, paths, pass_id):
         # The per-call wrapper: not optimized. Container paths only. The facts every version needs (the question,

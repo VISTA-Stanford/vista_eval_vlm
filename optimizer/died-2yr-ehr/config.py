@@ -89,6 +89,14 @@ if SUMMARY_ONLY:
 if SUMMARY_ONLY and not PROBABILITY:
     raise SystemExit("SUMMARY_ONLY is built for ANSWER=probability or survival")
 SUMMARY_DIR = DATA_DIR / "summaries"
+#: Probe tool arm (Phil 2026-11-09, spec planning/vista_eval_vlm/2026-11-09-died-2yr-ehr-probe-tool.md): each session
+#: also gets probes.json, the patient's risk from six published v1.7 death probes (TRAIN: out-of-fold scores; VAL:
+#: published) with each probe's TRAIN AUROC, coverage and calibration, plus a starter tool that prints it. Built for
+#: the probability arm with the summary (the spec's base arm). scripts/build_probe_tool.py writes PROBES_DIR.
+PROBES = os.environ.get("PROBES", "0") == "1"  # DECIDE
+if PROBES and not (ANSWER == "probability" and WITH_SUMMARY and not SUMMARY_ONLY):
+    raise SystemExit("PROBES=1 is built for ANSWER=probability WITH_SUMMARY=1 (record + summary), not another arm")
+PROBES_DIR = DATA_DIR / "probes"
 #: The CT task's data and id map (id -> person_id): this task reuses its ids, labels, splits and pools.
 CT_DATA_DIR = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ct-v1_7")
 ID_MAP_DIR = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ct-v1_7-private")
@@ -102,11 +110,13 @@ AGENTIC = PROGRAM_MODE == "agentic"
 #: The labeling program the optimizer starts from (program-v0), and the files it may edit.
 #: The seed is the plain question and the folder layout, no clinical hints (Phil 2026-10-21); tools/ starts empty.
 _ANSWER_SUFFIX = ((("_survival" if SURVIVAL else "_probability") + ("_bare" if BARE else "")) if PROBABILITY else "")
-SEED_PROGRAM_DIR = HERE / (f"program_agentic{_ANSWER_SUFFIX}" if AGENTIC else "program")
+#: The probe arm keeps the probability optimizer instructions; only its seed and brief differ ("_probes").
+_PROBES_SUFFIX = "_probes" if PROBES else ""
+SEED_PROGRAM_DIR = HERE / (f"program_agentic{_ANSWER_SUFFIX}{_PROBES_SUFFIX}" if AGENTIC else "program")
 EDITABLE_FILES = ("instructions.md", "tools") if AGENTIC else ("label.py",)  # DECIDE: what the optimizer may change
 CONTRACT_FILES: tuple[str, ...] = ()  # files shipped with the program that it must never change
 #: The optimizer's task brief (prompts: docs/guide/prompts.md).
-TASK_BRIEF = HERE / "context" / (f"task_agentic{_ANSWER_SUFFIX}.md" if AGENTIC else "task.md")
+TASK_BRIEF = HERE / "context" / (f"task_agentic{_ANSWER_SUFFIX}{_PROBES_SUFFIX}.md" if AGENTIC else "task.md")
 #: The optimizer's standing instructions (its system prompt), one per answer type.
 OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / f"optimizer_instructions{_ANSWER_SUFFIX}.md"
 
@@ -190,6 +200,7 @@ if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: handy for
 #: Probability runs get their own folders too (program-v0 there is the probability seed), one per input arm.
 _DEFAULT_WORKDIR = ((f"{TASK_NAME}-surv" if SURVIVAL else f"{TASK_NAME}-prob")
                     + ("-summaryonly" if SUMMARY_ONLY else "-summary" if WITH_SUMMARY else "")
+                    + ("-probes" if PROBES else "")
                     if PROBABILITY else f"{TASK_NAME}-yesno")
 WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / _DEFAULT_WORKDIR)).resolve()
 

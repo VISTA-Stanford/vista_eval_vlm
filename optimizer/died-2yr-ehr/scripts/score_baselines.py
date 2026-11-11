@@ -61,7 +61,15 @@ BASELINES = (
     ("radiology text, GatorTron", "text_radiology", "gatortron_base"),
     ("radiology text, Qwen3", "text_radiology", "qwen3emb8b"),
     ("radiology findings, Gemini", "text_radiology_findings", "gemini_emb_001"),
+    # the probe tool's other two probes (spec 2026-11-09-died-2yr-ehr-probe-tool.md: each probe alone is a bar)
+    ("pathology text, Gemini", "text_pathology", "gemini_emb_001"),
+    ("CT, MerlinOnc pan-cancer ep99", "ct", "merlinonc_top_centered_pancancer_postdx_ep99"),
 )
+#: The probe tool's headline bar (spec planning/vista_eval_vlm/2026-11-09-died-2yr-ehr-probe-tool.md): a logistic
+#: regression on the six probes' scores, fit on TRAIN out-of-fold scores, written by scripts/build_probe_tool.py keyed
+#: by this task's ids. Scored as one more row when the file exists.
+COMBINATION = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-private/probes/combination_val.parquet")
+COMBINATION_NAME = "six-probe combination (probe tool bar)"
 BOOTSTRAP = 2000
 SEED = 0
 #: Survival mode: the monthly-grid rows, one folder each (vista-eval configs/runs/v1_7/survival_monthly_grid/).
@@ -163,6 +171,19 @@ def cmd_score(args) -> int:
             auc = f"{row['auroc']:.3f} [{row['auroc_lower']:.3f}, {row['auroc_upper']:.3f}]" if "auroc" in row else "n/a"
             flag = f"; {disagree} labels differ from the task's" if disagree else ""
             print(f"  {name:<30} n={row['n']:>4}/{len(ids)} ({row['died']} died)  AUROC {auc}{flag}")
+        if COMBINATION.is_file():
+            c = pd.read_parquet(COMBINATION)
+            c = c[(c["horizon"] == words) & c["id"].isin(ids)]
+            y, sc = np.array([rows[i][field] for i in c["id"]]), c["score"].to_numpy()
+            row = {"horizon": words, "task": task, "baseline": COMBINATION_NAME, "modality": "probes",
+                   "stem": "combination", "n": int(len(c)), "of": len(ids), "died": int(y.sum()),
+                   "label_disagreements": 0}
+            if len(c) and 0 < y.sum() < len(y):
+                row["auroc"] = float(roc_auc_score(y, sc))
+                row["auroc_lower"], row["auroc_upper"] = bootstrap_ci(y, sc)
+            table.append(row)
+            auc = f"{row['auroc']:.3f} [{row['auroc_lower']:.3f}, {row['auroc_upper']:.3f}]" if "auroc" in row else "n/a"
+            print(f"  {COMBINATION_NAME:<30} n={row['n']:>4}/{len(ids)} ({row['died']} died)  AUROC {auc}")
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         if args.horizons == "2yr":  # the yes/no-era file layout, unchanged

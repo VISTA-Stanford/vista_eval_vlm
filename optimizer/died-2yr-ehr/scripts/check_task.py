@@ -136,7 +136,19 @@ def cmd_check() -> int:
             report("the data guide sits beside the record, read-only, byte-identical to context/patient_data_guide.md",
                    guide.is_file() and guide.read_bytes() == agentic.GUIDE_SRC.read_bytes()
                    and not guide.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-                   and {p.name for p in Path(tmp).iterdir()} == {agentic.RECORD, agentic.GUIDE})
+                   and {p.name for p in Path(tmp).iterdir()}
+                   == {agentic.RECORD, agentic.GUIDE} | ({agentic.PROBES_FILE} if config.PROBES else set()))
+            if config.PROBES:  # the probe arm: probes.json beside the record, read-only, the builder's file exactly
+                pf = Path(tmp) / agentic.PROBES_FILE
+                body = pf.read_text(encoding="utf-8") if pf.is_file() else ""
+                report("probes.json sits beside the record, read-only, byte-identical to PROBES_DIR/<id>.json",
+                       pf.is_file() and pf.read_bytes() == (config.PROBES_DIR / f"{pid}.json").read_bytes()
+                       and not pf.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+                parsed = json.loads(body) if body else {}
+                report("probes.json holds six probes x two horizons and no patient id",
+                       len(parsed.get("probes", [])) == 6
+                       and all(set(q["horizons"]) == {"1 year", "2 years"} for q in parsed.get("probes", []))
+                       and pid not in body)
             report("nothing named registry_dates, and no side-file content path, in the session folder",
                    "registry_dates" not in everything and not any("registry_dates" in str(p) for p in Path(tmp).rglob("*")),
                    f"side folder present beside patients/: {bool(side)}")
