@@ -576,6 +576,10 @@ def cmd_pins(args) -> int:
         pins.setdefault(kind, {})[platform_key()] = value
     path.write_text(json.dumps(data, indent=2) + "\n")
     d2.git(lay.repo, "add", d2.PIN_FILE)
+    if not d2.git(lay.repo, "status", "--porcelain", "--", d2.PIN_FILE).strip():
+        # Already pinned (e.g. by a SETUP_ONLY run before the launch): nothing to commit, and git would refuse.
+        print(f"pins unchanged in {path}")
+        return 0
     d2.git(lay.repo, "commit", "-m", f"setup pins for {platform_key()}")
     print(f"committed {path}")
     return 0
