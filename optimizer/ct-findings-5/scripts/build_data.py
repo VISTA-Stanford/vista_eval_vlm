@@ -15,10 +15,13 @@ unscored for that scan (``None``), never negative.
              pools.json and the private id map. Prints counts only.
     volumes  convert each pool scan's NIfTI into patients/<id>/ct.npz + meta.json, exactly as died-2yr-ct does
              (Hounsfield units, int16, RAS, thin scans averaged into ~2.5 mm slabs, no header, date or UID kept)
+    reports  write each TRAIN pool scan's radiology report (the one its labels were read from) to
+             train_reports/<id>.txt for the optimizer's mistakes; never a VAL scan's; counts only
 
     cd optimizer/ct-findings-5
     OMP_NUM_THREADS=2 nice -n 19 uv run -q --no-project --with google-cloud-bigquery --with pandas --with pyarrow python -B scripts/build_data.py select
     OMP_NUM_THREADS=1 nice -n 19 uv run -q --no-project --with nibabel --with numpy python -B scripts/build_data.py volumes --workers 4 [--limit 10]
+    uv run -q --no-project --with google-cloud-bigquery python -B scripts/build_data.py reports
 
 BigQuery runs on this host's application-default login. Prints counts only: never an id, a UID, a date or a row.
 """
@@ -297,6 +300,54 @@ def cmd_volumes(args) -> int:
     return 1 if status["failed"] else 0
 
 
+REPORT_TABLE = f"{PROJECT}.radiology.thoracic_ct_june26_clinical_notes"  # the reports the labels were read from
+
+
+def cmd_reports(_args) -> int:
+    """Write each TRAIN pool scan's radiology report to train_reports/<id>.txt, for the optimizer only: the mistake
+    builder copies a mistake's report into the optimizer's feedback; the labelling session never sees this folder (it
+    is staged only ct.npz and meta.json, agentic.py). A folder of its own, not the scan folders, so a run on older
+    code that copies whole scan folders never picks reports up. Joined on exact accession number, as the labels were
+    (vista_bench get_per_ct_findings.sql). Report text only: none of the table's clinical-note or diagnosis columns. TRAIN only:
+    no VAL scan is ever written, and the build stops if one has a report. Prints counts only."""
+    from google.cloud import bigquery
+
+    pools = json.loads((DATA_DIR / "pools.json").read_text())
+    train, val = set(pools["train"]), set(pools["val"])
+    if train & val:
+        raise SystemExit("a scan is in both pools")
+    id_map = [m for m in map(json.loads, (PRIVATE_DIR / "id_map.jsonl").read_text().splitlines()) if m]
+    acc = {m["id"]: m["accession_number"] for m in id_map if m["split"] == "train" and m["id"] in train}
+    if set(acc) != train:
+        raise SystemExit(f"id map covers {len(acc)} of {len(train)} TRAIN scans")
+    sql = f"""
+        select accession_number, array_agg(distinct report_note_text ignore nulls) as texts
+        from `{REPORT_TABLE}`
+        where accession_number in unnest(@acc)
+        group by accession_number"""
+    job = bigquery.Client(project=PROJECT).query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ArrayQueryParameter("acc", "STRING", sorted(set(acc.values())))]))
+    texts = {r["accession_number"]: [t for t in r["texts"] if t and t.strip()] for r in job.result()}
+    rdir = DATA_DIR / "train_reports"
+    rdir.mkdir(exist_ok=True)
+    status = Counter()
+    for sid, a in sorted(acc.items()):
+        found = texts.get(a, [])
+        out = rdir / f"{sid}.txt"
+        if len(found) != 1:
+            status["no_report" if not found else "several_reports"] += 1
+            out.unlink(missing_ok=True)
+            continue
+        out.write_text(found[0].strip() + "\n", encoding="utf-8")
+        status["written"] += 1
+    stray = sorted(p.stem for p in rdir.glob("*.txt") if p.stem not in train)
+    leaked = sum(i in val for i in stray)
+    print(f"TRAIN scans {len(train)}: {dict(status)}; reports not of a TRAIN scan: {len(stray)} (VAL: {leaked})")
+    if stray:
+        raise SystemExit("train_reports holds a report that is not a TRAIN pool scan's")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -304,8 +355,9 @@ def main() -> int:
     v = sub.add_parser("volumes")
     v.add_argument("--workers", type=int, default=4)
     v.add_argument("--limit", type=int, default=0)
+    sub.add_parser("reports")
     args = ap.parse_args()
-    return {"select": cmd_select, "volumes": cmd_volumes}[args.cmd](args)
+    return {"select": cmd_select, "volumes": cmd_volumes, "reports": cmd_reports}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,8 @@ what is scored.
 The mistakes file lists every TRAIN scan of this pass with gold for each question (null where the question has no
 answer for that scan) and the session's probability for each, and its stated reasons (what in the scan it says moved
 the probabilities most). Those on the wrong side of a question's TRAIN rate are marked `mistake` (`wrong_at` names the
-questions) and come with their CT, the session's findings note and its transcript; the rest come without files. A
+questions) and come with their CT, the session's findings note, its transcript and, when there is one, the
+radiologist's report its answers were read from (`report_file`); the rest come without files. A
 TRAIN batch is about a hundred scans, so a pattern seen in three of them may be chance: say how many scans support a
 pattern, and prefer changes that make the session look more carefully or more consistently over changes that name a
 finding because of one scan. An instruction that raises some scans' probabilities raises others' too: ask which no
@@ -69,6 +70,13 @@ misread. Do it with code and a few images: each image you open costs tokens.
 The session is a capable reader of images; what it lacks is knowledge of how *this dataset's* labels treat what it
 sees. The labels come from the radiologist's report on each scan, so they follow reporting habits: what gets called
 a lesion, what is dismissed as benign or post-treatment, which lobe a finding is filed under. Teach that.
+
+Each mistake's report shows you those habits directly. Read it beside the CT: which wording made each answer yes or
+no ("too small to characterize", "post-radiation change", "cannot exclude", "likely reactive"), what the radiologist
+saw that the session missed or over-called, which lobe the lesion was filed under. Count the patterns across many
+reports, then turn them into guidance about **what to look for on the image** and how these labels treat it: the
+session never sees a report, only the CT, so telling it to look for report wording does nothing. Never copy a report's
+text, or any detail particular to one scan, into the program, your change note, your notebook or a search question.
 
 - From the mistakes and their CTs, write down what the session is likely to see and what it means here. The shape
   of such a note (these examples are made up; write only what you find in the TRAIN scans): "a

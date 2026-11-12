@@ -66,6 +66,12 @@ def patient_dir(pid: str) -> Path:
     return DATA_DIR / "patients" / pid
 
 
+def train_report(pid: str) -> Path | None:
+    """A TRAIN scan's radiology report, for the optimizer's mistakes only; None if it has none."""
+    path = DATA_DIR / "train_reports" / f"{pid}.txt"
+    return path if path.is_file() else None
+
+
 @lru_cache(maxsize=None)
 def pools() -> dict[str, frozenset]:
     """The fixed TRAIN (400) and VAL (200) pools scripts/build_data.py drew (enriched for positives). Only these
@@ -364,8 +370,9 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
     """The loop calls this after each TRAIN pass. It writes every TRAIN scan of the pass (gold per question, None when
     unscored; the session's probabilities and reasons), marking as a mistake each one on the wrong side of a question's
     TRAIN rate, or whose call failed. For each mistake it copies the scan, the session's findings note and its
-    transcript beside the file as ``<id>-<file>``, listed in the entry. VAL scans are never written anywhere it can
-    reach."""
+    transcript beside the file as ``<id>-<file>``, listed in the entry, and its radiology report (the one its labels
+    were read from) as ``<id>-report.txt`` when ``train_reports/`` has it (build_data.py reports). VAL scans are never
+    written anywhere it can reach, and a VAL scan has no report there."""
 
     def build(artifacts: RunArtifacts, score: ScoreResult) -> MistakeCorpus:
         n = score.task_config.get("_iter", 0)
@@ -378,7 +385,7 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
         for i, a in sorted(answers.items()):
             wrong_at = [key for key, _t, _q in QUESTIONS if rows[i].get(key) is not None and not right(a, key, rows[i][key])]
             mistake = bool(a["error"]) or bool(wrong_at)
-            files, traces = [], []
+            files, traces, report = [], [], None
             if mistake:
                 for f in sorted(patient_dir(i).iterdir()):
                     dest = records / f"{i}-{f.name}"
@@ -389,12 +396,18 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
                     dest = records / f"{i}-trace-{f.name}"
                     _copy_over(f, dest)
                     traces.append(str(dest))
+                src = train_report(i)
+                if src is not None:
+                    dest = records / f"{i}-report.txt"
+                    _copy_over(src, dest)
+                    report = str(dest)
             entries.append({"id": i,
                             **{f"gold_{key}": rows[i].get(key) for key, _t, _q in QUESTIONS},
                             **{f"probability_{key}": (None if a["error"] else round(prob(a, key), 3))
                                for key, _t, _q in QUESTIONS},
                             "error": a["error"], "reason": a.get("reason"), "reasons": a.get("reasons") or [],
-                            "mistake": mistake, "wrong_at": wrong_at, "ct_files": files, "trace_files": traces})
+                            "mistake": mistake, "wrong_at": wrong_at, "ct_files": files, "trace_files": traces,
+                            "report_file": report})
         path = out / "train_mistakes.json"
         path.write_text(json.dumps(entries, indent=1), encoding="utf-8")
         counts = Counter(f"wrong_{key}" for e in entries for key in e["wrong_at"])

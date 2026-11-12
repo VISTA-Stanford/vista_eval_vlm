@@ -55,7 +55,8 @@ tumour such as a cyst or hemangioma); or not characterized.
   immunotherapy-related, or organizing pneumonia) seen on this scan. Infection-type causes and past episodes
   mentioned only in the history do not count.
 
-A scan with no answer for a question (`null` in the mistakes file) is simply not scored on that question. The
+For TRAIN mistakes you also get the report itself (`report_file` in the mistakes file), so you can see the
+wording behind each answer; the session never sees reports, and VAL reports are not available to anyone. A scan with no answer for a question (`null` in the mistakes file) is simply not scored on that question. The
 scans were drawn one per patient and **enriched**: each question has at least 30 yes and 30 no scans among the 200
 VAL scans, so the share of yes here is higher than in the clinic for the rare questions. Of the TRAIN scans with an
 answer: liver 28% yes, lungs 75%, lymph nodes 42%, right upper lobe 34%, pneumonitis 15%.

@@ -59,6 +59,14 @@ def cmd_check() -> int:
         names = {p.name for p in (Path(tmp) / "ct").iterdir()}
         report("staging copies exactly ct.npz and meta.json", names == {"ct.npz", "meta.json"}
                and {p.name for p in Path(tmp).iterdir()} == {"ct"}, f"{len(names)} files")
+    # 1b. a TRAIN scan that has a report: the session still gets only the CT (reports are for the optimizer)
+    tpid = next((i for i in sorted(ad.pools()["train"]) if ad.train_report(i)), None)
+    if tpid is not None:
+        with tempfile.TemporaryDirectory() as tmp:
+            spec.stage(Call(tpid, {"id": tpid}), Path(tmp), "p0")
+            got = sorted(str(p.relative_to(tmp)) for p in Path(tmp).rglob("*") if p.is_file())
+        report("staging a TRAIN scan with a report gives the session no report", got == ["ct/ct.npz", "ct/meta.json"],
+               f"{len(got)} files")
 
     check_scorer(report)
     check_output(report, spec)
@@ -181,12 +189,19 @@ def check_scorer(report) -> None:
         corpus = ad.mistake_corpus(Path(tmp) / "fb")(arts, tscore)
         entries = json.loads(Path(corpus.ref).read_text())
         copied = all((Path(c).is_file() for c in e["ct_files"]) for e in entries)
+        reports_ok = all((e["report_file"] is not None) == (e["mistake"] and ad.train_report(e["id"]) is not None)
+                         and (e["report_file"] is None or (Path(e["report_file"]).is_file()
+                              and Path(e["report_file"]).read_bytes() == ad.train_report(e["id"]).read_bytes()))
+                         for e in entries)
+        n_rep = sum(e["report_file"] is not None for e in entries)
     good = all(set(e["wrong_at"]) == {k for k in keys if trows[e["id"]][k] == 0}
                and e["mistake"] == bool(e["wrong_at"]) and e["reasons"]
                and all(e[f"probability_{k}"] == 0.99 and e[f"gold_{k}"] == trows[e["id"]][k] for k in keys)
                and (len(e["ct_files"]) == 2) == e["mistake"] for e in entries)
     report("mistakes file: gold (null when unscored), probabilities, reasons; at 99% wrong exactly on the no questions",
            good and copied and len(entries) == len(train), f"{sum(e['mistake'] for e in entries)} of {len(entries)} mistakes")
+    report("mistakes file: a mistake with a report gets an exact copy as report_file; a non-mistake gets none",
+           reports_ok, f"{n_rep} of {len(entries)} entries carry a report")
 
 
 def check_output(report, spec) -> None:
@@ -263,6 +278,11 @@ def check_pools(report) -> None:
     vols = sum((ad.patient_dir(i) / "meta.json").is_file() and (ad.patient_dir(i) / "ct.npz").is_file()
                for s in ("train", "val") for i in pools[s])
     report("every pool scan has its converted volume", vols == 600, f"{vols} of 600")
+    rdir = config.DATA_DIR / "train_reports"
+    names = {p.stem for p in rdir.glob("*.txt")} if rdir.is_dir() else set()
+    report("reports: only TRAIN pool scans have one (none for VAL), and at least 90% of TRAIN do",
+           not (names - pools["train"]) and not (names & pools["val"]) and len(names) >= 0.9 * len(pools["train"]),
+           f"{len(names)} of {len(pools['train'])} TRAIN, {len(names & pools['val'])} VAL, {len(names - pools['train'])} other")
     for s, floor in (("val", FLOOR), ("train", 2 * FLOOR)):
         rows = ad.read_split(s)
         c = {k: (sum(r[k] == 1 for r in rows), sum(r[k] == 0 for r in rows)) for k in keys}
