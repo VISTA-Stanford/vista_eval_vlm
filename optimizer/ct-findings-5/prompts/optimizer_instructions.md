@@ -56,10 +56,30 @@ misread. Do it with code and a few images: each image you open costs tokens.
    the scan, sessions that ran out of time or budget, answers that were not a number from 0 to 100. Check each
    against the CT. Pick the pattern that costs the most AUROC.
 4. **Edit the program.** Change only the program files you are told you may edit: `instructions.md` and
-   `tools/`. Write the method in general terms (what to look at, how to look, how to weigh it into a probability
-   for each question). Never refer to a scan's id. If you add or change a tool, run it on a few of the mistakes'
-   CTs before you finish, and check what it costs a session in images and time.
+   `tools/`. Your main lever is interpretation, written as plain-text discussion in `instructions.md` (see
+   "Interpretation, not tools" below). Never refer to a scan's id. If you change the viewer, run it on a few of the
+   mistakes' CTs before you finish, and check what it costs a session in images and time.
 5. **Record.** Write the change note (below) and update the notebook.
+
+## Interpretation, not tools
+
+The session is a capable reader of images; what it lacks is knowledge of how *this dataset's* labels treat what it
+sees. The labels come from the radiologist's report on each scan, so they follow reporting habits: what gets called
+a lesion, what is dismissed as benign or post-treatment, which lobe a finding is filed under. Teach that.
+
+- From the mistakes and their CTs, write down what the session is likely to see and what it means here. The shape
+  of such a note (these examples are made up; write only what you find in the TRAIN scans): "a
+  calcified nodule was a no for lungs in nearly every TRAIN scan", "fibrosis in a radiation field without a convex
+  mass was a no", "a 7-9 mm short-axis node was yes about half the time; above 10 mm almost always". Give the counts
+  you saw where you have them (never ids), and say where the labels are genuinely mixed, so the session puts a
+  middling number there.
+- Write it as discussion the session reads before and while it looks: the finding, what it looks like on these
+  scans, how it was labelled, and how far it should move each of the five probabilities. Plain sentences, not a
+  points table.
+- Keep `tools/view_ct.py` as the way to look; tune its views if that helps. Avoid writing analysis tools
+  (segmenters, measurers, candidate finders): in the first climb on this task a segmentation-and-candidates
+  tool lowered VAL, and the session's own reading is what is being tested. Add one only if the mistakes show a
+  specific failure no amount of guidance can fix, and say in the change note why guidance alone could not.
 
 ## The change note
 
@@ -82,9 +102,10 @@ The VAL mean AUROC over five questions on 200 scans (30 to 146 yes per question)
 a single question by more (pneumonitis, with 30 yes, by about 0.05). A curve flat within that band for two
 iterations, or creeping up by a sliver, is a plateau: try a different approach rather than another small edit.
 The run stops by itself after two rounds in a row with no new best VAL score.
-Examples: a fixed reading order through each organ with a short checklist per question, a measurement tool (node
-short axis, lesion size and attenuation) feeding the probabilities, a tool that finds the lung fissures or the right
-upper lobe, a probability scale tied to how a report would word the finding.
+Examples: a discussion of what the sessions over-call here (granulomas, cysts, post-operative or radiation change)
+and how the labels treat each; how lobe is assigned near the fissure and the apex; what separates pneumonitis from
+infection or atelectasis in the labelled scans; a probability scale tied to how a report would word the finding
+("suspicious for", "likely benign", "indeterminate").
 
 ## The notebook
 

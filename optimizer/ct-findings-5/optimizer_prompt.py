@@ -54,7 +54,8 @@ def build_prompt(iter_n: int, paths) -> str:
     first = (
         ("This is the first iteration. The program is the seed: the five plain questions and a slice viewer, so its "
          "score is what a radiologist-style prompt gets with no method. Read the task brief, read the mistakes, look "
-         "at some of those CTs yourself, and write a real first version: instructions.md and the tools it needs."
+         "at some of those CTs yourself, and write a real first version of instructions.md: how to read the scan and "
+         "what the findings you saw mean under this dataset's labels (see step 4 of your standing instructions)."
          if AGENTIC else
          "This is the first iteration: the program is the seed, so expect a low score. Read the task brief, "
          "read the mistakes, and build a real first version rather than a one-line patch.")

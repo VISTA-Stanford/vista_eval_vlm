@@ -29,7 +29,8 @@ What the session has:
   patient's Right on axis 0, Anterior on axis 1, Superior on axis 2.
 - `tools/view_ct.py`, which renders axial, coronal or sagittal slices in lung, soft-tissue, bone or liver
   windows (or any HU range) as one PNG grid, with optional crops; the session opens the PNG with its Read
-  tool. You may change it, replace it, or add tools (for example, measurements or a lobe locator).
+  tool. You may change its views (windows, crops, which slices). Adding other tools is discouraged: see
+  "Interpretation, not tools" in your standing instructions.
 - Python 3.11 with numpy, scipy, Pillow and nibabel; Read, Write, Edit, Glob, Grep and Bash. No network,
   no other scan, no internet lookups, no subagents.
 
