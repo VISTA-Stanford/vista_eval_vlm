@@ -108,7 +108,7 @@ ot pins --write | tail -1 || fail "pins --write"
 # The $0 checks on synthetic data, with the same code.
 rm -rf /tmp/over-time-synth
 (cd "$TASK_DIR" && uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py synth /tmp/over-time-synth >/dev/null \
-    && TASK_DATA_DIR=/tmp/over-time-synth TASK_WORKDIR=/tmp/over-time-synth-work uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py check | tail -1) \
+    && env -u OVER_TIME_PAST_START_GATE TASK_DATA_DIR=/tmp/over-time-synth TASK_WORKDIR=/tmp/over-time-synth-work uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py check | tail -1) \
     | tee /dev/stderr | grep -q "checks PASS$" || fail "check_task.py"
 
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: run not started)"; exit 0; fi
