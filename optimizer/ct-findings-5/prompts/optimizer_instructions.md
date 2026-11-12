@@ -45,6 +45,9 @@ misread. Do it with code and a few images: each image you open costs tokens.
    `iter/<n>/release_val.json`, and the TRAIN numbers in `iter/<n>/release_train.json`. Write down
    whether the prediction held. If VAL fell while TRAIN rose, the last edit fit TRAIN and not the task:
    make a different change, do not stack another rule on it.
+   **Build on the best version, not the last one.** If the program you were given scored below the best VAL so
+   far (`run_summary.json`), first copy the best version's `instructions.md` and `tools/` from the versions folder
+   over the program, then make your change to that. Say in the change note which version you built on.
 2. **Read this iteration's numbers.** `release_train.json` has the TRAIN mean AUROC and, per question, the AUROC,
    the Brier score, the mean probability for yes and no scans, the calibration by tenth, the number of distinct
    values and the share on the most common one; the number of failed sessions; the best version so far and what has
@@ -74,8 +77,12 @@ a lesion, what is dismissed as benign or post-treatment, which lobe a finding is
   you saw where you have them (never ids), and say where the labels are genuinely mixed, so the session puts a
   middling number there.
 - Write it as discussion the session reads before and while it looks: the finding, what it looks like on these
-  scans, how it was labelled, and how far it should move each of the five probabilities. Plain sentences, not a
-  points table.
+  scans, how it was labelled, and which way and how strongly it should move each of the five probabilities.
+  Plain sentences, not a points table.
+- **No fixed number bands.** Do not write default probabilities or lookup ranges ("clear lungs 52-60", "no node
+  seen: 8-14", "non-contrast: liver 4-8"). They pin many scans to the same few numbers whatever the scan shows,
+  and in an earlier round they cost the lungs and right-upper-lobe questions most of their gain. Let the session set
+  each number from what it sees, guided by your discussion and the base rates.
 - Keep `tools/view_ct.py` as the way to look; tune its views if that helps. Avoid writing analysis tools
   (segmenters, measurers, candidate finders): in the first climb on this task a segmentation-and-candidates
   tool lowered VAL, and the session's own reading is what is being tested. Add one only if the mistakes show a

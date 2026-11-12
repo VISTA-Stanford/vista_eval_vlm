@@ -12,6 +12,7 @@ path in a prompt points at nothing inside the container, and leaks your folder l
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF  # run.py sets ITERATIONS
@@ -51,17 +52,23 @@ def system_prompt() -> str:
 
 def build_prompt(iter_n: int, paths) -> str:
     editable = ", ".join(f"`{paths.program}/{f}`" for f in EDITABLE_FILES)
-    first = (
-        ("This is the first iteration. The program is the seed: the five plain questions and a slice viewer, so its "
-         "score is what a radiologist-style prompt gets with no method. Read the task brief, read the mistakes, look "
-         "at some of those CTs yourself, and write a real first version of instructions.md: how to read the scan and "
-         "what the findings you saw mean under this dataset's labels (see step 4 of your standing instructions)."
-         if AGENTIC else
-         "This is the first iteration: the program is the seed, so expect a low score. Read the task brief, "
-         "read the mistakes, and build a real first version rather than a one-line patch.")
-        if iter_n == 1 else
-        "Start with step 1 of your standing instructions: check last iteration's prediction."
-    )
+    start = os.environ.get("START", "")  # the launcher's START: a fresh run from an earlier climb's version
+    if iter_n > 1:
+        first = "Start with step 1 of your standing instructions: check last iteration's prediction."
+    elif AGENTIC and start and start != "seed":
+        first = (f"This is the first iteration of a new run that starts from {start}, the best version of an earlier "
+                 "climb on these same VAL scans, not from the seed. Read your notebook and the earlier change notes "
+                 "(notes folder) first: they say what was tried and what each version scored. Then improve on this "
+                 "version.")
+    elif AGENTIC:
+        first = ("This is the first iteration. The program is the seed: the five plain questions and a slice viewer, "
+                 "so its score is what a radiologist-style prompt gets with no method. Read the task brief, read the "
+                 "mistakes, look at some of those CTs yourself, and write a real first version of instructions.md: how "
+                 "to read the scan and what the findings you saw mean under this dataset's labels (see step 4 of your "
+                 "standing instructions).")
+    else:
+        first = ("This is the first iteration: the program is the seed, so expect a low score. Read the task brief, "
+                 "read the mistakes, and build a real first version rather than a one-line patch.")
     test = (
         (("You cannot run the scans' sessions in here: each scan is read by its own session, outside\n"
          "this container. You can read what each session did, look at the same CT, and run your tools on it.\n"

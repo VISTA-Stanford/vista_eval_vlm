@@ -8,7 +8,8 @@
 # Claude token at ~/.config/alo/oauth_token (mode 600); with ALO_ROUTE=vertex, the machine's optimizer login
 # (/home/optimizer/.config/gcloud/application_default_credentials.json; never read here, only checked to exist).
 # Settings, all optional, on the same line: RUN_ID (prob-r1), ITERATIONS (10), PROGRAM_MAX_CONCURRENT (2),
-# MAX_RESUMES (20); SETUP_ONLY=1 stops before the run. The run stops after 2 rounds with no new best VAL (which ends it
+# MAX_RESUMES (20), START (a version tag to start a fresh run from, e.g. program-v1; default the newest good one);
+# SETUP_ONLY=1 stops before the run. The run stops after 2 rounds with no new best VAL (which ends it
 # as finished) or past $50 a round / $200 a run; setup also scores the CT probes on the same VAL pool into
 # baselines_val_pool.json (spec 2026-11-10).
 # Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
@@ -45,6 +46,7 @@ if [ "${1:-}" = "--loop" ]; then
     # Detached part: run, and resume after a network stop (a resume reruns only unfinished calls).
     attempt=0
     mode=()
+    [ -n "${START:-}" ] && mode=(--start "$START")  # fresh run from a chosen version tag (e.g. program-v1)
     [ -f "$TASK_WORKDIR/private/runs/$RUN_ID/run_summary.json" ] && mode=(--resume)
     while :; do
         echo "=== $(date -u +%FT%TZ) run $RUN_ID ${mode[*]:-fresh} (resume $attempt of $MAX_RESUMES)"
@@ -121,5 +123,5 @@ mkdir -p "$RESULTS"  # the comparison the spec reports the winner against, on th
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: run not started)"; exit 0; fi
 mkdir -p "$TASK_WORKDIR"
 cp "$TASK_DIR/scripts/run_on_vm.sh" "$TASK_WORKDIR/run_on_vm.sh"
-setsid nohup env RUN_ID="$RUN_ID" ITERATIONS="$ITERATIONS" MAX_RESUMES="$MAX_RESUMES" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
+setsid nohup env RUN_ID="$RUN_ID" ITERATIONS="$ITERATIONS" MAX_RESUMES="$MAX_RESUMES" START="${START:-}" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
 echo "SETUP PASS: run $RUN_ID started detached ($PROGRAM_MAX_CONCURRENT at a time); log $LOG; results to $RESULTS"
