@@ -57,3 +57,29 @@ Counts (2026-11-11 build):
 
 Private data: `/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-ehr-over-time-v1_7-private/`. Aggregates:
 `.../died-ehr-over-time-v1_7-runs/<host>/<run id>/`.
+
+## Hill-climb (spec addendum, approved 2026-11-12)
+
+`climb.py` runs the engine's optimizer loop unchanged over this task. Opus 5.5 (died-2yr-ehr's model, effort, $3
+session cap, search proxy) edits one shared `instructions.md` (+ `tools/`), seeded from `program_fresh/`. The memory
+arm's copy gets `program.MEMORY_PARAGRAPH` appended (the optimizer cannot edit it).
+
+| Decision | Answer |
+|---|---|
+| TRAIN pool | K29 TRAIN, same first treatments: 1,608 patients, 1,376 with a labelled decision point; seeded pick (`build_points.TRAIN_SEED` 20261112) of 400: 1,070 rows, 1,050 records. Counts per point: start 334, restaging 252, 6 months 213, 12 months 169, 24 months 102 |
+| TRAIN export | its own cohort, archive and rehydrate folder (`PRIVATE_DIR/train/`); exported to `~/data/died-ehr-over-time-v1_7-train-export`, leak-checked, then moved into `DATA_DIR/patients` beside VAL's. Dry run 113.6 GB, about $0.71 (2026-11-12) |
+| A round | the engine's schedule draws 100 TRAIN patients afresh (`train_mode="fresh"`); `ClimbRunner` runs all their points, both arms, in point order (memory reads this version's own earlier answers), then the new version on every VAL row (1,378 calls), each in passes of 25 calls |
+| Score | mean AUROC over 5 points x 2 horizons x 2 arms (failed answers at 0.5); Brier, observed/expected and slope per cell in the TRAIN breakdown and printed for every VAL round (`private/climb/val_rounds.jsonl`) |
+| Rounds | 10, no early stop; the engine keeps the best by VAL score |
+| Round 0 | the seed's VAL pass is the first pass's answers (`OVER_TIME_ROUND0_DIR`), not paid again. Its memory arm used `program_memory/instructions.md`, worded slightly differently from the shared text + paragraph used from round 1 |
+| Mistakes | one entry per TRAIN row and arm; wrong side of the TRAIN death rate (all TRAIN rows pooled) or failed; record once per row, transcripts per row and arm; the memory block it saw |
+| Optimizer sees | TRAIN only: the release files, the mistakes and their files, the brief (`context/task_over_time.md` + the record guide), its notes. The forbidden list is died-2yr-ehr's plus this folder |
+| Spend | hard stop $300 (`CLIMB_BUDGET_USD`): a 25-call pass starts only if patient spend + the optimizer's real spend (its sessions' meta.json) + its search's real spend (search logs) + $23 kept for the next optimizer round ($3 session cap + 100 search requests at $0.20 each, this task's caps) + 25 x $0.50 stays within it; the first-100-calls $0.10 stop |
+| Resume | a finished pass is served again at $0 by content (program, patients, split), so a resumed run never pays twice (checked: stopped mid round 2, resumed, same calls and spend as an uninterrupted run) |
+| Optimizer forbidden | died-2yr-ehr's list + the program outputs + this folder + the first pass's work folder (`~/.cache/alo-tasks/died-ehr-over-time`) when present |
+| Brief | no number computed on VAL rows |
+
+    $U build_points.py export --split train --dry-run     (the real export: --go)
+    $U run_over_time.py leak-check --split train
+    TASK_DATA_DIR=/tmp/ot-synth $U scripts/check_task.py check    adds the 2-round climb dry run, workspace scan, scorer
+    bash scripts/run_climb.sh                              the paid climb on phil-sllm-01 (SETUP_ONLY=1 stops before it)

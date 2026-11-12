@@ -51,7 +51,8 @@ def cmd_synth(out: Path) -> int:
     (out / "patients").mkdir(parents=True)
     (out / "splits").mkdir()
     rows, labels, probes = [], [], []
-    for i in range(60):
+    for i in range(100):  # 60 VAL patients, then 40 TRAIN patients (the climb's pool)
+        split = "val" if i < 60 else "train"
         pat = f"p{i + 1:012d}"
         dead_day = rng.choice([None, None, rng.randint(30, 1500)])
         have = [p for p in points if p == "start" or rng.random() < 0.7]
@@ -66,12 +67,12 @@ def cmd_synth(out: Path) -> int:
                                          "Made-up note.\n\n")
             pq.write_table(pa.table({"measurement_date": [cut - dt.timedelta(days=5), cut],
                                      "value_as_number": [1.0, 2.0]}), d / "measurement.parquet")
-            rows.append({"row": row, "patient": pat, "point": p, "record": rec, "cut": cut.isoformat()})
+            rows.append({"row": row, "patient": pat, "point": p, "record": rec, "cut": cut.isoformat(), "split": split})
             t = days[p] + i
             l1 = int(dead_day is not None and dead_day - t <= 365 and dead_day > t)
             l2 = None if rng.random() < 0.1 else int(dead_day is not None and dead_day - t <= 730 and dead_day > t)
             labels.append({"row": row, "label_1yr": l1, "label_2yr": l2})
-            for name in ("motor", "ct_merlinonc", "clinical_pretx"):
+            for name in (("motor", "ct_merlinonc", "clinical_pretx") if split == "val" else ()):
                 for field, g in (("label_1yr", l1), ("label_2yr", l2)):
                     if g is not None and rng.random() < 0.95:
                         probes.append({"row": row, "probe": name, "field": field,
@@ -247,7 +248,7 @@ def check_gate() -> None:
                                          [f"t{i + 1:012d}" for i in range(60)], ("label_1yr", "label"))
     seed, gold, note = sc.load_seed(d / "seed_answers.json", d / "seed_val.jsonl")
     ok("seed answers that re-score to the readback are used", seed is not None, note)
-    rows, labels = program.rows(), program.labels()
+    rows, labels = program.split_rows("val"), program.labels()
     start = [r for r, x in rows.items() if x["point"] == "start"]
     rng = random.Random(5)
     fresh = {r: {"died_within_1_year": rng.random(), "died_within_2_years": rng.random(), "error": None} for r in start}
@@ -371,6 +372,142 @@ def check_dry_run() -> None:
            out[-300:])
 
 
+def run_climb(*args: str, env: dict | None = None) -> tuple[int, str]:
+    proc = subprocess.run([sys.executable, "-B", str(HERE / "climb.py"), *args], capture_output=True, text=True,
+                          env={**os.environ, **NO_SEED, "ITERATIONS": "2", **(env or {})}, cwd=HERE)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def check_climb() -> None:
+    """The hill-climb (spec addendum 2026-11-12): 2 rounds end to end over fake sessions and a scripted optimizer,
+    round 0 reused from a first pass, TRAIN-only feedback, scorer == sklearn, the hard stop and the cost stop."""
+    import common as c
+    import program
+    from sklearn.metrics import roc_auc_score
+
+    code, out = run_cmd("leak-check", "--split", "train")
+    ok("TRAIN record leak scan: every point printed, 0 violations, PASS",
+       code == 0 and all(re.search(rf"record leak check train {p}: \d+ records, 0 violations", out) for p in c.POINT_KEYS)
+       and int(re.search(r"record leak check train start: (\d+)", out).group(1)) > 0, out[-300:])
+    rows = program.rows()
+    calls = {s: 2 * sum(r["split"] == s for r in rows.values())
+             - sum(r["split"] == s and r["point"] == "start" for r in rows.values()) for s in ("train", "val")}
+    with tempfile.TemporaryDirectory() as tmp:
+        w0 = Path(tmp) / "first"
+        code, out = run_cmd("run", "--run-id", "dry", "--dry-run", env={"TASK_WORKDIR": str(w0)})
+        ok("climb: a first pass to reuse as round 0", code == 0, out[-300:])
+        cw = Path(tmp) / "climb"
+        code, out = run_climb("dry-run", env={"CLIMB_WORKDIR": str(cw),
+                                              "OVER_TIME_ROUND0_DIR": str(w0 / "private" / "runs" / "dry" / "answers")})
+        ok("climb dry run: 2 rounds finish, scripted optimizer saw its releases and mistakes",
+           code == 0 and "FINISHED 2 iterations" in out and " FAIL " not in out, out[-800:])
+        ok("climb dry run: round 0 reused the first pass's VAL answers", "round 0: the seed's VAL answers reused" in out)
+        paid = int(re.search(r"dry run paid calls: (\d+)", out).group(1)) if "dry run paid calls" in out else -1
+        want = 2 * calls["train"] + 2 * calls["val"]  # seed TRAIN, v1 VAL, v1 TRAIN, v2 VAL; the seed's VAL is round 0
+        ok("climb dry run: paid calls = 2 TRAIN passes + 2 VAL passes (round 0 free, nothing re-run)", paid == want,
+           f"{paid} vs {want}")
+        # the optimizer's workspace holds TRAIN only: no VAL row, patient or record id anywhere it can read
+        val_ids = {x for r in rows.values() if r["split"] == "val" for x in (r["row"], r["patient"], r["record"])}
+        train_ids = {r["row"] for r in rows.values() if r["split"] == "train"}
+        seen_val = seen_train = 0
+        for where in (cw / "feedback", cw / "repo", cw / "inputs", cw / "notes", cw / "notebook.md", cw / "versions"):
+            for f in ([where] if where.is_file() else where.rglob("*")):
+                if not f.is_file() or ".git" in f.parts:
+                    continue
+                text = f.name + " " + f.read_bytes().decode("utf-8", "replace")
+                seen_val += sum(1 for i in val_ids if i in text)
+                seen_train += sum(1 for i in train_ids if i in text)
+        ok("optimizer workspace: no VAL id or VAL answer anywhere it can read (TRAIN ids present, so the scan can fail)",
+           seen_val == 0 and seen_train > 0, f"VAL hits {seen_val}, TRAIN hits {seen_train}")
+        mist = json.loads(next((cw / "feedback" / "iter" / "1").glob("train_mistakes.json")).read_text())
+        ok("mistakes file: one entry per TRAIN row and arm, nothing else",
+           len(mist) == 2 * len(train_ids) and all(rows[e["row"]]["split"] == "train" for e in mist))
+        # the climb's score == sklearn on the same answers
+        rounds = [json.loads(x) for x in (cw / "private" / "climb" / "val_rounds.jsonl").read_text().splitlines()]
+        labels = program.labels()
+
+        def sk_mean(get) -> tuple[int, float]:
+            aucs = []
+            for p in c.POINT_KEYS:
+                for arm in program.ARMS:
+                    for key, field, _w in c.HORIZONS:
+                        ys, ps = [], []
+                        for r, x in rows.items():
+                            if x["split"] == "val" and x["point"] == p and labels[r][field] is not None:
+                                a = get(r, arm)
+                                ys.append(labels[r][field])
+                                ps.append(0.5 if a.get("error") else a[key])
+                        if 0 < sum(ys) < len(ys):
+                            aucs.append(roc_auc_score(ys, ps))
+            return len(aucs), sum(aucs) / len(aucs)
+
+        ans = json.loads(Path(rounds[-1]["answers"]).read_text())["answers"]
+        n, m = sk_mean(lambda r, arm: ans[f"{r}.{arm}"])
+        ok("climb score (mean AUROC over point x arm x horizon) == sklearn", n == 20
+           and abs(rounds[-1]["auroc"] - m) < 1e-12, f"{rounds[-1]['auroc']:.6f} vs {m:.6f}")
+        # round 0: the recorded seed score equals a re-score of the first pass's own answer files
+        first = {f.stem: json.loads(f.read_text())["answers"] for f in (w0 / "private" / "runs" / "dry" / "answers").glob("*.json")}
+        n, m = sk_mean(lambda r, arm: first[f"{rows[r]['point']}-{arm}"][r])
+        ok("round 0: recorded VAL score == sklearn re-score of the first pass's answers", n == 20
+           and abs(rounds[0]["auroc"] - m) < 1e-12, f"{rounds[0]['auroc']:.6f} vs {m:.6f}")
+        code, out = run_climb("report", "--run-id", "climb-dry", env={"CLIMB_WORKDIR": str(cw),
+                              "OVER_TIME_ROUND0_DIR": str(w0 / "private" / "runs" / "dry" / "answers")})
+        ok("climb report: round 0 check MATCH (the first pass's own scorer)", code == 0 and "-> MATCH" in out, out[-300:])
+        # memory order: every memory block a climb pass staged holds this pass's own earlier answers (batch files)
+        good = bad = 0
+        for d in (cw / "private" / "climb" / "climb-dry").glob("*/answers.json"):
+            meta = json.loads(d.read_text())
+            if "tree" not in meta:
+                continue
+            merged = meta["answers"]
+            for b in (cw / "private" / "batches").glob(f"climb-dry-{meta['tree']}-{meta['batch_id']}.*-memory.c*.json"):
+                for call in json.loads(b.read_text())["calls"]:
+                    x = rows[call["row"]]
+                    earlier = [f"{x['patient']}-{q}" for q in c.POINT_KEYS[: c.POINT_KEYS.index(x["point"])]
+                               if f"{x['patient']}-{q}" in rows]
+                    if len(earlier) != len(call["memory"]):
+                        bad += 1
+                        continue
+                    for prev, e in zip(earlier, call["memory"]):
+                        a = merged[f"{prev}.memory"]
+                        said = (None, None) if a.get("error") else (round(100 * a["died_within_1_year"]),
+                                                                  round(100 * a["died_within_2_years"]))
+                        if e["date"] == rows[prev]["cut"] and (e["risk_1yr"], e["risk_2yr"]) == said:
+                            good += 1
+                        else:
+                            bad += 1
+        ok("climb memory blocks hold the same version's earlier answers from the same pass (TRAIN and VAL)",
+           good > 100 and bad == 0, f"{good} entries match, {bad} differ")
+        # dollar stops
+        code, out = run_climb("dry-run", env={"CLIMB_WORKDIR": str(Path(tmp) / "c2"), "OVER_TIME_ROUND0_DIR": "/nonexistent",
+                                              "CLIMB_BUDGET_USD": "45", "FAKE_COST_USD": "0.05"})
+        spent = re.search(r"spent \$([\d.]+) over \d+ calls \(\+ \$([\d.]+) kept", out)
+        ok("climb hard stop: a $45 cap stops before a pass could take patients + optimizer allowance past it",
+           code == 3 and "hard stop" in out and spent and float(spent.group(1)) + float(spent.group(2)) <= 45
+           and float(spent.group(1)) + float(spent.group(2)) + 25 * 0.5 > 45, out[-300:])
+        code, out = run_climb("dry-run", env={"CLIMB_WORKDIR": str(Path(tmp) / "c3"), "OVER_TIME_ROUND0_DIR": "/nonexistent",
+                                              "FAKE_COST_USD": "0.2"})
+        at = re.search(r"cost check after the first (\d+) calls", out)
+        paid = re.search(r"dry run paid calls: (\d+)", out)
+        ok("climb cost stop: $0.20 a call stops at 100-125 calls, inside the first pass, nothing paid after it",
+           code == 3 and "over $0.10" in out and at and paid and 100 <= int(at.group(1)) <= 125
+           and int(paid.group(1)) == int(at.group(1)) < calls["train"], out[-300:])
+        # resume: a climb stopped mid-round and resumed pays for nothing twice
+        cr = Path(tmp) / "c4"
+        r0 = {"OVER_TIME_ROUND0_DIR": str(w0 / "private" / "runs" / "dry" / "answers"), "CLIMB_WORKDIR": str(cr)}
+        reserve = 3.0 + 100 * 0.20
+        code1, out1 = run_climb("dry-run", env={**r0, "CLIMB_BUDGET_USD": str(reserve + 12.5 + 10.0)})
+        stopped = re.search(r"dry run paid calls: (\d+) \(\$([\d.]+)\)", out1)
+        code2, out2 = run_climb("dry-run", "--resume", env=r0)
+        done = re.search(r"dry run paid calls: (\d+) \(\$([\d.]+)\)", out2)
+        ok("resume: stopped mid round 2 (inside the last VAL pass), then resumed to the end", code1 == 3
+           and stopped and 2 * calls["train"] + calls["val"] < int(stopped.group(1)) < want and code2 == 0
+           and "FINISHED" in out2, (out1[-300:] + out2[-300:]))
+        ok("resume: total paid calls and spend equal the uninterrupted run's (no pass paid twice)",
+           done and int(done.group(1)) == want and abs(float(done.group(2)) - want * 0.01) < 1e-6,
+           f"{done.group(1) if done else '?'} calls vs {want}")
+
+
 def cmd_check() -> int:
     sys.path.insert(0, str(HERE))
     import common as c  # noqa: F401  (sets the died-2yr-ehr settings first)
@@ -381,6 +518,7 @@ def cmd_check() -> int:
     print("prompts and instructions"); check_prompts()
     print("treatment-start check"); check_gate()
     print("dry run (fake sessions)"); check_dry_run()
+    print("hill-climb (fake sessions, scripted optimizer)"); check_climb()
     bad = [n for n, good in RESULTS if not good]
     print(f"\n{len(RESULTS) - len(bad)} of {len(RESULTS)} checks PASS" + (f"; FAIL: {bad}" if bad else ""))
     return 1 if bad else 0

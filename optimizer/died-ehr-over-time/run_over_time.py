@@ -90,7 +90,7 @@ def trees(lay) -> dict[str, Path]:
     return out
 
 
-def make_runner(lay, *, pin: str, image: str, fake=None):
+def make_runner(lay, *, pin: str, image: str, fake=None, cls=None):
     """The engine's ProgramRunner over this task's spec, on died-2yr-ehr's route and image. ``fake``: the dry run's
     stand-in sessions (the engine's own test hooks), so nothing reaches Docker or Claude."""
     from isolation import sealed_session as ss
@@ -107,18 +107,23 @@ def make_runner(lay, *, pin: str, image: str, fake=None):
         allowed_tools=agentic.TOOLS, model=config.PROGRAM_MODEL, image=image, profile=profile, credential=credential,
         transcript_dir=lay.transcripts / "program", expected_fingerprint=pin)
     spec = program.program_spec(fb)
+    if cls is None:
+        cls = ProgramRunner  # the climb passes its subclass (climb.ClimbRunner)
     if fake:
         from dataclasses import replace
         spec = replace(spec, token_env_name=None)
-        return ProgramRunner(spec=spec, template=template, output_root=lay.program_outputs,
-                             materialize_root=lay.versions, _session_factory=fake.session,
-                             _stack_factory=fake.stack, _docker=fake)
-    return ProgramRunner(spec=spec, template=template, output_root=lay.program_outputs, materialize_root=lay.versions)
+        return cls(spec=spec, template=template, output_root=lay.program_outputs,
+                   materialize_root=lay.versions, _session_factory=fake.session,
+                   _stack_factory=fake.stack, _docker=fake)
+    return cls(spec=spec, template=template, output_root=lay.program_outputs, materialize_root=lay.versions)
 
 
 # ==================================================================================================
 # Spend
 # ==================================================================================================
+
+
+_RECEIPTS: dict = {}
 
 
 def spend(lay, run_id: str) -> tuple[float, int]:
@@ -128,15 +133,19 @@ def spend(lay, run_id: str) -> tuple[float, int]:
     root = lay.program_outputs
     dollars, calls, seen, seen_pass = 0.0, 0, set(), set()
     for f in root.rglob("receipts/*.json"):
-        try:
-            r = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        key = (r.get("pass_id"), r.get("call_id"), r.get("attempt"))
-        if r.get("run_id") != run_id or key in seen:
+        got = _RECEIPTS.get(f)
+        if got is None:  # a receipt never changes once written: read each once per process
+            try:
+                r = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            got = _RECEIPTS[f] = (r.get("run_id"), (r.get("pass_id"), r.get("call_id"), r.get("attempt")),
+                                  sum(float(s.get("cost_usd") or 0.0) for s in r.get("stages", [])))
+        rid, key, cost = got
+        if rid != run_id or key in seen:
             continue
         seen.add(key)
-        dollars += sum(float(s.get("cost_usd") or 0.0) for s in r.get("stages", []))
+        dollars += cost
         calls += 1
     for f in root.rglob("pass.json"):
         try:
@@ -152,12 +161,17 @@ def spend(lay, run_id: str) -> tuple[float, int]:
     return dollars, calls
 
 
-def check_spend(lay, run_id: str, n_next: int, state: dict) -> None:
+def check_spend(lay, run_id: str, n_next: int, state: dict, *, cap: float | None = None, reserve: float = 0.0) -> None:
+    """Stop before a pass that could take spend past ``cap`` (default common.RUN_BUDGET_USD): patient sessions so
+    far + ``reserve`` (the climb's optimizer allowance) + every call of the pass at its cap. Then the
+    first-100-calls cost check."""
+    cap = c.RUN_BUDGET_USD if cap is None else cap
     dollars, calls = spend(lay, run_id)
-    worst = dollars + n_next * config.PROGRAM_CALL_BUDGET_USD
-    if worst > c.RUN_BUDGET_USD:
-        raise Stop(f"spent ${dollars:.2f} over {calls} calls; the next pass ({n_next} calls at up to "
-                   f"${config.PROGRAM_CALL_BUDGET_USD:.2f} each) could pass the ${c.RUN_BUDGET_USD:.0f} hard stop")
+    worst = dollars + reserve + n_next * config.PROGRAM_CALL_BUDGET_USD
+    if worst > cap:
+        raise Stop(f"spent ${dollars:.2f} over {calls} calls (+ ${reserve:.2f} kept for the optimizer); the next pass "
+                   f"({n_next} calls at up to ${config.PROGRAM_CALL_BUDGET_USD:.2f} each) could pass the ${cap:.0f} "
+                   f"hard stop")
     if calls >= c.EARLY_CALLS and not state.get("early_checked"):
         state["early_checked"] = True
         per = dollars / calls
@@ -171,22 +185,30 @@ def check_spend(lay, run_id: str, n_next: int, state: dict) -> None:
 # ==================================================================================================
 
 
-def record_leaks(point: str) -> tuple[int, dict]:
-    """Records of one point's rows with anything dated after the row's cut: (rows checked, counts by kind)."""
+_SCANNED: dict[tuple[str, str], dict] = {}
+
+
+def record_leaks(point: str, split: str = "val", patients: set | None = None) -> tuple[int, dict]:
+    """Records of one point's rows with anything dated after the row's cut: (rows checked, counts by kind). Each
+    (record, cut) is scanned once per process."""
     total: dict[str, int] = {}
-    pr = program.point_rows(point)
+    pr = program.point_rows(point, split, patients)
     for r in pr:
-        for k, n in program.record_violations(config.DATA_DIR / "patients" / r["record"], r["cut"]).items():
+        key = (r["record"], r["cut"])
+        if key not in _SCANNED:
+            _SCANNED[key] = program.record_violations(config.DATA_DIR / "patients" / r["record"], r["cut"])
+        for k, n in _SCANNED[key].items():
             total[k] = total.get(k, 0) + n
     return len(pr), total
 
 
 def cmd_leak_check(args) -> int:
     bad = 0
-    for point in c.POINT_KEYS:
-        n, v = record_leaks(point)
-        bad += sum(v.values())
-        print(f"record leak check {point}: {n} records, {sum(v.values())} violations {v or ''}")
+    for split in (("val", "train") if args.split == "all" else (args.split,)):
+        for point in c.POINT_KEYS:
+            n, v = record_leaks(point, split)
+            bad += sum(v.values())
+            print(f"record leak check {split} {point}: {n} records, {sum(v.values())} violations {v or ''}")
     print("PASS" if not bad else "FAIL")
     return 1 if bad else 0
 
@@ -298,7 +320,7 @@ def start_gate(fresh_start: dict) -> dict:
     ids = {}
     if (c.DATA_DIR / "seed_ids.jsonl").is_file():
         ids = {r["patient"]: r["task_id"] for r in map(json.loads, (c.DATA_DIR / "seed_ids.jsonl").read_text().splitlines())}
-    return {**sc.start_gate(fresh_start, program.rows(), program.labels(), seed, gold, ids), "seed_note": note}
+    return {**sc.start_gate(fresh_start, program.split_rows("val"), program.labels(), seed, gold, ids), "seed_note": note}
 
 
 def cmd_pins(args) -> int:
@@ -375,7 +397,7 @@ def cmd_score(args) -> int:
     if not ans:
         print(f"no answers for run {args.run_id} in {answers_dir(lay, args.run_id)}")
         return 1
-    out = sc.score(ans, program.rows(), program.labels(), load_probes(), n_boot=args.n_boot)
+    out = sc.score(ans, program.split_rows("val"), program.labels(), load_probes(), n_boot=args.n_boot)
     if f"{c.POINT_KEYS[0]}-fresh" in ans:
         out["start_gate"] = start_gate(ans[f"{c.POINT_KEYS[0]}-fresh"])
         sc.print_gate(out["start_gate"])
@@ -407,7 +429,8 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("pins")
     p.add_argument("--write", action="store_true")
-    sub.add_parser("leak-check")
+    lc = sub.add_parser("leak-check")
+    lc.add_argument("--split", choices=("val", "train", "all"), default="val")
     r = sub.add_parser("run")
     r.add_argument("--run-id", required=True)
     r.add_argument("--dry-run", action="store_true", help="fake sessions: no Docker, no Claude, $0")

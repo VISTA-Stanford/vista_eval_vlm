@@ -23,6 +23,11 @@ import agentic  # died-2yr-ehr's (common put it on sys.path)
 import config
 
 ARMS = ("fresh", "memory")
+#: The hill-climb (spec addendum, 2026-11-12): one shared instructions.md, edited by the optimizer, runs both arms;
+#: the memory arm's copy gets this paragraph added after it, so it knows what the earlier-answers block is.
+MEMORY_PARAGRAPH = ("You have assessed this patient before, at earlier points in their care; the prompt lists your "
+                    "earlier probabilities and reasons, if any. Read what has happened in the record since your last "
+                    "assessment, then give your updated probabilities.")
 PROGRAM_DIRS = {"fresh": c.HERE / "program_fresh", "memory": c.HERE / "program_memory"}
 
 # The died-2yr-ehr record guide, with its one sentence about the cut changed to this task's cut.
@@ -49,8 +54,13 @@ def _jsonl(path: Path) -> list[dict]:
 
 @lru_cache(maxsize=None)
 def rows() -> dict[str, dict]:
-    """Every decision-point row: row id -> {"row", "patient", "point", "record", "cut"} (cut = YYYY-MM-DD)."""
-    return {r["row"]: r for r in _jsonl(c.DATA_DIR / "rows.jsonl")}
+    """Every decision-point row: row id -> {"row", "patient", "point", "record", "cut", "split"} (cut = YYYY-MM-DD;
+    split "val", or "train" for the hill-climb's TRAIN pool; rows written before the TRAIN pool existed are VAL)."""
+    return {r["row"]: {"split": "val", **r} for r in _jsonl(c.DATA_DIR / "rows.jsonl")}
+
+
+def split_rows(split: str = "val") -> dict[str, dict]:
+    return {k: r for k, r in rows().items() if r["split"] == split}
 
 
 @lru_cache(maxsize=None)
@@ -59,8 +69,10 @@ def labels() -> dict[str, dict]:
     return {r["row"]: r for r in _jsonl(c.DATA_DIR / "labels.jsonl")}
 
 
-def point_rows(point: str) -> list[dict]:
-    return sorted((r for r in rows().values() if r["point"] == point), key=lambda r: r["row"])
+def point_rows(point: str, split: str = "val", patients: set | None = None) -> list[dict]:
+    """One point's rows of one split (optionally only these patients), in a fixed order."""
+    return sorted((r for r in rows().values() if r["point"] == point and r["split"] == split
+                   and (patients is None or r["patient"] in patients)), key=lambda r: r["row"])
 
 
 # ==================================================================================================

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import secrets
 import shutil
 import subprocess
@@ -32,6 +33,9 @@ from pathlib import Path
 import common as c
 
 SCRIPTS = c.DIED_2YR_EHR / "scripts"
+#: The hill-climb's TRAIN pool (spec addendum, 2026-11-12): this many training patients, a seeded pick.
+TRAIN_POOL = 400
+TRAIN_SEED = 20261112
 
 
 def _build_data():
@@ -148,6 +152,25 @@ def cmd_table(args) -> int:
         print(f"{key:<11}{len(pr):>9}{len(n1):>8}{sum(n1):>12}{len(n2):>8}{sum(n2):>12}")
     print(f"total rows {len(rows)}, calls for both arms (the memory arm shares the fresh arm's treatment-start "
           f"answers) {2 * len(rows) - sum(r['point'] == 'start' for r in rows)}")
+    for r in rows:
+        r["split"] = "val"
+
+    # -------- the hill-climb's TRAIN pool (spec addendum 2026-11-12): TRAIN_POOL training patients of the same
+    # treatments with a labelled decision point, a seeded pick; their rows and labels built exactly as VAL's
+    train_all, _ = rows_for("train")
+    group = set(k29[k29.split == "train"].person_id)
+    have = sorted({r["person_id"] for r in train_all})
+    pick = set(random.Random(TRAIN_SEED).sample(have, min(TRAIN_POOL, len(have))))
+    train_rows = [{**r, "split": "train"} for r in train_all if r["person_id"] in pick]
+    print(f"TRAIN: {len(group)} training patients with these first treatments, {len(have)} with a labelled decision "
+          f"point; pool = {len(pick)} (seed {TRAIN_SEED}), {len(train_rows)} rows")
+    for key in c.POINT_KEYS:
+        pr = [r for r in train_rows if r["point"] == key]
+        n1 = [r["label_1yr"] for r in pr if r["label_1yr"] is not None]
+        n2 = [r["label_2yr"] for r in pr if r["label_2yr"] is not None]
+        print(f"TRAIN {key:<11}{len(pr):>9}{len(n1):>8}{sum(n1):>12}{len(n2):>8}{sum(n2):>12}")
+    val_rows = rows
+    rows = val_rows + train_rows
 
     # -------- outcome check: every other K16 file holding these CTs gives the same labels
     want = {(r["person_id"], r["accession_number"], f): r[f] for r in rows for f in c.K16_TASKS if r[f] is not None}
@@ -194,34 +217,43 @@ def cmd_table(args) -> int:
           f"({len(missing)} read from BigQuery)")
 
     # -------- write (private)
-    write_parquet(pd.DataFrame([{"oid": oid[p], "person_id": int(p), "tumor_key": tumor.get(p)} for p in persons])
+    split_of = {r["person_id"]: r["split"] for r in rows}
+    write_parquet(pd.DataFrame([{"oid": oid[p], "person_id": int(p), "tumor_key": tumor.get(p), "split": split_of[p]}
+                                for p in persons])
                   .astype({"tumor_key": "Int64"}), c.PRIVATE_DIR / "patients.parquet")
     pts = pd.DataFrame(rows)
     write_parquet(pts.astype({"label_1yr": "Int64", "label_2yr": "Int64"}), c.PRIVATE_DIR / "points.parquet")
     records = pts.drop_duplicates("record")
     cohort = pd.DataFrame({"id": records.record, "person_id": records.person_id.astype("int64"),
                            "cutoff": records.cut, "tumor_key": [tumor.get(p) for p in records.person_id]})
-    write_parquet(cohort.astype({"tumor_key": "Int64"}), c.PRIVATE_DIR / "cohort.parquet")
-    print(f"records to export: {len(cohort)} ({len(rows) - len(cohort)} points share a CT with an earlier point)")
+    # VAL's export cohort (already exported) and TRAIN's (its own export, archive and rehydrate folder: the exporter's
+    # archive never overwrites a table file, and its leak check wants the whole output folder to be its cohort)
+    for split, where in (("val", c.PRIVATE_DIR), ("train", c.PRIVATE_DIR / "train")):
+        sub = cohort[[s_ == split for s_ in records.split]]
+        where.mkdir(parents=True, exist_ok=True)
+        write_parquet(sub.astype({"tumor_key": "Int64"}), where / "cohort.parquet")
+        n_rows = sum(r["split"] == split for r in rows)
+        print(f"{split} records to export: {len(sub)} ({n_rows - len(sub)} points share a CT with an earlier point)")
+        # What died-2yr-ehr's build_data.py rehydrate reads: splits (record ids), pools, cutoffs.
+        (where / "splits").mkdir(exist_ok=True)
+        for s_ in ("train", "val", "test"):
+            write_jsonl(where / "splits" / f"{s_}.jsonl", [{"id": i} for i in sub.id] if s_ == split else [])
+        (where / "pools.json").write_text(json.dumps({"train": [], "val": []}) + "\n")
+        write_jsonl(where / "cutoffs.jsonl", [{"id": i, "cutoff": str(d)} for i, d in zip(sub.id, sub.cutoff)])
     write_jsonl(c.PRIVATE_DIR / "rows.jsonl", [{"row": r["row"], "patient": r["patient"], "point": r["point"],
-                                                "record": r["record"], "cut": str(r["cut"])} for r in rows])
+                                                "record": r["record"], "cut": str(r["cut"]), "split": r["split"]}
+                                               for r in rows])
     write_jsonl(c.PRIVATE_DIR / "labels.jsonl", [{"row": r["row"], "label_1yr": r["label_1yr"],
                                                   "label_2yr": r["label_2yr"]} for r in rows])
     # The died-2yr-ehr task id of each patient that task holds (its VAL): for the treatment-start check against the
     # Haiku probability seed's answers (run_over_time.start_gate).
     to_task = {p: i for i, p in id_map.items() if task_split.get(p) == "val"}
-    write_jsonl(c.PRIVATE_DIR / "seed_ids.jsonl", [{"patient": oid[p], "task_id": to_task[p]} for p in persons
+    val_persons_ = sorted({r["person_id"] for r in val_rows})
+    write_jsonl(c.PRIVATE_DIR / "seed_ids.jsonl", [{"patient": oid[p], "task_id": to_task[p]} for p in val_persons_
                                                    if p in to_task])
     print(f"patients also in the died-2yr-ehr task's VAL (for the treatment-start check): "
-          f"{sum(p in to_task for p in persons)}")
-    # What died-2yr-ehr's build_data.py rehydrate reads: splits (record ids, in VAL), pools, cutoffs.
-    (c.PRIVATE_DIR / "splits").mkdir(exist_ok=True)
-    write_jsonl(c.PRIVATE_DIR / "splits" / "val.jsonl", [{"id": i} for i in cohort.id])
-    write_jsonl(c.PRIVATE_DIR / "splits" / "train.jsonl", [])
-    write_jsonl(c.PRIVATE_DIR / "splits" / "test.jsonl", [])
-    (c.PRIVATE_DIR / "pools.json").write_text(json.dumps({"train": [], "val": []}) + "\n")
-    write_jsonl(c.PRIVATE_DIR / "cutoffs.jsonl", [{"id": i, "cutoff": str(d)} for i, d in zip(cohort.id, cohort.cutoff)])
-    probe_scores(rows)
+          f"{sum(p in to_task for p in val_persons_)}")
+    probe_scores(val_rows)
     print(f"written {c.PRIVATE_DIR}")
     return 0
 
@@ -288,27 +320,57 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 # ==================================================================================================
 
 
-def exporter_cmd(*extra: str) -> list[str]:
+#: TRAIN's export lands here first (its own folder: the exporter's leak check wants the folder to hold its cohort
+#: only), then its record folders move into DATA_DIR/patients, beside VAL's.
+TRAIN_EXPORT_OUT = Path.home() / "data" / "died-ehr-over-time-v1_7-train-export"
+
+
+def exporter_cmd(*extra: str, split: str = "val") -> list[str]:
     bd = _build_data()
     if not bd.EXPORTER.is_file():
         raise SystemExit(f"no exporter at {bd.EXPORTER}: set OMOP_EXPORT_REPO to a vista-onc-labelers checkout "
                          "on feat/shared-omop-export with the several-cuts change")
-    stage = Path.home() / ".cache" / "died-ehr-over-time-export-stage"
-    return ["uv", "run", str(bd.EXPORTER), "--cohort", str(c.PRIVATE_DIR / "cohort.parquet"),
-            "--registry-allowlist", str(bd.ALLOWLIST), "--out", str(c.DATA_DIR), "--stage", str(stage), *extra]
+    stage = Path.home() / ".cache" / f"died-ehr-over-time-export-stage{'-train' if split == 'train' else ''}"
+    where = c.PRIVATE_DIR / "train" if split == "train" else c.PRIVATE_DIR
+    out = TRAIN_EXPORT_OUT if split == "train" else c.DATA_DIR
+    return ["uv", "run", str(bd.EXPORTER), "--cohort", str(where / "cohort.parquet"),
+            "--registry-allowlist", str(bd.ALLOWLIST), "--out", str(out), "--stage", str(stage), *extra]
 
 
 def cmd_export(args) -> int:
     if args.dry_run:
-        return subprocess.run(exporter_cmd("--dry-run")).returncode
+        return subprocess.run(exporter_cmd("--dry-run", split=args.split)).returncode
     if not args.go:
         raise SystemExit("the export is a PHI write and an Expensive step: rerun with --go once Phil has approved it, "
                          "or use --dry-run to price it")
-    code = subprocess.run(["nice", "-n", "19", *exporter_cmd("--archive", str(c.PRIVATE_DIR / "archive"))],
+    archive = (c.PRIVATE_DIR / "train" if args.split == "train" else c.PRIVATE_DIR) / "archive"
+    code = subprocess.run(["nice", "-n", "19", *exporter_cmd("--archive", str(archive), split=args.split)],
                           env={**__import__("os").environ, "OMP_NUM_THREADS": "2"}).returncode
+    if code == 0 and args.split == "train":
+        code = move_train_records(TRAIN_EXPORT_OUT / "patients")
     if code == 0:
         cmd_local(args)
     return code
+
+
+def move_train_records(src: Path) -> int:
+    """Move TRAIN's exported (and leak-checked) record folders into DATA_DIR/patients, beside VAL's, refusing any id
+    already there. Same disk, so a rename. Only patients/<id>/ folders move; registry_dates/ stays behind."""
+    want = {json.loads(x)["id"] for x in (c.PRIVATE_DIR / "train" / "cutoffs.jsonl").read_text().splitlines() if x}
+    got = {d.name for d in src.iterdir() if d.is_dir()}
+    if got != want:
+        print(f"TRAIN export holds {len(got)} record folders, the TRAIN cohort {len(want)}: not moving")
+        return 1
+    dest = c.DATA_DIR / "patients"
+    dest.mkdir(parents=True, exist_ok=True)
+    clash = sorted(i for i in got if (dest / i).exists())
+    if clash:
+        print(f"{len(clash)} TRAIN record ids already in {dest}: not moving")
+        return 1
+    for i in sorted(got):
+        (src / i).rename(dest / i)
+    print(f"moved {len(got)} TRAIN records into {dest}")
+    return 0
 
 
 LOCAL_FILES = ("rows.jsonl", "labels.jsonl", "probes.parquet", "seed_ids.jsonl")
@@ -329,6 +391,7 @@ def main(argv=None) -> int:
     e = sub.add_parser("export")
     e.add_argument("--go", action="store_true", help="Phil approved the export")
     e.add_argument("--dry-run", action="store_true")
+    e.add_argument("--split", choices=("val", "train"), default="val", help="train: the hill-climb's TRAIN pool")
     sub.add_parser("local")
     args = ap.parse_args(argv)
     return {"table": cmd_table, "export": cmd_export, "local": cmd_local}[args.cmd](args)
