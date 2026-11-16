@@ -222,7 +222,8 @@ def answers_dir(lay, run_id: str) -> Path:
     return lay.private / "runs" / run_id / "answers"
 
 
-def drive(lay, runner, run_id: str, *, chunk: int = c.CHUNK) -> int:
+def drive(lay, runner, run_id: str, *, chunk: int = c.CHUNK, arms: tuple = program.ARMS) -> int:
+    """One pass per point and arm over c.SPLIT's rows. ``arms``: both, or ("fresh",) for TEST (Phil 2026-11-16)."""
     from isolation.pass_outputs import PassStopped
 
     tr = trees(lay)
@@ -234,12 +235,12 @@ def drive(lay, runner, run_id: str, *, chunk: int = c.CHUNK) -> int:
     with runner:
         bound = runner.as_runner(run_id=run_id)
         for point in c.POINT_KEYS:
-            pr = program.point_rows(point)
-            n, v = record_leaks(point)
+            pr = program.point_rows(point, c.SPLIT)
+            n, v = record_leaks(point, c.SPLIT)
             print(f"[{point}] record leak check: {n} records, {sum(v.values())} violations {v or ''}", flush=True)
             if v:
                 raise Stop(f"a record at {point} holds something dated after its cut: stop")
-            for arm in program.ARMS:
+            for arm in arms:
                 name = f"{point}-{arm}"
                 if arm == "memory" and point == c.POINT_KEYS[0]:
                     # No earlier answer exists here, so the memory arm's block would be empty; it takes the fresh
@@ -270,7 +271,7 @@ def drive(lay, runner, run_id: str, *, chunk: int = c.CHUNK) -> int:
                     label = f"{name}-c{i // chunk:03d}"
                     path = lay.batches / f"{run_id}-{label}.json"
                     path.write_text(json.dumps({"arm": arm, "point": point, "calls": part}), encoding="utf-8")
-                    inputs = RunInputs(input_ref=str(path), batch_id=label, split="val")
+                    inputs = RunInputs(input_ref=str(path), batch_id=label, split=c.SPLIT)
                     try:
                         arts = bound.run(tr[arm], inputs)
                     except PassStopped as exc:
@@ -279,7 +280,9 @@ def drive(lay, runner, run_id: str, *, chunk: int = c.CHUNK) -> int:
                     got.update(json.loads(Path(arts.artifact_refs[0].path).read_text(encoding="utf-8"))["answers"])
                 answers[name] = got
                 (out / f"{name}.json").write_text(json.dumps({"answers": got}), encoding="utf-8")
-                if name == f"{c.POINT_KEYS[0]}-fresh":
+                if name == f"{c.POINT_KEYS[0]}-fresh" and c.SPLIT == "test":
+                    print("treatment-start check skipped on TEST (its reference, the Haiku seed, is VAL only)")
+                elif name == f"{c.POINT_KEYS[0]}-fresh":
                     gate = start_gate(got)
                     sc.print_gate(gate)
                     (out.parent / "start_gate.json").write_text(json.dumps(gate, indent=1))
@@ -371,7 +374,11 @@ def cmd_run(args) -> int:
                     print("no Claude token for the seat route (or set ALO_ROUTE=vertex)")
                     return 1
             runner = make_runner(lay, pin=pins[platform_key()], image=d2.images()[1])
-        return drive(lay, runner, args.run_id, chunk=args.chunk)
+        arms = ("fresh",) if args.arms == "fresh" else program.ARMS
+        if c.SPLIT == "test" and arms != ("fresh",):
+            print("TEST runs the fresh arm only (Phil 2026-11-16): pass --arms fresh")
+            return 1
+        return drive(lay, runner, args.run_id, chunk=args.chunk, arms=arms)
     except Stop as exc:
         print(f"STOPPED (rule): {exc}")
         return STOPPED
@@ -397,8 +404,9 @@ def cmd_score(args) -> int:
     if not ans:
         print(f"no answers for run {args.run_id} in {answers_dir(lay, args.run_id)}")
         return 1
-    out = sc.score(ans, program.split_rows("val"), program.labels(), load_probes(), n_boot=args.n_boot)
-    if f"{c.POINT_KEYS[0]}-fresh" in ans:
+    out = sc.score(ans, program.split_rows(c.SPLIT), program.labels(), load_probes(), n_boot=args.n_boot)
+    out["split"] = c.SPLIT
+    if f"{c.POINT_KEYS[0]}-fresh" in ans and c.SPLIT == "val":
         out["start_gate"] = start_gate(ans[f"{c.POINT_KEYS[0]}-fresh"])
         sc.print_gate(out["start_gate"])
     sc.print_tables(out)
@@ -430,11 +438,12 @@ def main(argv=None) -> int:
     p = sub.add_parser("pins")
     p.add_argument("--write", action="store_true")
     lc = sub.add_parser("leak-check")
-    lc.add_argument("--split", choices=("val", "train", "all"), default="val")
+    lc.add_argument("--split", choices=("val", "train", "test", "all"), default=c.SPLIT)
     r = sub.add_parser("run")
     r.add_argument("--run-id", required=True)
     r.add_argument("--dry-run", action="store_true", help="fake sessions: no Docker, no Claude, $0")
     r.add_argument("--chunk", type=int, default=c.CHUNK)
+    r.add_argument("--arms", choices=("both", "fresh"), default="both", help="fresh: TEST's fresh-only run")
     s = sub.add_parser("score")
     s.add_argument("--run-id", required=True)
     s.add_argument("--out", type=Path)

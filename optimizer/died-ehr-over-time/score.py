@@ -124,7 +124,8 @@ def score(answers: dict[str, dict[str, dict]], rows: dict[str, dict], labels: di
             lab = [r for r in pr if labels[r][field] is not None]
             if not lab:
                 continue
-            arms = {arm: answers.get(f"{point}-{arm}", {}) for arm in ("fresh", "memory")}
+            # only the arms the run has (TEST runs the fresh arm alone, Phil 2026-11-16)
+            arms = {arm: answers[f"{point}-{arm}"] for arm in ("fresh", "memory") if f"{point}-{arm}" in answers}
             for arm, ans in arms.items():
                 pairs = {r: (labels[r][field], risk(ans.get(r), key)) for r in lab}
                 m = metrics(list(pairs.values()))
@@ -134,7 +135,7 @@ def score(answers: dict[str, dict[str, dict]], rows: dict[str, dict], labels: di
             # the probes and both arms on the rows every probe that has VAL scores covers
             have = [p for p in probe_names if any((r, p, field) in probes for r in lab)]
             common = [r for r in lab if all((r, p, field) in probes for p in have)]
-            for model in ("fresh", "memory", *probe_names):
+            for model in (*arms, *probe_names):
                 if model in probe_names and model not in have:
                     table.append({"point": point, "horizon": words, "model": model, "rows": "common", "n": 0,
                                   "note": "no VAL score in K16"})
@@ -153,7 +154,7 @@ def score(answers: dict[str, dict[str, dict]], rows: dict[str, dict], labels: di
                 diffs.append({"point": point, "horizon": words, "n": len(lab), "auroc_diff": 0.0, "auroc_diff_lo": 0.0,
                               "auroc_diff_hi": 0.0, "brier_diff": 0.0, "brier_diff_lo": 0.0, "brier_diff_hi": 0.0,
                               "note": "0 by construction: the memory arm shares the fresh arm's answers here"})
-            elif all(arms.values()):
+            elif len(arms) == 2 and all(arms.values()):
                 pf = {r: (labels[r][field], risk(arms["fresh"].get(r), key)) for r in lab}
                 pm = {r: (labels[r][field], risk(arms["memory"].get(r), key)) for r in lab}
 

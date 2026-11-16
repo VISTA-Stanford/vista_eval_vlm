@@ -121,6 +121,8 @@ def cmd_table(args) -> int:
     id_map = {m["id"]: str(m["person_id"]) for m in _read_jsonl(c.DIED_2YR_EHR_ID_MAP)}
     task_split = {id_map[r["id"]]: s for s in ("train", "val", "test")
                   for r in _read_jsonl(c.DIED_2YR_EHR_SPLITS / f"{s}.jsonl")}
+    if c.SPLIT == "test":
+        return _table_test(k29, chest, task_split)
     val_persons = set(k29[k29.split == "val"].person_id)
     clash = sum(1 for p in val_persons if task_split.get(p) not in (None, "val"))
     print(f"validation patients, first treatment {' or '.join(c.SUBSETTINGS)}: {len(val_persons)}; "
@@ -258,7 +260,96 @@ def cmd_table(args) -> int:
     return 0
 
 
-def probe_scores(rows: list[dict]) -> None:
+def _table_test(k29, chest, task_split: dict) -> int:
+    """TEST's decision-point table (Phil 2026-11-16), built exactly as VAL's but into the TEST private folder
+    (common.py refuses VAL's): no TRAIN pool, no treatment-start seed ids (that check is VAL's). A TEST patient that
+    the died-2yr-ehr task holds in TRAIN or VAL is a stop: the agent's starting instructions were tuned there."""
+    import pandas as pd
+
+    persons = set(k29[k29.split == "test"].person_id)
+    clash = sum(1 for p in persons if task_split.get(p) in ("train", "val"))
+    print(f"TEST patients, first treatment {' or '.join(c.SUBSETTINGS)}: {len(persons)}; in the died-2yr-ehr task's "
+          f"TRAIN or VAL {clash}")
+    if clash:
+        raise SystemExit("a K29 TEST patient is in the died-2yr-ehr task's TRAIN or VAL: stop")
+    lab = _k16_labels(c.K16_LABELS, persons)
+    if set(lab.split.unique()) - {"test"}:
+        raise SystemExit("K16 labels for TEST patients carry another split")
+    labels: dict = {}
+    for r in lab.itertuples():
+        field = next(k for k, v in c.K16_TASKS.items() if v == r.task)
+        labels.setdefault((r.person_id, r.accession_number), {})[field] = int(r.label)
+    rows = point_rows(chest[chest.person_id.isin(persons)], labels)
+    for r in rows:
+        r["split"] = "test"
+    print(f"patients with a labelled decision point: {len({r['person_id'] for r in rows})}")
+    print(f"{'point':<11}{'patients':>9}{'1-yr n':>8}{'2-yr n':>8}")  # no death counts printed: TEST stays unread
+    for key in c.POINT_KEYS:
+        pr = [r for r in rows if r["point"] == key]
+        print(f"{key:<11}{len(pr):>9}{sum(r['label_1yr'] is not None for r in pr):>8}"
+              f"{sum(r['label_2yr'] is not None for r in pr):>8}")
+    print(f"total rows {len(rows)} = fresh-arm calls")
+
+    want = {(r["person_id"], r["accession_number"], f): r[f] for r in rows for f in c.K16_TASKS if r[f] is not None}
+    compared = mismatched = files = 0
+    for f in sorted(c.K16_DIR.glob("*/*per_example.parquet")):
+        if f.resolve() == c.K16_LABELS.resolve():
+            continue
+        files += 1
+        for r in _k16_labels(f, {r["person_id"] for r in rows}).itertuples():
+            key = (r.person_id, r.accession_number, next(k for k, v in c.K16_TASKS.items() if v == r.task))
+            if key in want:
+                compared += 1
+                mismatched += int(r.label) != want[key]
+    print(f"outcome check: {compared} label comparisons against {files} other K16 files, {mismatched} disagree "
+          f"-> {'PASS' if not mismatched else 'FAIL'}")
+    if mismatched:
+        raise SystemExit("K16 files disagree on a death label: stop")
+
+    c.PRIVATE_DIR.mkdir(parents=True, exist_ok=True)
+    if (c.PRIVATE_DIR / "points.parquet").exists():
+        raise SystemExit(f"{c.PRIVATE_DIR} already holds a TEST table: not rebuilding over it")
+    oid: dict[str, str] = {}
+    rec: dict[tuple, str] = {}
+    for r in rows:
+        oid.setdefault(r["person_id"], "p" + secrets.token_hex(6))
+        r["patient"] = oid[r["person_id"]]
+        r["row"] = f"{r['patient']}-{r['point']}"
+        r["record"] = rec.setdefault((r["person_id"], str(r["cut"])), "r" + secrets.token_hex(6))
+    ids = sorted(oid)
+    known = pd.read_parquet(c.DIED_2YR_EHR_COHORT)
+    tumor = {str(p): (None if pd.isna(t) else int(t)) for p, t in zip(known.person_id, known.tumor_key)}
+    missing = [p for p in ids if p not in tumor]
+    if missing:
+        tumor.update(index_tumours(missing))
+    print(f"index tumour: {sum(tumor.get(p) is not None for p in ids)} of {len(ids)} patients "
+          f"({len(missing)} read from BigQuery)")
+    write_parquet(pd.DataFrame([{"oid": oid[p], "person_id": int(p), "tumor_key": tumor.get(p), "split": "test"}
+                                for p in ids]).astype({"tumor_key": "Int64"}), c.PRIVATE_DIR / "patients.parquet")
+    pts = pd.DataFrame(rows)
+    write_parquet(pts.astype({"label_1yr": "Int64", "label_2yr": "Int64"}), c.PRIVATE_DIR / "points.parquet")
+    records = pts.drop_duplicates("record")
+    cohort = pd.DataFrame({"id": records.record, "person_id": records.person_id.astype("int64"),
+                           "cutoff": records.cut, "tumor_key": [tumor.get(p) for p in records.person_id]})
+    write_parquet(cohort.astype({"tumor_key": "Int64"}), c.PRIVATE_DIR / "cohort.parquet")
+    print(f"test records to export: {len(cohort)} ({len(rows) - len(cohort)} points share a CT with an earlier point)")
+    (c.PRIVATE_DIR / "splits").mkdir(exist_ok=True)
+    for s_ in ("train", "val", "test"):
+        write_jsonl(c.PRIVATE_DIR / "splits" / f"{s_}.jsonl", [{"id": i} for i in cohort.id] if s_ == "test" else [])
+    (c.PRIVATE_DIR / "pools.json").write_text(json.dumps({"train": [], "val": []}) + "\n")
+    write_jsonl(c.PRIVATE_DIR / "cutoffs.jsonl", [{"id": i, "cutoff": str(d)} for i, d in zip(cohort.id, cohort.cutoff)])
+    write_jsonl(c.PRIVATE_DIR / "rows.jsonl", [{"row": r["row"], "patient": r["patient"], "point": r["point"],
+                                                "record": r["record"], "cut": str(r["cut"]), "split": "test"}
+                                               for r in rows])
+    write_jsonl(c.PRIVATE_DIR / "labels.jsonl", [{"row": r["row"], "label_1yr": r["label_1yr"],
+                                                  "label_2yr": r["label_2yr"]} for r in rows])
+    write_jsonl(c.PRIVATE_DIR / "seed_ids.jsonl", [])
+    probe_scores(rows, split="test")
+    print(f"written {c.PRIVATE_DIR}")
+    return 0
+
+
+def probe_scores(rows: list[dict], split: str = "val") -> None:
     """K16 probe scores on the decision-point rows: PRIVATE_DIR/probes.parquet (row, probe, horizon field, score)."""
     import pandas as pd
 
@@ -268,7 +359,7 @@ def probe_scores(rows: list[dict]) -> None:
     out = []
     for name, path in c.K16_PROBES.items():
         t = _k16_labels(path, {r["person_id"] for r in rows})
-        t = t[t.split == "val"]
+        t = t[t.split == split]
         n0 = len(out)
         for r in t.itertuples():
             field = next(k for k, v in c.K16_TASKS.items() if v == r.task)
@@ -330,7 +421,9 @@ def exporter_cmd(*extra: str, split: str = "val") -> list[str]:
     if not bd.EXPORTER.is_file():
         raise SystemExit(f"no exporter at {bd.EXPORTER}: set OMOP_EXPORT_REPO to a vista-onc-labelers checkout "
                          "on feat/shared-omop-export with the several-cuts change")
-    stage = Path.home() / ".cache" / f"died-ehr-over-time-export-stage{'-train' if split == 'train' else ''}"
+    if (split == "test") != (c.SPLIT == "test"):
+        raise SystemExit("export --split test needs OVER_TIME_SPLIT=test (and TEST's own folders), and only then")
+    stage = Path.home() / ".cache" / f"died-ehr-over-time-export-stage{'' if split == 'val' else '-' + split}"
     where = c.PRIVATE_DIR / "train" if split == "train" else c.PRIVATE_DIR
     out = TRAIN_EXPORT_OUT if split == "train" else c.DATA_DIR
     return ["uv", "run", str(bd.EXPORTER), "--cohort", str(where / "cohort.parquet"),
@@ -391,7 +484,8 @@ def main(argv=None) -> int:
     e = sub.add_parser("export")
     e.add_argument("--go", action="store_true", help="Phil approved the export")
     e.add_argument("--dry-run", action="store_true")
-    e.add_argument("--split", choices=("val", "train"), default="val", help="train: the hill-climb's TRAIN pool")
+    e.add_argument("--split", choices=("val", "train", "test"), default="val",
+                   help="train: the hill-climb's TRAIN pool; test: TEST (with OVER_TIME_SPLIT=test)")
     sub.add_parser("local")
     args = ap.parse_args(argv)
     return {"table": cmd_table, "export": cmd_export, "local": cmd_local}[args.cmd](args)

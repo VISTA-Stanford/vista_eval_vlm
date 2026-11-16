@@ -38,6 +38,20 @@ RESULTS_DIR = Path(os.environ.get("OVER_TIME_RESULTS_DIR", MOUNT / "died-ehr-ove
 DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", Path.home() / "data" / "died-ehr-over-time-v1_7")).resolve()
 WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / "died-ehr-over-time")).resolve()
 
+#: The split a run reads: "val" (default) or "test" (Phil 2026-11-16: the zero-shot and the climbed agent go on TEST,
+#: fresh arm only). A TEST run keeps its own private, data and work folders, each with "test" in its name, so it can
+#: never write over VAL's, TRAIN's or the climb's files.
+SPLIT = os.environ.get("OVER_TIME_SPLIT", "val")
+if SPLIT not in ("val", "test"):
+    raise SystemExit(f"OVER_TIME_SPLIT must be val or test, got {SPLIT!r}")
+if SPLIT == "test":
+    _val_folders = {MOUNT / "died-ehr-over-time-v1_7-private", Path.home() / "data" / "died-ehr-over-time-v1_7",
+                    Path.home() / ".cache" / "alo-tasks" / "died-ehr-over-time",
+                    Path.home() / ".cache" / "alo-tasks" / "died-ehr-over-time-climb"}
+    for _name, _p in (("OVER_TIME_PRIVATE_DIR", PRIVATE_DIR), ("TASK_DATA_DIR", DATA_DIR), ("TASK_WORKDIR", WORKDIR)):
+        if _p in _val_folders or "test" not in _p.name:
+            raise SystemExit(f"a TEST run needs its own {_name} with 'test' in the folder name (got {_p})")
+
 #: The decision points, in the order they run. (key, words). Windows in days from first treatment (K29's day 0).
 POINTS = (("start", "treatment start"), ("restaging", "first restaging CT"), ("m6", "6 months"),
           ("m12", "12 months"), ("m24", "24 months"))

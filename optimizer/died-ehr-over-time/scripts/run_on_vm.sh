@@ -7,21 +7,31 @@
 #
 # Settings, all optional, on the same line: RUN_ID (over-time-r1), BRANCH (feat/died-ehr-over-time), ALO_ROUTE
 # (vertex), PROGRAM_MAX_CONCURRENT (2), MAX_RESUMES (20), RUN_BUDGET_USD (250, the hard stop), SETUP_ONLY=1 (stop
-# before the paid run), OVER_TIME_PAST_START_GATE=1 (go on past a failed treatment-start check: Phil's go only). Pass: "SETUP PASS"; the log ends "FINISHED"; the score tables and cost reach
+# before the paid run), OVER_TIME_PAST_START_GATE=1 (go on past a failed treatment-start check: Phil's go only),
+# OVER_TIME_SPLIT=test (TEST, fresh arm only, Phil 2026-11-16: its own checkout, private, data and work folders, all
+# defaulted below; the records must already be exported there by build_points.py export --split test). Pass: "SETUP PASS"; the log ends "FINISHED"; the score tables and cost reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-ehr-over-time-v1_7-runs/<host>/<run id>/ after every stop.
 set -euo pipefail
 
 BRANCH=${BRANCH:-feat/died-ehr-over-time}
 VLM=${VLM_REPO:-$HOME/code/vista_eval_vlm}
-TASK_WT=$HOME/code/vista_eval_vlm-over-time-run
+export OVER_TIME_SPLIT=${OVER_TIME_SPLIT:-val}
+if [ "$OVER_TIME_SPLIT" = test ]; then
+    SFX=-test; ARMS=fresh
+    export OVER_TIME_PRIVATE_DIR=${OVER_TIME_PRIVATE_DIR:-/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-ehr-over-time-v1_7-private-test}
+else
+    SFX=; ARMS=both
+fi
+# TEST gets its own checkout, so a TEST launch never moves the code under a VAL run or the climb.
+TASK_WT=${OVER_TIME_TASK_WT:-$HOME/code/vista_eval_vlm-over-time-run$SFX}
 TASK_DIR=$TASK_WT/optimizer/died-ehr-over-time
 D2_DIR=$TASK_WT/optimizer/died-2yr-ehr
 ENGINE=$HOME/code/agentic-label-opt
 ENGINE_WT=$ENGINE/.claude/worktrees/mortality-engine
-PRIVATE=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-ehr-over-time-v1_7-private
+PRIVATE=${OVER_TIME_PRIVATE_DIR:-/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-ehr-over-time-v1_7-private}
 export ALO_ROUTE=${ALO_ROUTE:-vertex}
-export TASK_DATA_DIR=${TASK_DATA_DIR:-$HOME/data/died-ehr-over-time-v1_7}
-export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/died-ehr-over-time}
+export TASK_DATA_DIR=${TASK_DATA_DIR:-$HOME/data/died-ehr-over-time-v1_7$SFX}
+export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/died-ehr-over-time$SFX}
 export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-2}
 export RUN_BUDGET_USD=${RUN_BUDGET_USD:-250}
 export AGENTIC_LABEL_OPT=$ENGINE_WT
@@ -44,7 +54,7 @@ if [ "${1:-}" = "--loop" ]; then
     attempt=0
     while :; do
         echo "=== $(date -u +%FT%TZ) run $RUN_ID (resume $attempt of $MAX_RESUMES)"
-        rc=0; ot run --run-id "$RUN_ID" 2>&1 | tee "$TASK_WORKDIR/last-pass.log" || rc=$?
+        rc=0; ot run --run-id "$RUN_ID" --arms "$ARMS" 2>&1 | tee "$TASK_WORKDIR/last-pass.log" || rc=$?
         publish
         if grep -q "^FINISHED" "$TASK_WORKDIR/last-pass.log"; then echo "FINISHED"; exit 0; fi
         if grep -q "STOPPED (rule)" "$TASK_WORKDIR/last-pass.log"; then echo "STOPPED by a rule: see above; not resumed (past the treatment-start check only with Phil's go: OVER_TIME_PAST_START_GATE=1 on the launch line)"; exit 3; fi
@@ -58,7 +68,7 @@ fi
 echo "host $(hostname)"
 command -v uv >/dev/null || fail "uv is not installed"
 docker info >/dev/null 2>&1 || fail "Docker is not running or this user cannot use it"
-[ -d "$PRIVATE/archive/tables" ] || fail "no record archive at $PRIVATE/archive (run the export on phil-sllm-01 first)"
+[ -d "$PRIVATE/archive/tables" ] || [ "$OVER_TIME_SPLIT" = test ] || fail "no record archive at $PRIVATE/archive (run the export on phil-sllm-01 first)"
 if [ "$ALO_ROUTE" = vertex ]; then
     LOGIN=/home/optimizer/.config/gcloud/application_default_credentials.json
     [ -f "$LOGIN" ] && [ ! -L "$LOGIN" ] || fail "no optimizer login at $LOGIN"
@@ -87,6 +97,7 @@ echo "task $(git -C "$TASK_WT" rev-parse --short HEAD), engine $(git -C "$ENGINE
 
 # The records on local disk, rebuilt by died-2yr-ehr's rehydrate from this task's archive; then rows, labels, probes.
 if [ ! -d "$TASK_DATA_DIR/patients" ]; then
+    [ "$OVER_TIME_SPLIT" = val ] || fail "no TEST records in $TASK_DATA_DIR (run build_points.py export --split test first)"
     (cd "$D2_DIR" && TASK_MOUNT_DATA_DIR=$PRIVATE TASK_EXPORT_STAGE=$HOME/.cache/died-ehr-over-time-rehydrate \
         OMP_NUM_THREADS=2 nice -n 19 uv run -q --no-project --with "duckdb==1.5.6" --with pandas --with pyarrow \
         python -B scripts/build_data.py rehydrate) || fail "rehydrate (records from $PRIVATE/archive)"
@@ -96,7 +107,7 @@ fi
 want=$(wc -l < "$PRIVATE/cutoffs.jsonl"); n=$(find "$TASK_DATA_DIR/patients" -mindepth 1 -maxdepth 1 -type d | wc -l)
 [ "$n" -eq "$want" ] || fail "expected $want record folders in $TASK_DATA_DIR/patients, found $n"
 echo "records: $n in $TASK_DATA_DIR"
-rc=0; out=$(ot leak-check 2>&1) || rc=$?
+rc=0; out=$(ot leak-check --split "$OVER_TIME_SPLIT" 2>&1) || rc=$?
 echo "$out" | tail -7
 [ "$rc" = 0 ] || fail "record leak check"
 
@@ -108,11 +119,11 @@ ot pins --write | tail -1 || fail "pins --write"
 # The $0 checks on synthetic data, with the same code.
 rm -rf /tmp/over-time-synth
 (cd "$TASK_DIR" && uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py synth /tmp/over-time-synth >/dev/null \
-    && env -u OVER_TIME_PAST_START_GATE TASK_DATA_DIR=/tmp/over-time-synth TASK_WORKDIR=/tmp/over-time-synth-work uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py check | tail -1) \
+    && env -u OVER_TIME_PAST_START_GATE -u OVER_TIME_SPLIT -u OVER_TIME_PRIVATE_DIR TASK_DATA_DIR=/tmp/over-time-synth TASK_WORKDIR=/tmp/over-time-synth-work uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py check | tail -1) \
     | tee /dev/stderr | grep -q "checks PASS$" || fail "check_task.py"
 
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: run not started)"; exit 0; fi
 mkdir -p "$TASK_WORKDIR" "$RESULTS"
 cp "$TASK_DIR/scripts/run_on_vm.sh" "$TASK_WORKDIR/run_on_vm.sh"
 setsid nohup env RUN_ID="$RUN_ID" MAX_RESUMES="$MAX_RESUMES" BRANCH="$BRANCH" OVER_TIME_PAST_START_GATE="${OVER_TIME_PAST_START_GATE:-}" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
-echo "SETUP PASS: run $RUN_ID started detached ($PROGRAM_MAX_CONCURRENT at a time, hard stop \$$RUN_BUDGET_USD); log $LOG; results to $RESULTS"
+echo "SETUP PASS: run $RUN_ID ($OVER_TIME_SPLIT, arms $ARMS) started detached ($PROGRAM_MAX_CONCURRENT at a time, hard stop \$$RUN_BUDGET_USD); log $LOG; results to $RESULTS"
