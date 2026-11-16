@@ -43,7 +43,7 @@ from engine.schemas import (
 import worker as worker_module
 from config import CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, METRIC_NAME, QUESTIONS, TASK_NAME
 
-#: TEST is sealed: build_data.py writes no test file, so reading it fails (spec: TEST waits for its own go).
+#: TEST: built only on Phil's go (2026-11-16) by build_data.py test; until then reading it fails. Never scheduled.
 SPLITS = ("train", "val", "test")
 
 

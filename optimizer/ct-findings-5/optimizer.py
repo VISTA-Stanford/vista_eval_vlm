@@ -135,7 +135,8 @@ def forbidden(layout: Layout) -> tuple[Forbidden, ...]:
         Forbidden(Path.home() / ".config" / "gcloud", representatives=("application_default_credentials.json",)),
         # The whole shared mount: this task's data (splits with labels, pools, CTs) and its id map, the NIfTI
         # store, the VLMs' TEST sample, and every label snapshot and result. CTs reach a session only by copy
-        # (agentic.stage). No test file exists for this task (TEST sealed), so VAL's labels are the representative.
+        # (agentic.stage). splits/test.jsonl (built 2026-11-16) sits under the same forbidden mount; VAL's labels are
+        # the representative checked.
         Forbidden(Path("/mnt/su-vista-uscentral1"), representatives=(
             str((DATA_DIR / "splits" / "val.jsonl").relative_to("/mnt/su-vista-uscentral1")),
             str((config.ID_MAP_DIR / "id_map.jsonl").relative_to("/mnt/su-vista-uscentral1")))),

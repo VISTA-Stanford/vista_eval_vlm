@@ -46,7 +46,8 @@ QUESTIONS = (
 )
 #: Built by scripts/build_data.py: splits/{train,val}.jsonl ({"id", <five keys>: 0 | 1 | null}, the pool scans only),
 #: pools.json (the fixed enriched TRAIN 400 and VAL 200, with the draw seed and enrichment under "_draw") and
-#: patients/<id>/{ct.npz, meta.json}. No TEST file: TEST is sealed (spec). On the shared mount (secure environment).
+#: patients/<id>/{ct.npz, meta.json}. splits/test.jsonl (the VLMs' 1,000 TEST scans) only after Phil's go 2026-11-16
+#: (build_data.py test); run.py test is its only reader. On the shared mount (secure environment).
 #: The optimizer never sees this folder. It sees TRAIN only through its mistakes, and VAL only as a score.
 DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", "/mnt/su-vista-uscentral1/chaudhari_lab/phil/ct-findings-5-v1_7"))
 #: The id -> person_id, accession and NIfTI map: never mounted, listed in the forbidden set.

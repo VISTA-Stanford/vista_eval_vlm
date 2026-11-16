@@ -17,11 +17,20 @@ unscored for that scan (``None``), never negative.
              (Hounsfield units, int16, RAS, thin scans averaged into ~2.5 mm slabs, no header, date or UID kept)
     reports  write each TRAIN pool scan's radiology report (the one its labels were read from) to
              train_reports/<id>.txt for the optimizer's mistakes; never a VAL scan's; counts only
+    test     write the TEST split: every scan of the VLMs' TEST sample (step2.parquet, the 1,000 scans Fig 3c scored the
+             VLMs on), labelled from that sample's own answer key (its label__per_ct_* columns), so the agent is scored
+             against the same truth as the VLMs. Same layout as train/val: splits/test.jsonl with opaque ids, the id
+             map in the private folder (id_map_test.jsonl, apart from the climbs' map), and the volumes made by
+             ``volumes --split test``. Several scans per patient, as in the sample (not one per patient). Stops if a
+             TEST patient is in the TRAIN or VAL pool, an id repeats, or a scan has no volume. TEST answers reach no
+             session: a session is staged only ct.npz and meta.json (agentic.py). Built only on Phil's go (2026-11-16).
 
     cd optimizer/ct-findings-5
     OMP_NUM_THREADS=2 nice -n 19 uv run -q --no-project --with google-cloud-bigquery --with pandas --with pyarrow python -B scripts/build_data.py select
     OMP_NUM_THREADS=1 nice -n 19 uv run -q --no-project --with nibabel --with numpy python -B scripts/build_data.py volumes --workers 4 [--limit 10]
     uv run -q --no-project --with google-cloud-bigquery python -B scripts/build_data.py reports
+    uv run -q --no-project --with pandas --with pyarrow python -B scripts/build_data.py test
+    OMP_NUM_THREADS=1 nice -n 19 uv run -q --no-project --with nibabel --with numpy python -B scripts/build_data.py volumes --split test --workers 8
 
 BigQuery runs on this host's application-default login. Prints counts only: never an id, a UID, a date or a row.
 """
@@ -283,9 +292,13 @@ def convert(item: tuple[str, str]) -> tuple[str, str]:
 
 
 def cmd_volumes(args) -> int:
-    id_map = {m["id"]: m["nifti"] for m in map(json.loads, (PRIVATE_DIR / "id_map.jsonl").read_text().splitlines()) if m}
-    pools = json.loads((DATA_DIR / "pools.json").read_text())
-    wanted = [i for s in ("val", "train") for i in pools[s]]
+    if args.split == "test":
+        id_map = {m["id"]: m["nifti"] for m in map(json.loads, (PRIVATE_DIR / "id_map_test.jsonl").read_text().splitlines()) if m}
+        wanted = [json.loads(line)["id"] for line in (DATA_DIR / "splits" / "test.jsonl").read_text().splitlines() if line]
+    else:
+        id_map = {m["id"]: m["nifti"] for m in map(json.loads, (PRIVATE_DIR / "id_map.jsonl").read_text().splitlines()) if m}
+        pools = json.loads((DATA_DIR / "pools.json").read_text())
+        wanted = [i for s in ("val", "train") for i in pools[s]]
     if args.limit:
         wanted = wanted[: args.limit]
     status, errors = Counter(), Counter()
@@ -348,6 +361,69 @@ def cmd_reports(_args) -> int:
     return 0
 
 
+def cmd_test(_args) -> int:
+    """Write splits/test.jsonl and the private id_map_test.jsonl from the VLMs' TEST sample. Counts only."""
+    import pandas as pd
+
+    cols = ["person_id", "study", "series", "ct_accession_number"] + [f"label__{t}" for _k, t in QUESTIONS]
+    sample = pd.read_parquet(TEST_SAMPLE, columns=cols + ["split"])
+    if set(sample["split"]) != {"test"}:
+        raise SystemExit("the TEST sample holds rows that are not TEST: its contract changed")
+    if sample[["person_id", "study", "series"]].isna().any().any():
+        raise SystemExit("a TEST sample row has no patient, study or series")
+    pool_map = [m for m in map(json.loads, (PRIVATE_DIR / "id_map.jsonl").read_text().splitlines()) if m]
+    pool_patients, pool_ids = {int(m["person_id"]) for m in pool_map}, {m["id"] for m in pool_map}
+    rows, id_map, missing = [], [], 0
+    for r in sample.itertuples(index=False):
+        person, study, series = int(r.person_id), str(r.study), str(r.series)
+        sid = opaque_id(person, study, series)
+        labels = {}
+        for key, task in QUESTIONS:
+            v = getattr(r, f"label__{task}")
+            if pd.isna(v):
+                labels[key] = None
+            elif v in (0, 1):
+                labels[key] = int(v)
+            else:
+                raise SystemExit(f"{task}: a label that is not 0, 1 or empty: the answer key's contract changed")
+        src = nifti(study, series)
+        missing += not src.is_file()
+        rows.append({"id": sid, **labels})
+        id_map.append({"id": sid, "person_id": person, "accession_number": None if pd.isna(r.ct_accession_number) else str(r.ct_accession_number),
+                       "split": "test",
+                       "nifti": str(src)})
+    test_patients = {m["person_id"] for m in id_map}
+    overlap = len(test_patients & pool_patients)
+    repeats = len(rows) - len({r["id"] for r in rows})
+    shared_ids = len({r["id"] for r in rows} & pool_ids)
+    counts = {key: {"positive": sum(r[key] == 1 for r in rows), "negative": sum(r[key] == 0 for r in rows),
+                    "unscored": sum(r[key] is None for r in rows)} for key, _t in QUESTIONS}
+    # The check the hand-off asks for: per finding, yes and no counts equal the answer key's own (read separately).
+    for key, task in QUESTIONS:
+        col = sample[f"label__{task}"]
+        if (counts[key]["positive"], counts[key]["negative"]) != (int((col == 1).sum()), int((col == 0).sum())):
+            raise SystemExit(f"{key}: yes/no counts differ from the answer key")
+    print(f"TEST sample: {len(rows)} scans, {len(test_patients)} patients; in the TRAIN/VAL pools: {overlap} patients, "
+          f"{shared_ids} ids; repeated ids {repeats}; no volume {missing}")
+    for key, _t in QUESTIONS:
+        c = counts[key]
+        print(f"  {key:<20} positive {c['positive']:>4}  negative {c['negative']:>4}  unscored {c['unscored']:>4}")
+    print(f"scored scan x finding pairs: {sum(c['positive'] + c['negative'] for c in counts.values())}")
+    if overlap or repeats or shared_ids or missing:
+        raise SystemExit("STOP: the TEST split failed a check; nothing written")
+    rows.sort(key=lambda x: x["id"])
+    (DATA_DIR / "splits").mkdir(parents=True, exist_ok=True)
+    (PRIVATE_DIR / "id_map_test.jsonl").write_text("".join(json.dumps(m) + "\n" for m in id_map), encoding="utf-8")
+    (DATA_DIR / "splits" / "test.jsonl").write_text("".join(json.dumps(x) + "\n" for x in rows), encoding="utf-8")
+    (DATA_DIR / "test_build.json").write_text(json.dumps({
+        "built_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": str(TEST_SAMPLE),
+        "labels": "the sample's label__per_ct_* columns (the VLMs' answer key)", "salt": SALT,
+        "scans": len(rows), "patients": len(test_patients), "pool_patient_overlap": 0, "counts": counts}, indent=1),
+        encoding="utf-8")
+    print("written splits/test.jsonl and the private id_map_test.jsonl; next: volumes --split test")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -355,9 +431,11 @@ def main() -> int:
     v = sub.add_parser("volumes")
     v.add_argument("--workers", type=int, default=4)
     v.add_argument("--limit", type=int, default=0)
+    v.add_argument("--split", choices=("pools", "test"), default="pools")
     sub.add_parser("reports")
+    sub.add_parser("test")
     args = ap.parse_args()
-    return {"select": cmd_select, "volumes": cmd_volumes, "reports": cmd_reports}[args.cmd](args)
+    return {"select": cmd_select, "volumes": cmd_volumes, "reports": cmd_reports, "test": cmd_test}[args.cmd](args)
 
 
 if __name__ == "__main__":
