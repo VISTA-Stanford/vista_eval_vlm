@@ -9,7 +9,8 @@
 # (vertex), PROGRAM_MAX_CONCURRENT (2), MAX_RESUMES (20), RUN_BUDGET_USD (250, the hard stop), SETUP_ONLY=1 (stop
 # before the paid run), OVER_TIME_PAST_START_GATE=1 (go on past a failed treatment-start check: Phil's go only),
 # OVER_TIME_SPLIT=test (TEST, fresh arm only, Phil 2026-11-16: its own checkout, private, data and work folders, all
-# defaulted below; the records must already be exported there by build_points.py export --split test). Pass: "SETUP PASS"; the log ends "FINISHED"; the score tables and cost reach
+# defaulted below; the records must already be exported there by build_points.py export --split test). OVER_TIME_FRESH_PROGRAM=<folder> (TEST
+# only: run a climb version's instructions.md + tools/ as the fresh arm, e.g. climb-r1/versions/iter5-program-v5). Pass: "SETUP PASS"; the log ends "FINISHED"; the score tables and cost reach
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-ehr-over-time-v1_7-runs/<host>/<run id>/ after every stop.
 set -euo pipefail
 
@@ -119,7 +120,7 @@ ot pins --write | tail -1 || fail "pins --write"
 # The $0 checks on synthetic data, with the same code.
 rm -rf /tmp/over-time-synth
 (cd "$TASK_DIR" && uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py synth /tmp/over-time-synth >/dev/null \
-    && env -u OVER_TIME_PAST_START_GATE -u OVER_TIME_SPLIT -u OVER_TIME_PRIVATE_DIR TASK_DATA_DIR=/tmp/over-time-synth TASK_WORKDIR=/tmp/over-time-synth-work uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py check | tail -1) \
+    && env -u OVER_TIME_PAST_START_GATE -u OVER_TIME_SPLIT -u OVER_TIME_PRIVATE_DIR -u OVER_TIME_FRESH_PROGRAM TASK_DATA_DIR=/tmp/over-time-synth TASK_WORKDIR=/tmp/over-time-synth-work uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py check | tail -1) \
     | tee /dev/stderr | grep -q "checks PASS$" || fail "check_task.py"
 
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: run not started)"; exit 0; fi

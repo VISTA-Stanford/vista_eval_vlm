@@ -34,6 +34,7 @@ Exit codes: 0 finished, 3 stopped by a rule (the reason is printed), 1 anything 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -74,7 +75,8 @@ def trees(lay) -> dict[str, Path]:
     materialize_root). Re-copied only when the source changed."""
     out = {}
     for arm, src in program.PROGRAM_DIRS.items():
-        dest = lay.versions / f"over-time-{arm}"
+        # A TEST run on a climb version gets its own copy, so the zero-shot run's copy stays as it ran.
+        dest = lay.versions / (f"over-time-{arm}" if src == HERE / f"program_{arm}" else f"over-time-{arm}-{src.name}")
         same = dest.exists() and all((dest / f.relative_to(src)).is_file()
                                      and (dest / f.relative_to(src)).read_bytes() == f.read_bytes()
                                      for f in src.rglob("*") if f.is_file())
@@ -378,6 +380,10 @@ def cmd_run(args) -> int:
         if c.SPLIT == "test" and arms != ("fresh",):
             print("TEST runs the fresh arm only (Phil 2026-11-16): pass --arms fresh")
             return 1
+        src = program.PROGRAM_DIRS["fresh"]
+        digest = hashlib.sha256("".join(f"{f.relative_to(src)}:{hashlib.sha256(f.read_bytes()).hexdigest()}"
+                                        for f in sorted(src.rglob("*")) if f.is_file()).encode()).hexdigest()
+        print(f"fresh instructions: {src} (files sha256 {digest[:16]})", flush=True)
         return drive(lay, runner, args.run_id, chunk=args.chunk, arms=arms)
     except Stop as exc:
         print(f"STOPPED (rule): {exc}")

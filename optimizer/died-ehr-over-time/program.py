@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 from functools import lru_cache
@@ -29,6 +30,16 @@ MEMORY_PARAGRAPH = ("You have assessed this patient before, at earlier points in
                     "earlier probabilities and reasons, if any. Read what has happened in the record since your last "
                     "assessment, then give your updated probabilities.")
 PROGRAM_DIRS = {"fresh": c.HERE / "program_fresh", "memory": c.HERE / "program_memory"}
+#: TEST only: OVER_TIME_FRESH_PROGRAM names a climb version's folder (its instructions.md and tools/, e.g. the mount
+#: copy of climb-r1's program-v5) to run as the fresh arm in place of program_fresh/, as the climb ran it (Phil
+#: 2026-11-16: the climbed agent goes on TEST after the climb). Refused on VAL so it cannot change a validation run.
+_FRESH_OVERRIDE = os.environ.get("OVER_TIME_FRESH_PROGRAM")
+if _FRESH_OVERRIDE:
+    if c.SPLIT != "test":
+        raise SystemExit("OVER_TIME_FRESH_PROGRAM is for TEST runs only (OVER_TIME_SPLIT=test)")
+    if not (Path(_FRESH_OVERRIDE) / agentic.ENTRY).is_file():
+        raise SystemExit(f"OVER_TIME_FRESH_PROGRAM={_FRESH_OVERRIDE} has no {agentic.ENTRY}")
+    PROGRAM_DIRS["fresh"] = Path(_FRESH_OVERRIDE).resolve()
 
 # The died-2yr-ehr record guide, with its one sentence about the cut changed to this task's cut.
 _GUIDE_FROM = "cut 7 days before their first cancer treatment"
