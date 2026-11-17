@@ -1,0 +1,32 @@
+# Probability answer for the yes/no LLM rows (Phil 11-17: main-text comparisons move to AUROC). Hand-off
+# planning/vista_eval_vlm/session/2026-11-17-vlm-probability-answer-build-handoff.md. Each variant asks the same card
+# text as the yes/no runs, with the answer line replaced by "Give the probability, from 0 to 100, that the answer is
+# yes. Answer with one whole number." and a forced {"probability": integer} reply; scored as AUROC (evalset.score).
+# Step 1, summary arm, run once per model so each is its own row (Sonnet and Haiku line up with the Claude agent runs).
+#
+# Effort/thinking, kept as each recipe sets it (thinking cannot be turned off on Opus/Sonnet/Haiku 5.5):
+#   argon   thinking_level low      opus/sonnet/haiku   effort low      astra   reasoning_effort low
+# Sonnet and Haiku reuse the Opus recipe (same Vertex adapter, cache and wrapper); only the model and its list prices
+# change (USD per million tokens, Anthropic list rate, checked 11-17; Haiku cache read assumed 0.1x input). The prices
+# feed the spend cap and the per-call cost; the Vertex bill is the check.
+# Argon and Opus/Sonnet/Haiku run on phil-sllm-01 (python -m evalset.run, from src/); Astra on weill-p01.
+variants:
+  argon_prob:
+    recipe: argon
+    answer_form: probability
+  opus_prob:
+    recipe: opus
+    answer_form: probability
+  sonnet_prob:
+    recipe: opus
+    answer_form: probability
+    model_name: claude-sonnet-5-5
+    settings: {price_per_mtok: {input: 2.0, cache_write: 2.5, cached: 0.10, output: 10.0}}
+  haiku_prob:
+    recipe: opus
+    answer_form: probability
+    model_name: claude-haiku-5-5
+    settings: {price_per_mtok: {input: 0.10, cache_write: 0.125, cached: 0.01, output: 0.50}}
+  astra_prob:
+    recipe: astra
+    answer_form: probability
