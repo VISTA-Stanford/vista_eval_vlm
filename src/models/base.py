@@ -1,4 +1,5 @@
 import json
+import math
 
 
 def serialize_logprobs(logprobs):
@@ -28,6 +29,29 @@ def serialize_logprobs(logprobs):
         return json.dumps(result)
     except Exception:
         return None
+
+
+#: Passed to an API adapter in place of an options list: force JSON {"probability": whole number 0-100} instead of
+#: a choice (eval-set recipes with ``answer_form: "probability"``). The schema says integer; the 0-100 range is
+#: checked on the reply (``read_probability``), not in the schema, because Claude's and OpenAI's structured output do
+#: not all honour minimum/maximum.
+PROBABILITY = "probability_0_100"
+PROBABILITY_DESCRIPTION = "Probability, from 0 to 100, that the answer is yes. One whole number."
+
+
+def read_probability(text):
+    """(JSON text {"probability": n}, error) from a forced reply. A number that is not whole, or outside 0-100, is
+    an error, not a guess (so it is not cached and is asked again)."""
+    try:
+        v = json.loads(text)
+        p = v.get("probability")
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return None, f"answer is not the schema's JSON: {str(text)[:100]!r}"
+    if isinstance(p, bool) or not isinstance(p, (int, float)) or not math.isfinite(p) or p != int(p):
+        return None, f"probability {p!r} is not a whole number"
+    if not 0 <= p <= 100:
+        return None, f"probability {p!r} is outside 0-100"
+    return json.dumps({"probability": int(p)}), None
 
 
 class BaseVLMAdapter:

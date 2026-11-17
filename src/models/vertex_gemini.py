@@ -28,7 +28,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .base import BaseVLMAdapter
+from .base import PROBABILITY, PROBABILITY_DESCRIPTION, BaseVLMAdapter, read_probability
 
 DEFAULT_PROJECT = "som-nero-plevriti-deidbdf"
 DEFAULT_LOCATION = "global"
@@ -63,7 +63,15 @@ def build_request(question, images, choices=None, max_output_tokens=8192,
     parts = [{"inlineData": {"mimeType": "image/png", "data": _png_b64(im)}} for im in (images or [])]
     parts.append({"text": str(question)})
     gen = {"temperature": 0.0, "maxOutputTokens": int(max_output_tokens)}
-    if choices and reason_field:
+    if choices == PROBABILITY:
+        if reason_field:
+            raise ValueError("reason_field is not supported with the probability answer")
+        # Gemini's schema does honour minimum/maximum; the reply is still range-checked (read_probability).
+        gen["responseMimeType"] = "application/json"
+        gen["responseSchema"] = {"type": "OBJECT", "properties": {"probability": {
+            "type": "INTEGER", "minimum": 0, "maximum": 100, "description": PROBABILITY_DESCRIPTION}},
+            "required": ["probability"]}
+    elif choices and reason_field:
         gen["responseMimeType"] = "application/json"
         gen["responseSchema"] = {"type": "OBJECT", "properties": {
             "reasoning": {"type": "STRING", "description": REASONING_DESCRIPTION},
@@ -137,6 +145,9 @@ def parse_response(body, choices=None, reason_field=False):
     text = "".join(texts).strip()
     if not text:
         return None, usage, f"empty answer (finishReason={cand.get('finishReason')})"
+    if choices == PROBABILITY:
+        out, err = read_probability(text)
+        return out, usage, (f"{err} (finishReason={cand.get('finishReason')})" if err else None)
     if choices and reason_field:
         try:
             v = json.loads(text)

@@ -22,6 +22,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from .base import PROBABILITY, PROBABILITY_DESCRIPTION, read_probability
 from .vertex_gemini import PARTS_USAGE_KEYS, VertexGeminiAdapter
 
 ANTHROPIC_VERSION = "vertex-2023-10-16"
@@ -35,6 +36,12 @@ def _endpoint(project, location, model):
 
 
 def answer_schema(choices, reason_field=False):
+    if choices == PROBABILITY:
+        if reason_field:
+            raise ValueError("reason_field is not supported with the probability answer")
+        # No minimum/maximum: Claude's structured output does not support numeric bounds; range checked on the reply.
+        return {"type": "object", "properties": {"probability": {"type": "integer", "description": PROBABILITY_DESCRIPTION}},
+                "required": ["probability"], "additionalProperties": False}
     props = {}
     if reason_field:
         props["reasoning"] = {"type": "string", "description": "Brief reasoning from the images, written before the answer."}
@@ -90,6 +97,9 @@ def parse_response(body, choices=None, reason_field=False):
         return None, usage, f"empty answer (stop_reason={stop})"
     if not choices:
         return text, usage, None
+    if choices == PROBABILITY:
+        out, err = read_probability(text)
+        return out, usage, (f"{err} (stop_reason={stop})" if err else None)
     try:
         v = json.loads(text)
         answer = str(v.get("answer", "")).strip()
