@@ -65,3 +65,31 @@ The answer is the report as a language model read it, not the images: tiny "too 
 lesions count as yes; stable treated nodules may or may not be called benign; a third of reports do not let the
 lobe be decided (unscored for RUL). Chest-only fields of view show only the top of the liver; non-contrast and
 low-dose scans hide liver lesions.
+
+## Retrieval arm (spec `planning/vista_eval_vlm/2026-11-17-ct-findings-retrieval-arm.md`, Approved 2026-11-17)
+
+Branch `feat/ct-findings-retrieval` off `feat/ct-findings-agentic`. `NEIGHBOURS=1` stages, beside each VAL scan's
+`ct/`, a read-only `neighbours/` folder: the 5 TRAIN patients whose CTs are closest by MerlinOnc pan-cancer ep99
+embedding (cosine, whole TRAIN split, one scan per patient), each with its CT, its five answers ("not scorable" where
+missing), its report, rank and similarity, plus a README with the TRAIN similarity range and the TRAIN
+leave-one-out vote AUROC per question. Seed `program_agentic_neighbours/` = the untuned seed plus one paragraph; own
+work folder `~/.cache/alo-tasks/ct-findings-5-neighbours`; one untuned pass with `run.py val-pass`, no climb.
+
+| Piece | Where |
+|---|---|
+| Neighbours, vote gate, folders, checks | `scripts/build_neighbours.py select / volumes / folders / check` |
+| Folders | `ct-findings-5-v1_7/neighbours/<VAL id>/`, CTs in `neighbour_scans/<id>/`, id-only map `neighbours_scan_map.json`; picks with patient numbers in the private folder |
+| Vote rows | `scripts/score_baselines.py score` (reads `neighbours_vote_val.json`) |
+| Usage and paired comparison | `scripts/retrieval_usage.py usage / compare` |
+
+Vote gate on VAL-200, built 2026-11-17 (AUROC; shared = the 5 the agent sees; TRAIN = leave-one-patient-out over
+4,379 TRAIN patients). Candidates: 27,256 TRAIN scans with an embedding and exactly one report (none lacked one);
+966 distinct neighbour scans of 843 patients picked; 0 missing volumes.
+
+| Vote | liver | lungs | lymph nodes | RUL | pneumonitis | mean | TRAIN mean |
+|---|---|---|---|---|---|---|---|
+| MerlinOnc ep99 | 0.584 | 0.735 | 0.744 | 0.760 | 0.491 | 0.663 | 0.705 |
+| Pillar0 | 0.558 | 0.800 | 0.809 | 0.791 | 0.591 | 0.710 | 0.736 |
+
+MerlinOnc similarities are bunched: the closest neighbour is 0.93-0.97 (10th-90th percentile), the 5th 0.92-0.96.
+Converting the 966 neighbour scans is ~12 s each (~50 min on 4 workers), so it runs on phil-hcpu (heavy-job rule).

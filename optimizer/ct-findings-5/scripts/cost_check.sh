@@ -5,6 +5,8 @@
 # Copied from died-2yr-ct's (2026-11-10).
 #
 #   ALO_ROUTE=vertex bash optimizer/ct-findings-5/scripts/cost_check.sh
+#   NEIGHBOURS=1 ALO_ROUTE=vertex bash optimizer/ct-findings-5/scripts/cost_check.sh   the retrieval arm: 10 VAL
+#                                                      scans with neighbours, no optimizer (spec 2026-11-17, ~$1-3)
 #
 # Then the engine's after-run audit (scripts/audit_vertex_run.py) over the throwaway folder, on the run's route: no
 # session command naming the credential, gcloud, bq, BigQuery, storage or a non-model Vertex request, and no refused
@@ -26,7 +28,13 @@ cd "$HERE"
 alo() { uv run -q --project "$ENGINE" python run.py "$@"; }
 alo init
 alo pins --write | tail -1
-alo run --run-id costcheck --start seed --iterations 1 || true  # judged below, from the receipts and the summary
+if [ "${NEIGHBOURS:-0}" = 1 ]; then
+    # The retrieval arm (spec 2026-11-17) has no climb: the check is its one untuned pass on the first 10 VAL pool
+    # scans, each staged with its neighbour folder, no optimizer round.
+    alo val-pass --tag program-v0 --limit 10 || true  # judged below, from the receipts and the val-pass ledger
+else
+    alo run --run-id costcheck --start seed --iterations 1 || true  # judged below, from the receipts and the summary
+fi
 mkdir -p "$OUT"
 report=0
 uv run -q --project "$ENGINE" python scripts/cost_report.py "$TASK_WORKDIR" "$OUT/cost_report.json" || report=$?

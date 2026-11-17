@@ -252,13 +252,14 @@ def cmd_select(_args) -> int:
     return 0
 
 
-def convert(item: tuple[str, str]) -> tuple[str, str]:
-    """One NIfTI -> patients/<id>/ct.npz + meta.json (died-2yr-ct's converter). Returns (status, detail), no ids."""
+def convert(item: tuple) -> tuple[str, str]:
+    """One NIfTI -> patients/<id>/ct.npz + meta.json (died-2yr-ct's converter); an optional third element names
+    another folder to write <id>/ under (build_neighbours.py: neighbour_scans/). Returns (status, detail), no ids."""
     import nibabel as nib
     import numpy as np
 
-    pid, src = item
-    out = DATA_DIR / "patients" / pid
+    pid, src = item[0], item[1]
+    out = (Path(item[2]) if len(item) > 2 else DATA_DIR / "patients") / pid
     if (out / "meta.json").is_file():
         return "kept", ""
     try:

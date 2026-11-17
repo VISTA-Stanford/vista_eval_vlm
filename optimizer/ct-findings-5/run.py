@@ -13,6 +13,8 @@
     python templates/new_task/run.py test --tag program-v3   score ONE chosen version on TEST, once (TEST data not built:
                                                       sealed until Phil's go, spec)
     python templates/new_task/run.py rescore --run <work folder>   $0: every archived VAL pass, per question
+    NEIGHBOURS=1 python run.py val-pass [--limit 10]   PAID: the retrieval arm's one untuned VAL pass (spec
+                                                      2026-11-17), no optimizer; --limit for the cost check
 
 ct-findings-5: copied from died-2yr-ct's probability mode (2026-11-10); five questions per scan in place of two
 horizons, and no score-val (only the VAL-200 pool is built; the spec compares on it).
@@ -620,6 +622,50 @@ def cmd_test(args) -> int:
     return 0
 
 
+#: The retrieval arm's dollar stop for one VAL pass (spec 2026-11-17: $0.50 a scan, $100 stop). The per-scan cap
+#: times the scans must fit under it before the pass starts; a retried call can add to it, and is reported after.
+VAL_PASS_STOP_USD = float(os.environ.get("VAL_PASS_STOP_USD", "100"))
+
+
+def cmd_val_pass(args) -> int:
+    """Score one version once on the VAL pool (200 scans), or on its first --limit scans (the cost check), with no
+    optimizer: the retrieval arm's untuned pass (spec planning/vista_eval_vlm/2026-11-17-ct-findings-retrieval-arm.md).
+    Copied from died-2yr-ct's score-val. Every pass is paid, so each is recorded in private/val_pass_ledger.jsonl with
+    its answers file, which scripts/retrieval_usage.py reads with the pass's transcripts beside it."""
+    layout = opt.Layout()
+    ledger_path = layout.private / "val_pass_ledger.jsonl"
+    earlier = ([e for e in map(json.loads, ledger_path.read_text().splitlines()) if e["tag"] == args.tag]
+               if ledger_path.exists() else [])
+    ids = sorted(ad.pools()["val"])
+    if args.limit:
+        ids = ids[: args.limit]
+    if config.PROGRAM_CALL_BUDGET_USD * len(ids) > VAL_PASS_STOP_USD:
+        print(f"STOPPED: {len(ids)} scans at the ${config.PROGRAM_CALL_BUDGET_USD:.2f} cap could pass the "
+              f"${VAL_PASS_STOP_USD:.0f} stop")
+        return 1
+    sha = git(layout.repo, "rev-parse", f"{args.tag}^{{commit}}").strip()
+    tree = layout.versions / f"val-pass-{args.tag}"
+    materialize(ad.TaskStore().manifest(), sha, repo_root=layout.repo, dest=tree)
+    opt.stage_files(layout)
+    look = len(earlier) + 1
+    inputs = ad.TaskSource(layout.private / "val-pass-batches").stage(ids, "val", f"val-pass-{args.tag}-n{len(ids)}-look{look}")
+    runner = program_runner(layout, image=images()[1], pin=committed_pins(layout)["program"])
+    with runner:  # a ProgramRunner: one network for the pass, containers removed on exit
+        artifacts = runner.as_runner(run_id=f"val-pass-{args.tag}-look{look}").run(tree, inputs)
+    if artifacts.status != "ok":
+        print(f"VAL pass failed: {artifacts.status} {artifacts.error}")
+        return 1
+    score = ad.TaskScorer().score(artifacts, "val", {})
+    entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha,
+             "neighbours": config.NEIGHBOURS, config.METRIC_NAME: score.primary_metric.value,
+             "n": score.breakdown["n"], "program_errors": score.breakdown["program_errors"], "look": look,
+             "answers": artifacts.artifact_refs[0].path, "questions": per_question(score)}
+    with ledger_path.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+    print(json.dumps(entry, indent=2))
+    return 0
+
+
 # ==================================================================================================
 
 
@@ -696,6 +742,9 @@ def main(argv=None) -> int:
     t.add_argument("--tag", required=True)
     t.add_argument("--again", action="store_true")
     t.add_argument("--local", action="store_true", help="run unsealed in this process (only for checking the template)")
+    vp = sub.add_parser("val-pass", help="PAID: score one version once on the VAL pool, no optimizer")
+    vp.add_argument("--tag", default="program-v0")
+    vp.add_argument("--limit", type=int, default=0, help="only the first N VAL pool scans (the cost check)")
     rs = sub.add_parser("rescore", help="$0: re-score archived answers.json files and print the full breakdown")
     rs.add_argument("answers", nargs="*", type=Path)
     rs.add_argument("--run", type=Path, help="a work folder: its archived passes matching --passes")
@@ -706,7 +755,7 @@ def main(argv=None) -> int:
     return {
         "init": cmd_init, "dry-run": cmd_dry_run, "print-prompt": cmd_print_prompt, "build-images": cmd_build_images,
         "pins": cmd_pins, "check-token": cmd_check_token, "run": cmd_run, "report": cmd_report, "test": cmd_test,
-        "rescore": cmd_rescore,
+        "rescore": cmd_rescore, "val-pass": cmd_val_pass,
     }[args.cmd](args)
 
 

@@ -62,6 +62,16 @@ PROBABILITY = True
 #: Decided): the five questions as the VLM cards ask them, the folder layout and the starter slice viewer; no clinical
 #: hints, no tools from the death climb.
 SEED_PROGRAM_DIR = HERE / "program_agentic"
+#: The retrieval arm (spec planning/vista_eval_vlm/2026-11-17-ct-findings-retrieval-arm.md, Approved 2026-11-17):
+#: NEIGHBOURS=1 stages each scan's 5 MerlinOnc-nearest TRAIN patients (scripts/build_neighbours.py) beside its CT and
+#: starts from program_agentic_neighbours/, the untuned seed plus one paragraph. Its own work folder (below), so its
+#: passes never mix with the climbs'. The optimizer brief is unchanged: this arm is one untuned VAL pass, no climb.
+NEIGHBOURS = os.environ.get("NEIGHBOURS", "0") == "1"  # DECIDE: spec, an on/off switch
+NEIGHBOURS_DIR = DATA_DIR / "neighbours"  # per VAL id: README.md, neighbours.json, n1..n5/{answers.json, report.txt}
+NEIGHBOUR_SCANS_DIR = DATA_DIR / "neighbour_scans"  # per neighbour id: ct.npz, meta.json
+NEIGHBOUR_PICKS = ID_MAP_DIR / "neighbour_picks.json"  # private: which neighbour id fills which folder
+if NEIGHBOURS:
+    SEED_PROGRAM_DIR = HERE / "program_agentic_neighbours"
 EDITABLE_FILES = ("instructions.md", "tools")
 CONTRACT_FILES: tuple[str, ...] = ()
 #: The optimizer's task brief and its standing instructions (its system prompt).
@@ -118,7 +128,8 @@ if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: the cost 
 # --------------------------------------------------------------------------------------------------
 # Where everything a run writes goes. Outside the repo, so nothing a run writes is ever committed.
 # --------------------------------------------------------------------------------------------------
-WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / TASK_NAME)).resolve()
+WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" /
+                              (f"{TASK_NAME}-neighbours" if NEIGHBOURS else TASK_NAME))).resolve()
 
 # --------------------------------------------------------------------------------------------------
 # Sealing: which model route and which images. docs/guide/decisions.md, "Which models it can use".

@@ -17,7 +17,8 @@ the five questions, as the climb's score.
 
     uv run -q --no-project --with pandas --with pyarrow --with scikit-learn python -B scripts/score_baselines.py score --ids pool
 
-Reads the task's private id map (id -> accession number) to join; prints aggregates only, never an id or a row.
+With the retrieval arm's vote file present (scripts/build_neighbours.py select), also the 5-nearest-neighbour vote
+rows (MerlinOnc, Pillar0), on the same scans. Reads the task's private id map (id -> accession number) to join; prints aggregates only, never an id or a row.
 Only VAL rows of the published files are read.
 """
 
@@ -47,6 +48,10 @@ BASELINES = (
     ("COLIPRI", "colipri"),
     ("MerlinOnc pan-cancer ep99", "merlinonc_top_centered_pancancer_postdx_ep99"),
 )
+#: The retrieval arm's 5-nearest-neighbour vote (spec 2026-11-17), per VAL pool id, from scripts/build_neighbours.py
+#: select: (name shown, model in the vote file). The shared set: the 5 neighbours each agent session sees.
+VOTES = DATA_DIR / "neighbours_vote_val.json"
+VOTE_ROWS = (("5-NN vote, MerlinOnc ep99", "MerlinOnc pan-cancer ep99"), ("5-NN vote, Pillar0", "Pillar0"))
 BOOTSTRAP = 2000
 SEED = 0
 
@@ -113,6 +118,9 @@ def cmd_score(args) -> int:
     table, out = [], {"what": what, "n": len(ids), "questions": {}}
     print(f"{what}: {len(ids)} scans. VAL; AUROC against this task's labels, 95% bootstrap interval ({BOOTSTRAP})")
     frames = {stem: per_example(stem) for _n, stem in BASELINES}
+    votes = json.loads(VOTES.read_text()) if VOTES.is_file() else None
+    if votes and set(ids) - set(votes[VOTE_ROWS[0][1]]["shared"]):
+        raise SystemExit("the vote file does not cover every requested VAL id")
     for key, task in QUESTIONS:
         scored = [i for i in ids if rows[i][key] is not None]
         yes = sum(rows[i][key] for i in scored)
@@ -133,8 +141,19 @@ def cmd_score(args) -> int:
             auc = f"{row['auroc']:.3f} [{row['auroc_lower']:.3f}, {row['auroc_upper']:.3f}]" if "auroc" in row else "n/a"
             flag = f"; {disagree} published labels differ" if disagree else ""
             print(f"  {name:<26} n={row['n']:>3}/{len(scored)} ({row['yes']} yes)  AUROC {auc}{flag}")
+        for name, model in VOTE_ROWS if votes else ():
+            gold = np.array([rows[i][key] for i in scored])
+            sc = np.array([votes[model]["shared"][i][key] for i in scored])
+            row = {"question": key, "task": task, "baseline": name, "stem": "neighbours_vote_val.json",
+                   "n": len(scored), "of": len(scored), "yes": int(gold.sum()), "label_disagreements": 0}
+            if 0 < gold.sum() < len(gold):
+                row["auroc"] = float(roc_auc_score(gold, sc))
+                row["auroc_lower"], row["auroc_upper"] = bootstrap_ci(gold, sc)
+            table.append(row)
+            auc = f"{row['auroc']:.3f} [{row['auroc_lower']:.3f}, {row['auroc_upper']:.3f}]" if "auroc" in row else "n/a"
+            print(f"  {name:<26} n={row['n']:>3}/{len(scored)} ({row['yes']} yes)  AUROC {auc}")
     means = {}
-    for name, _stem in BASELINES:
+    for name, _stem in BASELINES + (VOTE_ROWS if votes else ()):
         vals = [r["auroc"] for r in table if r["baseline"] == name and "auroc" in r]
         means[name] = float(np.mean(vals)) if len(vals) == len(QUESTIONS) else None
         print(f"mean AUROC over the 5, {name:<26} {means[name]:.3f}" if means[name] is not None else

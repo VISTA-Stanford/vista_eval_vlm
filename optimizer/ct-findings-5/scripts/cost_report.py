@@ -5,7 +5,7 @@
 Per pass (the seed's TRAIN pass, the first version's VAL pass, ...): patients, mean and highest cost, how many
 reached the per-scan cap (cost at 95% of it or more) or timed out, and how many answers were not a readable
 0-100 probability for all five questions. PASS when fewer than 1 in 20 sessions reached the cap or timed out, no answer was unreadable, and every pass
-finished. Prints counts and dollars only, never an id or a record. Standard library only. ct-findings-5: copied from
+finished (a climb's run summary with no stop, or run.py val-pass's ledger). Prints counts and dollars only, never an id or a record. Standard library only. ct-findings-5: copied from
 died-2yr-ct; an answer is readable when all five questions got a 0-100 number.
 """
 
@@ -53,7 +53,12 @@ def main(argv: list[str]) -> int:
         print(f"  {r['pass']:<28} {r['patients']:>3} scans  mean ${r['mean_usd']}  max ${r['max_usd']}  "
               f"at cap {r['at_cap']}  timed out {r['timed_out']}  unreadable/failed {r['unreadable_or_failed']}")
     summary_file = next((work / "private" / "runs").glob("*/run_summary.json"), None)
-    stop = json.loads(summary_file.read_text()).get("stop") if summary_file else "no run summary"
+    if summary_file:
+        stop = json.loads(summary_file.read_text()).get("stop")
+    elif (work / "private" / "val_pass_ledger.jsonl").is_file():  # run.py val-pass (the retrieval arm): no climb
+        stop = None
+    else:
+        stop = "no run summary"
     ok = at_cap * 20 < sessions and unreadable == 0 and not stop
     verdict = {"route": config.ROUTE.name, "answer": config.ANSWER, "cap_usd": cap, "sessions": sessions, "at_cap_or_timed_out": at_cap,
                "unreadable_or_failed": unreadable, "patient_sessions_usd": round(total, 2), "run_stop": stop,

@@ -7,6 +7,8 @@ Each call: the scan (``ct.npz`` + ``meta.json``, from scripts/build_data.py) is 
 folder (its only writable mount); the session reads ``instructions.md`` from the read-only program, writes a short
 findings note, then ``output.json`` with a 0-100 probability for each of the five questions (stored as 0..1), plus up
 to ``MAX_REASONS`` reasons: what in the scan moved the probabilities most, each naming where it was seen.
+With config.NEIGHBOURS (the retrieval arm, spec 2026-11-17), the call folder also gets ``neighbours/``: the scan's 5
+MerlinOnc-nearest TRAIN patients, each with its CT, answers and report (``stage_neighbours``), every file read-only.
 ``summarize`` writes ``{"answers": {...}}`` (one probability per question, or None when unreadable), which the scorer,
 the mistake builder and ``run.py test`` read.
 """
@@ -23,7 +25,7 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever you change ``prompt`` below.
-PROMPT_TAG = "ct-findings-5-v1-prob"
+PROMPT_TAG = "ct-findings-5-v1-prob-neighbours" if config.NEIGHBOURS else "ct-findings-5-v1-prob"
 MAX_REASONS = 5
 #: The session's reasoning is not kept in its transcript, so it writes what it saw; the optimizer reads it.
 FINDINGS = "findings.md"
@@ -49,6 +51,38 @@ def reasons_of(value) -> list[dict]:
     return out[:MAX_REASONS]
 
 
+NEIGHBOUR_FILES = ("answers.json", "report.txt")
+_scan_map: dict | None = None
+
+
+def stage_neighbours(scan_id: str, dest: Path) -> None:
+    """The retrieval arm (config.NEIGHBOURS): copy the scan's neighbour folder (scripts/build_neighbours.py) to
+    ``dest`` (the call folder's neighbours/), each neighbour's CT into n<rank>/ct/, and make every copied file
+    read-only. Raises when any piece is missing: a scan without its neighbours is a broken build, not a session to
+    run without them. Only VAL pool scans have folders."""
+    global _scan_map
+    if _scan_map is None:
+        _scan_map = json.loads((config.DATA_DIR / "neighbours_scan_map.json").read_text(encoding="utf-8"))
+    src = config.NEIGHBOURS_DIR / scan_id
+    nids = _scan_map[scan_id]
+    dest.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for name in ("README.md", "neighbours.json"):
+        shutil.copy2(src / name, dest / name)
+        copied.append(dest / name)
+    for rank, nid in enumerate(nids, 1):
+        nd = dest / f"n{rank}"
+        (nd / "ct").mkdir(parents=True, exist_ok=True)
+        for name in NEIGHBOUR_FILES:
+            shutil.copy2(src / f"n{rank}" / name, nd / name)
+            copied.append(nd / name)
+        for name in ("ct.npz", "meta.json"):
+            shutil.copy2(config.NEIGHBOUR_SCANS_DIR / nid / name, nd / "ct" / name)
+            copied.append(nd / "ct" / name)
+    for f in copied:
+        f.chmod(0o444)
+
+
 def program_spec(forbidden):
     from isolation.pass_outputs import Call
     from isolation.program_runner import ProgramSpec
@@ -61,6 +95,8 @@ def program_spec(forbidden):
         dest.mkdir(parents=True, exist_ok=True)
         for name in ("ct.npz", "meta.json"):
             shutil.copy2(patient_dir(call.payload["id"]) / name, dest / name)
+        if config.NEIGHBOURS:
+            stage_neighbours(call.payload["id"], Path(folder) / "neighbours")
 
     def prompt(call, stage_name, paths, pass_id):
         # The per-call wrapper: not optimized. Container paths only. It lists the five questions because the answer
