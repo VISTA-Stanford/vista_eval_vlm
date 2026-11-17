@@ -28,6 +28,29 @@ from evalset.score import is_refusal, parse_answer
 
 CHOICES = ["yes", "no"]
 KEY_COLS = ["case_id", "question_id", "arm"]
+#: Sent to the adapters instead of CHOICES for a probability recipe (models.base.PROBABILITY; kept as a literal so
+#: this module imports without the adapters).
+PROBABILITY = "probability_0_100"
+
+
+def answer_spec(recipe: Recipe):
+    """What the adapters force: the yes/no options, or a 0-100 probability."""
+    return PROBABILITY if recipe.answer_form == "probability" else CHOICES
+
+
+def is_answered(v) -> bool:
+    """A readable answer: 'yes' / 'no', or a probability in 0-1 (probability recipes)."""
+    if isinstance(v, str):
+        return v in CHOICES
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return False
+    return not isinstance(v, bool) and math.isfinite(f) and 0.0 <= f <= 1.0
+
+
+def answered_mask(col):
+    return col.map(is_answered).astype(bool)
 
 
 # -- calls ------------------------------------------------------------------------------------------
@@ -100,6 +123,7 @@ class APIBackend:
         self.adapter.configure(opts)
         self.adapter.load()
         self.max_new_tokens = int(recipe.setting("max_new_tokens", 4096))
+        self.choices = answer_spec(recipe)
 
         self.per_case = bool(getattr(self.adapter, "explicit_cache", False))
 
@@ -108,14 +132,14 @@ class APIBackend:
         return {"parts": list(m.parts), "prefix_len": m.prefix_len}
 
     def is_cached(self, m) -> bool:
-        return bool(self.adapter.is_answered(self._wire(m), self.max_new_tokens, CHOICES))
+        return bool(self.adapter.is_answered(self._wire(m), self.max_new_tokens, self.choices))
 
     def ask_many(self, msgs):
-        return self.adapter.infer(None, None, [self._wire(m) for m in msgs], self.max_new_tokens, CHOICES)
+        return self.adapter.infer(None, None, [self._wire(m) for m in msgs], self.max_new_tokens, self.choices)
 
     def ask_case(self, msgs):
         """One scan's questions through an explicit context cache (``ask_group``)."""
-        return self.adapter.ask_group([self._wire(m) for m in msgs], self.max_new_tokens, CHOICES)
+        return self.adapter.ask_group([self._wire(m) for m in msgs], self.max_new_tokens, self.choices)
 
 
 #: Gemini 4 Argon, Vertex global, USD per million tokens through 2026-11-30 (doubles from 12-01).
@@ -162,13 +186,16 @@ def result_row(recipe, step, arm, row, q, out, m=None):
     err = out.get("error")
     label = row.get(f"label__{q.task}")
     usage = out.get("usage") or {}
+    answer = parse_answer(text, recipe.answer_form) if not err else None
+    # Probability recipes: the stated P(yes) is the score (open models: from the answer token's log-probabilities).
+    prob = answer if recipe.answer_form == "probability" else p_yes(out.get("log_probs"))
     rec = {"case_id": str(row["case_id"]), "person_id": str(row["person_id"]), "split": row.get("split"),
            "step": step, "question_id": q.id, "task": q.task, "arm": arm, "recipe": recipe.name,
            "model": recipe.model_name, "label": None if label is None or (isinstance(label, float) and math.isnan(label)) else int(label),
-           "response_text": text, "answer": parse_answer(text, recipe.answer_form) if not err else None,
+           "response_text": text, "answer": answer,
            # A refusal is a declined answer: disclaimer wording next to a readable yes/no is not one.
            "refused": False, "error": err, "cached": out.get("cached"),
-           "log_probs": out.get("log_probs"), "p_yes": p_yes(out.get("log_probs")),
+           "log_probs": out.get("log_probs"), "p_yes": prob,
            "message_key": message_key(m) if m is not None else None, "request_key": out.get("request_key")}
     rec["refused"] = rec["answer"] is None and is_refusal(text, err)
     for k, v in usage.items():
@@ -193,7 +220,7 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
     done = pd.DataFrame()
     if path.exists():
         prev = pd.read_csv(path, dtype={"case_id": str, "person_id": str})
-        done = prev[prev["answer"].isin(CHOICES)]
+        done = prev[answered_mask(prev["answer"])]
     done_keys = set(map(tuple, done[KEY_COLS].astype(str).values)) if len(done) else set()
     if backend is None:
         backend = (VLLMBackend(recipe) if recipe.model_type == "vllm"
@@ -321,7 +348,7 @@ def log_run(path: Path, recipe: Recipe, step: int, arm: str, limit, questions, r
            "commit": commit, "uncommitted_changes": dirty, "step": step, "arm": arm, "limit": limit,
            "questions": questions, "recipe": dataclasses.asdict(recipe),
            "pack": recipe.pack_id(recipe.slices_per_scan(len(card.scan_names))) if arm == "ct" else None,
-           "n_asked": len(rows), "n_parsed": sum(r["answer"] in CHOICES for r in rows),
+           "n_asked": len(rows), "n_parsed": sum(is_answered(r["answer"]) for r in rows),
            "variant": variant, "environment": environment(), "model_revision": model_revision(recipe, outs)}
     with path.with_suffix(".runs.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, default=str) + "\n")
@@ -460,7 +487,7 @@ def main() -> int:
         for arm in ([args.arm] if args.arm else list(CARDS[step].arms)):
             res = run(recipe, step, arm, args.run, args.limit, args.max_spend, backend, questions=args.questions,
                       variant=variant, which=args.which)
-            n_ok = int(res["answer"].isin(CHOICES).sum())
+            n_ok = int(answered_mask(res["answer"]).sum())
             print(f"{recipe.name} step {step} {arm}: {n_ok}/{len(res)} parsed -> {out_path(args.run, recipe, step, arm)}")
     return 0
 

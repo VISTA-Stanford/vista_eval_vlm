@@ -16,6 +16,7 @@ import hashlib
 import json
 
 from context.windows import describe
+from evalset.cards.base import ANSWER, ANSWER_PROB
 
 YES_NO = ("yes", "no")
 
@@ -49,7 +50,8 @@ class Recipe:
     jpeg_quality: int | None = None  # None = PIL's default (75), as the MedGemma notebook encodes
     orientation: str = "radiological"
     label_style: str = "before"      # "before": "Image n:" then the image; "after": image then "SLICE n"
-    answer_form: str = "schema"      # "schema": forced {"answer": yes|no}; "final_answer": free text
+    answer_form: str = "schema"      # "schema": forced {"answer": yes|no}; "final_answer": free text;
+    #                                  "probability": forced {"probability": 0-100}, card line becomes ANSWER_PROB
     persona: str = ""                # line put before the card text (CT arms only)
     answer_line: str = ""            # replaces the card's "Answer yes or no." when set
     intro: str = ""                  # text part before the first image (CT arms only); "{n}" = images sent
@@ -83,10 +85,13 @@ class Recipe:
 
     def wrap_text(self, card_text: str, with_images: bool) -> str:
         text = card_text
-        if self.answer_line:
-            if not text.endswith("Answer yes or no."):
-                raise ValueError("card text must end with 'Answer yes or no.'")
-            text = text[: -len("Answer yes or no.")] + self.answer_line
+        if self.answer_form == "probability" and self.answer_line:
+            raise ValueError(f"{self.name}: answer_line and the probability answer form both replace the answer line")
+        line = ANSWER_PROB if self.answer_form == "probability" else self.answer_line
+        if line:
+            if not text.endswith(ANSWER):
+                raise ValueError(f"card text must end with {ANSWER!r}")
+            text = text[: -len(ANSWER)] + line
         if with_images and self.persona:
             text = self.persona + "\n" + text
         return text

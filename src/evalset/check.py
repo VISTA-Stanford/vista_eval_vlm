@@ -16,7 +16,7 @@ import pandas as pd
 from evalset import packs, samples
 from evalset.cards import CARDS
 from evalset.recipes import get
-from evalset.run import CHOICES, out_path
+from evalset.run import answered_mask, out_path
 
 
 def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, root=None, arms=None, variant=None,
@@ -46,7 +46,7 @@ def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, 
                 continue
             df = pd.read_csv(p, dtype={"case_id": str})
             df = df[df["case_id"].isin(case_ids) & df["question_id"].isin(qids)]
-            parsed = int(df["answer"].isin(CHOICES).sum())
+            parsed = int(answered_mask(df["answer"]).sum())
             tok = {c.replace("usage_", ""): int(pd.to_numeric(df[c], errors="coerce").fillna(0).sum())
                    for c in df.columns if c.startswith("usage_") and "tokens" in c}
             errs = Counter(str(e)[:120] for e in df["error"].dropna())

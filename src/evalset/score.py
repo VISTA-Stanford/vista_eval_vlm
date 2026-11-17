@@ -2,6 +2,11 @@
 probes cut at a validation-chosen point. Extends ``results.final_metrics`` (its forced-answer metrics
 are reused, so an unreadable answer counts as wrong the same way everywhere).
 
+Probability runs (recipe ``answer_form: "probability"``, Phil 11-17): the parsed 0-100 answer, as 0-1, is the
+answers file's ``p_yes`` (open models fill the same column from token probabilities). AUROC per question and the
+mean over a step's questions, patient bootstrap; a row with no readable probability is left out of the AUROC and
+counted (``prob_missing_rate``). Balanced accuracy is reported only for rows with a yes/no answer.
+
 Rules (spec, Decided): balanced accuracy per question; a step's headline is the mean over its
 questions (macro); unparseable or refused = wrong, with the refusal rate reported; intervals from a
 bootstrap over patients (all of a patient's rows move together, across questions too); chance is
@@ -30,15 +35,43 @@ _REFUSAL_TEXT = re.compile(
     r"\b(i\s*(?:am|'m)\s*(?:not able|unable)|i\s*can(?:not|'t)\s*(?:provide|determine|answer|interpret|make)"
     r"|not (?:able|qualified) to (?:provide|interpret|diagnose)|consult (?:a|your) (?:radiologist|physician|doctor)"
     r"|i\s*(?:am|'m)\s*sorry)", re.IGNORECASE)
+_NUMBER = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)\s*%?")
 _REFUSAL_ERROR = re.compile(r"content.?filter|responsibleaipolicy|safety|blocked|prohibited|refus", re.IGNORECASE)
 
 
+def parse_probability(t: str):
+    """P(yes) in 0-1 from a probability reply, or None: JSON {"probability": n}, else the one number in the text
+    ("42", "42%", "Probability: 42"). Two or more numbers, none, a number outside 0-100, or refusal wording -> None."""
+    try:
+        v = json.loads(t)
+    except (json.JSONDecodeError, TypeError):
+        v = None
+    if isinstance(v, dict):
+        n = v.get("probability")
+        if isinstance(n, bool) or not isinstance(n, (int, float)):
+            return None
+    elif isinstance(v, (int, float)) and not isinstance(v, bool):
+        n = v
+    else:
+        if _REFUSAL_TEXT.search(t):
+            return None
+        hits = _NUMBER.findall(t)
+        if len(hits) != 1:
+            return None
+        n = float(hits[0])
+    n = float(n)
+    return n / 100.0 if np.isfinite(n) and 0 <= n <= 100 else None
+
+
 def parse_answer(text, form: str):
-    """'yes', 'no' or None. ``form``: 'final_answer' (the last "Final Answer: yes/no" in free text) or
-    'schema' (a forced answer: the bare word, or JSON {"answer": ...})."""
+    """'yes', 'no' or None; for ``form`` 'probability', P(yes) in 0-1 or None. ``form``: 'final_answer' (the last
+    "Final Answer: yes/no" in free text), 'schema' (a forced answer: the bare word, or JSON {"answer": ...}) or
+    'probability' (``parse_probability``)."""
     if text is None or (isinstance(text, float) and np.isnan(text)):
         return None
     t = str(text).strip()
+    if form == "probability":
+        return parse_probability(t)
     if form == "final_answer":
         hits = _FINAL.findall(t)
         return hits[-1].lower() if hits else None
@@ -112,6 +145,54 @@ def patient_bootstrap(rows: pd.DataFrame, n_boot: int = 1000, seed: int = 0, alp
     return float(np.nanpercentile(draws, 100 * alpha / 2)), float(np.nanpercentile(draws, 100 * (1 - alpha / 2)))
 
 
+def _weighted_auroc(inv, n_u, label, w) -> float:
+    """AUROC with ties counted half, each row weighted by ``w``; ``inv`` indexes each row's score among the ``n_u``
+    sorted unique scores. NaN when a class has no weight."""
+    pos = np.bincount(inv, weights=w * label, minlength=n_u)
+    neg = np.bincount(inv, weights=w * (1 - label), minlength=n_u)
+    p_tot, n_tot = pos.sum(), neg.sum()
+    if p_tot <= 0 or n_tot <= 0:
+        return float("nan")
+    below = np.cumsum(neg) - neg
+    return float((pos * (below + 0.5 * neg)).sum() / (p_tot * n_tot))
+
+
+def auroc(scores, labels) -> float:
+    s = np.asarray(scores, dtype=float)
+    y = np.asarray(labels, dtype=float)
+    u, inv = np.unique(s, return_inverse=True)
+    return _weighted_auroc(inv, len(u), y, np.ones(len(s)))
+
+
+def auroc_bootstrap(rows: pd.DataFrame, n_boot: int = 1000, seed: int = 0, alpha: float = 0.05):
+    """(point, lo, hi): mean over ``rows``' questions of each question's AUROC from ``score``, with a percentile
+    interval from resampling patients (all of a patient's rows move together, across questions too). ``rows`` must
+    already exclude rows without a score."""
+    if rows.empty:
+        return float("nan"), float("nan"), float("nan")
+    if rows["person_id"].isna().any():
+        raise ValueError(f"{int(rows['person_id'].isna().sum())} rows have no person_id; the patient bootstrap needs one")
+    pcode, _ = pd.factorize(rows["person_id"])
+    qcode, q_uni = pd.factorize(rows["question_id"])
+    label = rows["label"].astype(int).to_numpy(dtype=float)
+    score = rows["score"].astype(float).to_numpy()
+    per_q = []
+    for qi in range(len(q_uni)):
+        m = qcode == qi
+        u, inv = np.unique(score[m], return_inverse=True)
+        per_q.append((m, inv, len(u)))
+
+    def macro(w):
+        vals = [_weighted_auroc(inv, n_u, label[m], w[m]) for m, inv, n_u in per_q]
+        return float(np.nanmean(vals)) if np.isfinite(vals).any() else float("nan")
+
+    point = macro(np.ones(len(rows)))
+    n_p = int(pcode.max()) + 1
+    rng = np.random.default_rng(seed)
+    draws = [macro(np.bincount(rng.integers(0, n_p, n_p), minlength=n_p).astype(float)[pcode]) for _ in range(n_boot)]
+    return point, float(np.nanpercentile(draws, 100 * alpha / 2)), float(np.nanpercentile(draws, 100 * (1 - alpha / 2)))
+
+
 # -- probes ---------------------------------------------------------------------------------------
 
 def validation_cut(scores, labels) -> float:
@@ -148,37 +229,74 @@ def probe_predictions(per_example: pd.DataFrame, task: str, key: str = "accessio
 
 # -- tables ---------------------------------------------------------------------------------------
 
+TABLE_COLS = ["step", "recipe", "arm", "question_id", "n", "n_yes", "n_no", "balanced_accuracy", "ba_lo", "ba_hi",
+              "sensitivity", "specificity", "unparseable_rate", "refusal_rate", "chance",
+              "auroc", "auroc_lo", "auroc_hi", "n_prob", "prob_missing_rate"]
+
+
 def score_rows(df: pd.DataFrame, n_boot: int = 1000, seed: int = 0) -> pd.DataFrame:
     """One row per (step, recipe, arm, question) plus a macro row per (step, recipe, arm) when the step
     has 2+ questions: each step's headline averages its own questions only.
 
-    ``df`` columns: step, recipe, arm, question_id, person_id, label (0/1), pred (0/1/None), refused (bool)."""
+    ``df`` columns: step, recipe, arm, question_id, person_id, label (0/1), pred (0/1/None), refused (bool), and
+    optionally score (P(yes), NaN when missing). Balanced accuracy is filled for a (step, recipe, arm) with yes/no
+    answers ("yesno" True); AUROC for one with any score."""
     out = []
     if "step" not in df.columns:
         df = df.assign(step=0)
+    if "score" not in df.columns:
+        df = df.assign(score=np.nan)
+    if "yesno" not in df.columns:
+        df = df.assign(yesno=True)
+
+    def auc_cols(rows):
+        s = rows[rows["score"].notna()]
+        if not rows["score"].notna().any():
+            return {}
+        a, lo, hi = auroc_bootstrap(s, n_boot, seed)
+        return {"auroc": a, "auroc_lo": lo, "auroc_hi": hi, "n_prob": len(s),
+                "prob_missing_rate": float(rows["score"].isna().mean())}
+
     for (step, recipe, arm), g in df.groupby(["step", "recipe", "arm"], sort=True):
+        yesno = bool(g["yesno"].any())
         for qid, q in g.groupby("question_id", sort=True):
-            m = forced_answer_metrics(q["label"].astype(int).tolist(), list(q["pred"]), [0, 1])
-            lo, hi = patient_bootstrap(q, n_boot, seed)
-            out.append({"step": step, "recipe": recipe, "arm": arm, "question_id": qid, "n": m["n"],
-                        "n_yes": int((q["label"] == 1).sum()), "n_no": int((q["label"] == 0).sum()),
-                        "balanced_accuracy": m.get("balanced_accuracy"), "ba_lo": lo, "ba_hi": hi,
-                        "sensitivity": m.get("sensitivity"), "specificity": m.get("specificity"),
-                        "unparseable_rate": float(q["pred"].isna().mean()),
-                        "refusal_rate": float(q["refused"].astype(bool).mean()), "chance": 0.5})
+            rec = {"step": step, "recipe": recipe, "arm": arm, "question_id": qid, "n": len(q),
+                   "n_yes": int((q["label"] == 1).sum()), "n_no": int((q["label"] == 0).sum())}
+            if yesno:
+                m = forced_answer_metrics(q["label"].astype(int).tolist(), list(q["pred"]), [0, 1])
+                lo, hi = patient_bootstrap(q, n_boot, seed)
+                rec.update({"balanced_accuracy": m.get("balanced_accuracy"), "ba_lo": lo, "ba_hi": hi,
+                            "sensitivity": m.get("sensitivity"), "specificity": m.get("specificity"),
+                            "unparseable_rate": float(q["pred"].isna().mean())})
+            rec.update({"refusal_rate": float(q["refused"].astype(bool).mean()), "chance": 0.5, **auc_cols(q)})
+            out.append(rec)
         if g["question_id"].nunique() > 1:
-            lo, hi = patient_bootstrap(g, n_boot, seed)
-            out.append({"step": step, "recipe": recipe, "arm": arm, "question_id": "MACRO", "n": len(g),
-                        "balanced_accuracy": macro_balanced_accuracy(g), "ba_lo": lo, "ba_hi": hi,
-                        "unparseable_rate": float(g["pred"].isna().mean()),
-                        "refusal_rate": float(g["refused"].astype(bool).mean()), "chance": 0.5})
-    return pd.DataFrame(out)
+            rec = {"step": step, "recipe": recipe, "arm": arm, "question_id": "MACRO", "n": len(g)}
+            if yesno:
+                lo, hi = patient_bootstrap(g, n_boot, seed)
+                rec.update({"balanced_accuracy": macro_balanced_accuracy(g), "ba_lo": lo, "ba_hi": hi,
+                            "unparseable_rate": float(g["pred"].isna().mean())})
+            rec.update({"refusal_rate": float(g["refused"].astype(bool).mean()), "chance": 0.5, **auc_cols(g)})
+            out.append(rec)
+    table = pd.DataFrame(out)
+    for c in TABLE_COLS:  # one column set whatever mix of runs is scored (blank where it does not apply)
+        if c not in table.columns:
+            table[c] = np.nan
+    return table[TABLE_COLS + [c for c in table.columns if c not in TABLE_COLS]]
 
 
 def prepare(answers: pd.DataFrame) -> pd.DataFrame:
     """Answers file rows -> scoring rows (parsed answer, label, refusal), dropping rows with no scored label."""
     a = answers[answers["label"].notna()].copy()
     a["label"] = a["label"].astype(int)
+    # A probability run's answer column holds numbers (P(yes)); a yes/no run's holds 'yes' / 'no' / blank.
+    # A run is scored as yes/no unless its answers are numbers and none is yes/no.
+    is_yn = pd.Series([isinstance(x, str) and x in ("yes", "no") for x in a["answer"]], index=a.index)
+    is_num = pd.to_numeric(a["answer"], errors="coerce").notna()
+    keys = [c for c in ("step", "recipe", "arm") if c in a.columns]
+    a["yesno"] = (is_yn.groupby([a[k] for k in keys]).transform("any")
+                  | ~is_num.groupby([a[k] for k in keys]).transform("any")) if len(a) else True
+    a["score"] = pd.to_numeric(a["p_yes"], errors="coerce") if "p_yes" in a.columns else np.nan
     a["pred"] = [to_label(x) if isinstance(x, str) else None for x in a["answer"]]
     a["pred"] = a["pred"].astype(object).where(a["pred"].notna(), None)
     a["refused"] = [bool(r) for r in a["refused"]]

@@ -13,6 +13,9 @@ from __future__ import annotations
 import dataclasses
 
 ANSWER = "Answer yes or no."
+#: Replaces ANSWER for recipes with ``answer_form: "probability"`` (Phil 11-17: AUROC for the LLM rows); the rest of
+#: the card text is unchanged, so the question matches the yes/no runs word for word.
+ANSWER_PROB = "Give the probability, from 0 to 100, that the answer is yes. Answer with one whole number."
 
 
 @dataclasses.dataclass(frozen=True)
