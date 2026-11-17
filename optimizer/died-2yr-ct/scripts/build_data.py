@@ -10,7 +10,8 @@ are dropped, as vista-eval drops them.
     horizons add ``label_1yr`` (vista_bench ``died_any_cause_1_yr``, same patient and scan) to every row of
              splits/*.jsonl, so one session answers both horizons (work package 2, 2026-10-27). The 2-year
              ``label`` and the patient lists are unchanged; the old files are kept in splits-2yr-only/
-    volumes  convert each pool patient's NIfTI (or --split test: every TEST patient) into
+    volumes  convert each pool patient's NIfTI (--split test: every TEST patient; --split val: all 811 VAL patients,
+             for run.py score-val) into
              patients/<id>/ct.npz + meta.json: Hounsfield units, int16, reoriented to RAS, thin scans
              averaged into slabs of about SLAB_MM, and no header, date or UID carried over
 
@@ -203,8 +204,8 @@ def cmd_volumes(args) -> int:
         for line in f:
             m = json.loads(line)
             id_map[m["id"]] = m["nifti"]
-    if args.split == "test":
-        wanted = [json.loads(l)["id"] for l in (DATA_DIR / "splits" / "test.jsonl").read_text().splitlines() if l]
+    if args.split in ("test", "val"):
+        wanted = [json.loads(l)["id"] for l in (DATA_DIR / "splits" / f"{args.split}.jsonl").read_text().splitlines() if l]
     else:
         pools = json.loads((DATA_DIR / "pools.json").read_text())
         wanted = [i for s in ("train", "val") for i in pools[s]]
@@ -228,7 +229,7 @@ def main() -> int:
     sub.add_parser("select")
     sub.add_parser("horizons")
     v = sub.add_parser("volumes")
-    v.add_argument("--split", choices=("pools", "test"), default="pools")
+    v.add_argument("--split", choices=("pools", "test", "val"), default="pools")
     v.add_argument("--workers", type=int, default=4)
     v.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
