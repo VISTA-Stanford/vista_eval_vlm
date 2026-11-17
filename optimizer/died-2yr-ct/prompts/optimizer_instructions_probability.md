@@ -42,6 +42,9 @@ misread. Do it with code and a few images: each image you open costs tokens.
    `iter/<n>/release_val.json`, and the TRAIN numbers in `iter/<n>/release_train.json`. Write down
    whether the prediction held. If VAL fell while TRAIN rose, the last edit fit TRAIN and not the task:
    make a different change, do not stack another rule on it.
+   **Build on the best version, not the last one.** If the program you were given scored below the best VAL so
+   far (`run_summary.json`), first copy the best version's `instructions.md` and `tools/` from the versions folder
+   over the program, then make your change to that. Say in the change note which version you built on.
 2. **Read this iteration's numbers.** `release_train.json` has the TRAIN AUROC and, per horizon, the Brier score,
    the mean probability for those who died and lived, the calibration by tenth, the number of distinct values and
    the share on the most common one; the number of failed sessions and of impossible pairs (a higher chance by 1
@@ -52,10 +55,39 @@ misread. Do it with code and a few images: each image you open costs tokens.
    reasons that are not in the scan, sessions that ran out of time or budget, answers that were not a number from
    0 to 100. Check each against the CT. Pick the pattern that costs the most AUROC.
 4. **Edit the program.** Change only the program files you are told you may edit: `instructions.md` and
-   `tools/`. Write the method in general terms (what to look at, how to look, how to weigh it into a probability
-   at each horizon). Never refer to a patient's id. If you add or change a tool, run it on a few of the mistakes'
-   CTs before you finish, and check what it costs a session in images and time.
+   `tools/`. Your main lever is interpretation, written as plain-text discussion in `instructions.md` (see
+   "Interpretation, not tools" below). Never refer to a patient's id. If you change the viewer, run it on a few of
+   the mistakes' CTs before you finish, and check what it costs a session in images and time.
 5. **Record.** Write the change note (below) and update the notebook.
+
+## Interpretation, not tools
+
+The session is a capable reader of images; what it lacks is knowledge of how what it sees relates to *these
+patients'* outcomes. The outcome is death of any cause in the registry, so it follows who these patients are: how
+advanced their cancer was when this scan was taken, how frail they were, what else was wrong with them. Teach that,
+from the TRAIN outcomes.
+
+- From the mistakes and their CTs, write down what the session is likely to see and how it went with death here.
+  The shape of such a note (these examples are made up; write only what you find in the TRAIN patients): "a
+  pleural effusion on the tumour side went with death within 1 year in about half the TRAIN patients who had one",
+  "heavy emphysema without visible spread did not separate those who died from those who lived", "patients the
+  sessions called early-stage but who had thin muscles and fatty muscle died more often than the sessions said".
+  Give the counts you saw where you have them (never ids), and say where outcomes are genuinely mixed, so the
+  session puts a middling number there.
+- Write it as discussion the session reads before and while it looks: the finding, what it looks like on these
+  scans, how it went with death here, and which way and how strongly it should move each horizon's probability.
+  Graded evidence should move the number gradually: a 4 cm tumour should sit between a 2 cm and a 7 cm one, not on
+  the same value as either. Plain sentences, not a points table.
+- **No fixed number bands.** Do not write a points score, a points-to-probability lookup, or default probabilities
+  for kinds of scan ("limited disease: 8-12", "total 3 = 13 / 24"). They pin many patients to the same few numbers
+  whatever the scan shows, which throws away ranking. In the first climb on this task a points table with a lookup
+  won VAL by about 0.05 and then lost to the plain seed on the held-out patients; in the findings climb such bands
+  cost most of a round's gain. Let the session set each number from what it sees, guided by your discussion and
+  the base rates.
+- Keep `tools/view_ct.py` as the way to look; tune its views if that helps. Avoid writing analysis tools
+  (segmenters, measurers, scorers): the session's own reading is what is being tested, and in the findings climb
+  a segmentation-and-candidates tool lowered VAL. Add one only if the mistakes show a specific failure no amount
+  of guidance can fix, and say in the change note why guidance alone could not.
 
 ## The change note
 
@@ -77,8 +109,12 @@ continues from the version before it. An ordinary edit should leave it `false`.
 VAL AUROC on 200 patients (35 deaths within 1 year, 63 within 2) moves by about 0.035 by chance. A curve flat within that band for two
 iterations, or creeping up by a sliver, is a plateau: try a different approach rather than another small edit.
 The run stops by itself after two rounds in a row with no new best VAL score.
-Examples: a structured checklist with a points score that maps to published death rates, a measurement
-tool (tumour size, effusion depth) feeding the probabilities, a fixed reading order through the whole scan.
+A gain that small is also easy to win by luck when the best of several versions is kept, so prefer changes whose
+reason you can see in many TRAIN patients. The version the run picks is checked on all 811 VAL patients afterwards.
+Examples: a discussion of what the sessions over-weight here (emphysema, scarring, small nodules) and how those
+patients actually fared; how frailty on the scan (muscle, fat, bone density, heart and vessels) shifted outcomes
+among patients with similar cancer spread; what distinguished the patients who died within 1 year from those who
+died in the second year; a probability scale tied to how a radiologist would word the extent of disease.
 
 ## The notebook
 
