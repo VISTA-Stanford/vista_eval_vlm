@@ -52,6 +52,20 @@ if SPLIT == "test":
         if _p in _val_folders or "test" not in _p.name:
             raise SystemExit(f"a TEST run needs its own {_name} with 'test' in the folder name (got {_p})")
 
+#: TEST only (Phil 2026-11-19): OVER_TIME_MODEL=claude-sonnet-5-5 runs the patient sessions on Sonnet 5.5 instead of
+#: Haiku, to ask whether a stronger untuned model closes Haiku's tuned-vs-untuned gap. No other model is accepted;
+#: refused on VAL here and by climb.py, so it cannot change a validation run or the hill-climb. The model is printed in
+#: the run log and written to the score file, and is part of the engine's setup fingerprint (so of the pin and the
+#: pass key: a Haiku pass is never served to a Sonnet run).
+OVER_TIME_MODELS = ("claude-sonnet-5-5",)
+_MODEL_OVERRIDE = os.environ.get("OVER_TIME_MODEL")
+if _MODEL_OVERRIDE:
+    if _MODEL_OVERRIDE not in OVER_TIME_MODELS:
+        raise SystemExit(f"OVER_TIME_MODEL accepts only {', '.join(OVER_TIME_MODELS)}, got {_MODEL_OVERRIDE!r}")
+    if SPLIT != "test":
+        raise SystemExit("OVER_TIME_MODEL is for TEST runs only (OVER_TIME_SPLIT=test)")
+    PROGRAM_MODEL = _MODEL_OVERRIDE
+
 #: The decision points, in the order they run. (key, words). Windows in days from first treatment (K29's day 0).
 POINTS = (("start", "treatment start"), ("restaging", "first restaging CT"), ("m6", "6 months"),
           ("m12", "12 months"), ("m24", "24 months"))

@@ -384,6 +384,7 @@ def cmd_run(args) -> int:
         digest = hashlib.sha256("".join(f"{f.relative_to(src)}:{hashlib.sha256(f.read_bytes()).hexdigest()}"
                                         for f in sorted(src.rglob("*")) if f.is_file()).encode()).hexdigest()
         print(f"fresh instructions: {src} (files sha256 {digest[:16]})", flush=True)
+        print(f"patient model: {config.PROGRAM_MODEL}", flush=True)
         return drive(lay, runner, args.run_id, chunk=args.chunk, arms=arms)
     except Stop as exc:
         print(f"STOPPED (rule): {exc}")
@@ -412,6 +413,7 @@ def cmd_score(args) -> int:
         return 1
     out = sc.score(ans, program.split_rows(c.SPLIT), program.labels(), load_probes(), n_boot=args.n_boot)
     out["split"] = c.SPLIT
+    out["model"] = config.PROGRAM_MODEL
     if f"{c.POINT_KEYS[0]}-fresh" in ans and c.SPLIT == "val":
         out["start_gate"] = start_gate(ans[f"{c.POINT_KEYS[0]}-fresh"])
         sc.print_gate(out["start_gate"])

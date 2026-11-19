@@ -41,6 +41,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+if os.environ.get("OVER_TIME_MODEL"):
+    raise SystemExit("the climb runs Haiku only: OVER_TIME_MODEL is for a single TEST pass (run_over_time.py)")
+
 import common as c  # noqa: E402  (first: died-2yr-ehr's settings, then its config)
 import config  # noqa: E402
 import adapters as ad  # noqa: E402

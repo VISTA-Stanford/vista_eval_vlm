@@ -283,6 +283,27 @@ def run_cmd(*args: str, env: dict | None = None) -> tuple[int, str]:
     return proc.returncode, proc.stdout + proc.stderr
 
 
+def check_model_override() -> None:
+    """OVER_TIME_MODEL (Phil 2026-11-19): Sonnet on TEST only; refused on VAL, for any other model, and by the climb."""
+    code, out = run_cmd("leak-check", env={"OVER_TIME_MODEL": "claude-sonnet-5-5"})
+    ok("OVER_TIME_MODEL is refused on VAL", code != 0 and "TEST runs only" in out, out[-300:])
+    code, out = run_climb("report", "--run-id", "x", env={"OVER_TIME_MODEL": "claude-sonnet-5-5"})
+    ok("OVER_TIME_MODEL is refused by the climb", code != 0 and "climb runs Haiku only" in out, out[-300:])
+    with tempfile.TemporaryDirectory() as tmp:
+        test_env = {"OVER_TIME_SPLIT": "test", "OVER_TIME_PRIVATE_DIR": f"{tmp}/p-test",
+                    "TASK_DATA_DIR": f"{tmp}/d-test", "TASK_WORKDIR": f"{tmp}/w-test"}
+        probe = [sys.executable, "-B", "-c", "import common, config; print('MODEL', config.PROGRAM_MODEL)"]
+        for model, want in (("claude-opus-5-5", None), ("claude-sonnet-5-5", "claude-sonnet-5-5"), ("", "claude-haiku-5-5")):
+            p = subprocess.run(probe, capture_output=True, text=True, cwd=HERE,
+                               env={**os.environ, **test_env, "OVER_TIME_MODEL": model})
+            got = p.stdout + p.stderr
+            if want is None:
+                ok(f"OVER_TIME_MODEL={model} is refused on TEST", p.returncode != 0 and "accepts only" in got, got[-300:])
+            else:
+                ok(f"TEST with OVER_TIME_MODEL={model or '(unset)'} runs {want}",
+                   p.returncode == 0 and f"MODEL {want}" in got, got[-300:])
+
+
 def check_dry_run() -> None:
     import common as c
     import fake_sessions
@@ -517,6 +538,7 @@ def cmd_check() -> int:
     print("leak checks"); check_leaks()
     print("prompts and instructions"); check_prompts()
     print("treatment-start check"); check_gate()
+    print("Sonnet-on-TEST setting"); check_model_override()
     print("dry run (fake sessions)"); check_dry_run()
     print("hill-climb (fake sessions, scripted optimizer)"); check_climb()
     bad = [n for n, good in RESULTS if not good]
