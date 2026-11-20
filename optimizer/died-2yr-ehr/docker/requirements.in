@@ -1,0 +1,4 @@
+pandas
+pyarrow
+# duckdb 2.0 removed fetchone() and broke existing scripts (2026-10-21); stay on 1.x.
+duckdb<2
