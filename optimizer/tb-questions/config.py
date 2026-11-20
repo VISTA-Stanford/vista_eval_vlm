@@ -1,0 +1,233 @@
+"""Every decision for the tb-questions task, in one place: two Claude Code agents answer the thoracic tumor board's
+own questions, each as probabilities, one sealed session per patient, and agentic-label-opt's optimizer (Opus 5.5)
+rewrites the instructions they follow, climbing on AUROC from a zero-shot start.
+
+    TB_AGENT=treatment   the tumor board-time summary (compact_summary, cut one week before the first thoracic tumor
+                         board) -> the early-stage curative plan and/or the first-line metastatic regimen, five options
+                         each, one probability per option; climb score = mean one-vs-rest AUROC over the two questions
+    TB_AGENT=imaging     the most recent chest CT before the tumor board and its prior CT -> progression yes/no as one
+                         0-100 probability; climb score = AUROC
+
+Spec: planning/vista_eval_vlm/2026-11-20-tb-agent-questions.md (Approved 2026-11-20); hand-off
+session/2026-11-20-tb-handoff-3-agent-task.md. Built from ct-findings-5 (multi-question runner, probability scoring,
+audit, cost check, launcher) with died-2yr-ehr's summary staging. Lines marked ``DECIDE`` name who decided;
+TASK_NOTES.md has the table. Always "tumor board", never the bare word (Phil 2026-11-20).
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+#: Which agent this process is. Required: the two agents share code, never a work folder, data folder or image.
+AGENT = os.environ.get("TB_AGENT", "")
+if AGENT not in ("treatment", "imaging"):
+    raise SystemExit("set TB_AGENT=treatment or TB_AGENT=imaging")
+TREATMENT = AGENT == "treatment"
+# --------------------------------------------------------------------------------------------------
+# Where the engine is. The engine checks that it runs from a git checkout that contains ENGINE_PIN.
+# --------------------------------------------------------------------------------------------------
+#: A checkout of agentic-label-opt at ENGINE_PIN (shared with died-2yr-ct and died-2yr-ehr).
+ENGINE_ROOT = Path(os.environ.get("AGENTIC_LABEL_OPT") or Path.home() / "code" / "agentic-label-opt" / ".claude" / "worktrees" / "mortality-engine").resolve()
+if not (ENGINE_ROOT / "engine" / "driver.py").is_file():
+    raise SystemExit(f"no engine at {ENGINE_ROOT}: set AGENTIC_LABEL_OPT to your agentic-label-opt checkout")
+#: The full 40-character engine commit this task was built and tested against. Bump it on purpose, after the dry run.
+ENGINE_PIN = "bb216c2489ff63bebd8ad3f1acdcb9f969bb0e2f"  # DECIDE (spec: feat/vertex-login-plus-seat-pause, as died-2yr-ct)
+if str(ENGINE_ROOT) not in sys.path:
+    sys.path.insert(0, str(ENGINE_ROOT))
+
+# --------------------------------------------------------------------------------------------------
+# The task
+# --------------------------------------------------------------------------------------------------
+TASK_NAME = f"tb-questions-{AGENT}"  # names the work folder and images
+
+#: Phil's summary opening (11-20), verbatim from the eval-set card (vista_eval_vlm feat/tb-question-cards 1888097,
+#: src/evalset/cards/board_questions.py SUMMARY_OPENING). scripts/check_task.py compares every quoted text here with
+#: that file when the cards are readable.
+SUMMARY_OPENING = ("You are given a summary of this patient's longitudinal electronic health record, summarized from a "
+                   "point cut off one week before their first thoracic tumor board encounter.")
+#: The card's several-option answer line and yes/no probability line (src/evalset/cards/base.py ANSWER_OPTIONS,
+#: ANSWER_PROB), verbatim.
+ANSWER_OPTIONS = "Give each letter a probability from 0 to 100. These probabilities must add up to 100."
+ANSWER_PROB = "Give the probability, from 0 to 100, that the answer is yes. Answer with one whole number."
+
+#: Options: (letter, vista_bench label code, text) in code order, verbatim from the card.
+EARLY_STAGE_OPTIONS = (
+    ("A", 0, "Systemic therapy followed by surgery, with or without adjuvant therapy"),
+    ("B", 1, "Surgery followed by systemic therapy"),
+    ("C", 2, "Surgery alone"),
+    ("D", 3, "Radiation alone"),
+    ("E", 4, "Definitive chemoradiation, with or without adjuvant systemic therapy"),
+)
+SYSTEMIC_OPTIONS = (
+    ("A", 0, "Chemotherapy alone"),
+    ("B", 1, "Chemotherapy with immunotherapy"),
+    ("C", 2, "Chemotherapy with targeted therapy"),
+    ("D", 3, "Targeted therapy alone"),
+    ("E", 4, "Immunotherapy alone"),
+)
+
+
+def _options_block(options) -> str:
+    return "\n".join(f"{k}. {text}" for k, _c, text in options)
+
+
+class Question(tuple):
+    """(key, vista_bench task, question text as the card asks it, options). ``options`` is empty for a yes/no question
+    (answer: one 0-100 probability of yes) and ((letter, code, text), ...) for a several-option question (answer: one
+    0-100 probability per letter, rescaled to sum to 100 whatever the total; only all zeros is unreadable)."""
+
+    def __new__(cls, key, task, text, options=()):
+        return super().__new__(cls, (key, task, text, tuple(options)))
+
+    key = property(lambda self: self[0])
+    task = property(lambda self: self[1])
+    text = property(lambda self: self[2])
+    options = property(lambda self: self[3])
+
+
+#: The card's question bodies (from "Question:" on, the answer line included), verbatim. DECIDE: Phil 2026-11-20 (card
+#: page v3 approved).
+TREATMENT_QUESTIONS = (
+    Question("early_stage_plan", "early_stage_management_answer",
+             "Question: The tumor board discussed curative-intent treatment for this patient's stage I-III non-small "
+             "cell lung cancer. Which treatment do you predict the tumor board will recommend?\n"
+             + _options_block(EARLY_STAGE_OPTIONS) + "\n" + ANSWER_OPTIONS, EARLY_STAGE_OPTIONS),
+    Question("first_line_regimen", "optimal_systemic_therapy_answer",
+             "Question: The tumor board discussed first-line systemic treatment for this patient's metastatic "
+             "non-small cell lung cancer. Which regimen do you predict the tumor board will recommend?\n"
+             + _options_block(SYSTEMIC_OPTIONS) + "\n" + ANSWER_OPTIONS, SYSTEMIC_OPTIONS),
+)
+#: Step 4's progression question (src/evalset/cards/board.py), its yes/no answer line swapped for the eval set's
+#: probability line (base.ANSWER_PROB), as the probability recipes do.
+IMAGING_QUESTIONS = (
+    Question("progression", "progression_assessment_answer",
+             "Question: As of one week before the tumor board, does the most recent imaging show cancer "
+             "progression?\n- Yes: progression.\n- No: response or stable disease.\n" + ANSWER_PROB),
+)
+#: The imaging agent's opening, in place of the card's "These are axial slices ..." (the agent views the volumes
+#: itself; the scans named as the card names them).
+IMAGING_OPENING = ("You are given this patient's most recent chest CT before their thoracic tumor board and the prior "
+                   "CT, as two CT volumes: PRIOR and MOST RECENT.")
+QUESTIONS = TREATMENT_QUESTIONS if TREATMENT else IMAGING_QUESTIONS
+LABELS = tuple(sorted({c for q in QUESTIONS for _k, c, _t in q.options} or {0, 1}))
+
+#: Built by scripts/build_data.py: splits/{train,val}.jsonl ({"id", <question keys>: answer code | null}; null = the
+#: tumor board did not answer that question for this patient, so it is not asked or scored), pools.json (the fixed
+#: TRAIN = feedback and VAL = picking pools, with the draw recorded under "_draw") and patients/<id>/ (treatment:
+#: summary.txt; imaging: prior/ and current/, each ct.npz + meta.json). splits/test.jsonl only on Phil's go
+#: (build_data.py test); run.py test is its only reader. On the shared mount (secure environment).
+#: The optimizer never sees this folder. It sees TRAIN only through its mistakes, and VAL only as a score.
+MOUNT = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil")
+DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", MOUNT / "tb-questions-v1_7" / AGENT))
+#: The id -> person_id (and scans) map: never mounted, listed in the forbidden set.
+ID_MAP_DIR = Path(os.environ.get("TASK_PRIVATE_DIR", MOUNT / "tb-questions-v1_7-private" / AGENT))
+PROGRAM_MODE = "agentic"
+AGENTIC = True
+ANSWER = "probability"
+PROBABILITY = True
+
+#: The labeling program the optimizer starts from (program-v0), and the files it may edit. Zero-shot (spec): the
+#: card's opening and question(s) verbatim, the folder layout, and (imaging) the CT pair viewer.
+SEED_PROGRAM_DIR = HERE / ("program_treatment" if TREATMENT else "program_imaging")
+EDITABLE_FILES = ("instructions.md", "tools")
+CONTRACT_FILES: tuple[str, ...] = ()
+#: The optimizer's task brief and its standing instructions (its system prompt).
+TASK_BRIEF = HERE / "context" / f"task_{AGENT}.md"
+OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / f"optimizer_instructions_{AGENT}.md"
+
+#: The model each patient's session runs on, how many run at once, and each one's cap (spec, Decided).
+PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-sonnet-5-5")  # DECIDE: Phil 2026-11-20
+PROGRAM_MAX_CONCURRENT = int(os.environ.get("PROGRAM_MAX_CONCURRENT", "4" if TREATMENT else "2"))  # as died-2yr-ehr / ct-findings-5
+PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD", "0.25" if TREATMENT else "0.75"))  # DECIDE: spec
+PROGRAM_CALL_TIMEOUT_SECONDS = 600 if TREATMENT else 1200  # two CTs take longer than one
+
+# --------------------------------------------------------------------------------------------------
+# The metric: one number, higher is better. adapters.TaskScorer computes it.
+# --------------------------------------------------------------------------------------------------
+#: Treatment: per question, the one-vs-rest AUROC of each option over the patients asked it, averaged over the options
+#: that have both a yes and a no patient (vista-eval's and evalset.score.option_table's multi-class rule: sklearn
+#: roc_auc_score(multi_class="ovr", average="macro") over the answers present); the climb score is the mean of the two
+#: questions. Imaging: the progression AUROC. A failed or unreadable answer counts as no information: 0.5 on a yes/no
+#: question, 20 on every option of a five-option one (Phil 2026-11-20).
+METRIC_NAME = "auroc"  # DECIDE
+
+# --------------------------------------------------------------------------------------------------
+# The optimizer and the climb's stop rules (spec: the death climb's rules)
+# --------------------------------------------------------------------------------------------------
+OPTIMIZER_MODEL = os.environ.get("OPTIMIZER_MODEL", "claude-opus-5-5")  # DECIDE: Phil 2026-11-20
+#: The climb's round limit (spec). ITERATIONS may be overridden for one run (the cost check sets 1); the cost report
+#: extrapolates over CLIMB_ITERATIONS.
+CLIMB_ITERATIONS = 10  # DECIDE: spec
+ITERATIONS = int(os.environ.get("ITERATIONS", str(CLIMB_ITERATIONS)))
+#: Stop once this many rounds in a row set no new best VAL score (the seed's zero-shot VAL is the first best).
+#: Enforced by run.py before the next pass, so a resume counts the same rounds. 0 = off.
+STOP_AFTER_ROUNDS_WITHOUT_BEST = int(os.environ.get("STOP_AFTER_ROUNDS_WITHOUT_BEST", "2"))  # DECIDE: spec
+#: Dollar stops, enforced by run.py before each pass (0 = off): the run total counts every scan session this run id
+#: paid for plus OPTIMIZER_SESSION_BUDGET_USD for each round started; a round = its TRAIN and VAL passes' sessions.
+RUN_BUDGET_USD = float(os.environ.get("RUN_BUDGET_USD", "150" if TREATMENT else "250"))  # DECIDE: spec 2026-11-20
+ROUND_BUDGET_USD = float(os.environ.get("ROUND_BUDGET_USD", "40" if TREATMENT else "60"))  # DECIDE: spec 2026-11-20
+OPTIMIZER_SESSION_BUDGET_USD = float(os.environ.get("OPTIMIZER_SESSION_BUDGET_USD", "3.0"))  # as died-2yr-ct
+OPTIMIZER_EFFORT = os.environ.get("OPTIMIZER_EFFORT", "high")  # as died-2yr-ct
+OPTIMIZER_TIMEOUT_SECONDS = 2700
+#: Optimizer web search off (spec, Decided 2026-11-20): no search of its own and no search proxy either.
+OPTIMIZER_WEB_SEARCH = False
+SEARCH_PROXY = False  # DECIDE: spec "optimizer web search off"; ct-findings-5 had the proxy on
+SEARCH_REQUESTS_PER_ROUND = 0
+STEP_BACK_REVERT_TOLERANCE = 0.0
+TOKEN_BUDGET: int | None = None
+
+# --------------------------------------------------------------------------------------------------
+# Which scans each iteration sees (docs/reference/engine-internals.md, "Data schedule").
+# --------------------------------------------------------------------------------------------------
+#: The pools are fixed by build_data.py (one row per patient). Treatment: TRAIN = the official train split (492
+#: patients), VAL = the official valid split (111). Imaging: the 288 train + valid CT pairs redrawn into 188 feedback
+#: (TRAIN) and 100 picking (VAL). VAL is scored whole every round; TRAIN grows to the whole feedback set by round 5
+#: (spec: "feedback grows to the whole feedback set"; round 5 because past climbs stopped by rounds 4-7).
+CLIMB_SCHEDULE: dict = ({"train_size": "linear(200, 492, over=5)", "val_size": "constant(111)"} if TREATMENT else
+                        {"train_size": "linear(90, 188, over=5)", "val_size": "constant(100)"})  # DECIDE: build 2026-11-20
+#: Patients answered right several rounds in a row are retired from TRAIN by the engine, so later batches are smaller.
+SCHEDULE: dict | None = CLIMB_SCHEDULE
+if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: the cost check uses it
+    import json as _json
+
+    SCHEDULE = _json.loads(os.environ["TASK_SCHEDULE"])
+
+# --------------------------------------------------------------------------------------------------
+# Where everything a run writes goes. Outside the repo, so nothing a run writes is ever committed.
+# --------------------------------------------------------------------------------------------------
+WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" / TASK_NAME)).resolve()
+
+# --------------------------------------------------------------------------------------------------
+# Sealing: which model route and which images. docs/guide/decisions.md, "Which models it can use".
+# --------------------------------------------------------------------------------------------------
+#: The optimizer runs in a container that cannot see your Claude Code login, so it needs its own token.
+#: `claude setup-token` mints a one-year token on the account you sign into (Pro, Max, Team or Enterprise):
+#: your existing seat, not a new account or an API key. Pick your organization's account at the browser
+#: login. run.py reads the token from TOKEN_ENV_NAME, else from TOKEN_FILE (keep it mode 600).
+#: `run.py check-token` tests it alone before you spend anything. docs/guide/decisions.md, "The Claude token".
+TOKEN_ENV_NAME = "CLAUDE_CODE_OAUTH_TOKEN"
+TOKEN_FILE = Path(os.environ.get("ALO_TOKEN_FILE", Path.home() / ".config" / "alo" / "oauth_token"))
+#: The Claude Code version baked into the optimizer image; its tag must name it.
+CLAUDE_CODE_VERSION = "2.1.307"  # Vertex global verified on this version 2026-10-21 (the run `first` used 2.1.295)
+OPTIMIZER_IMAGE_TAG = f"alo-{TASK_NAME}-optimizer:{CLAUDE_CODE_VERSION}"
+WORKER_IMAGE_TAG = f"alo-{TASK_NAME}-worker:3.11.0"
+#: The route, one setting for the optimizer, the patient sessions and the search sessions (engine isolation.route).
+#: Vertex is the default here (spec, Decided 2026-11-20); ALO_ROUTE=anthropic runs one run on the seat instead. Vertex bills
+#: the GCP project, not the seat, and reaches Google's API addresses, not api.anthropic.com, so it neither spends
+#: the seat's session limit nor shares the Cloud NAT's 64 ports (Phil 2026-10-21). No service account can be made,
+#: so on Vertex every session holds the machine's `optimizer` login (engine OPTIMIZER_LOGIN, the file crc and
+#: rad-eval mount) and runs as its owner. That login can read the BigQuery labels: the network block (only the
+#: Vertex model endpoint and Google sign-in) is the guard, and the cost check runs the engine's after-run audit
+#: (scripts/audit_vertex_run.py) as the evidence (Phil 2026-10-28).
+#: Both routes are approved for this de-identified data, CT slice images included (Phil 2026-10-17, 10-20, 10-22).
+from isolation.route import OPTIMIZER_LOGIN, Route, route_name  # noqa: E402  (the engine is on sys.path above)
+
+ROUTE = Route(route_name("vertex"), vertex_project="som-nero-plevriti-deidbdf",
+              vertex_region="global",  # Claude 5.5 is served on global only in this project (probed 2026-10-17)
+              token_env_name=TOKEN_ENV_NAME, vertex_credential=OPTIMIZER_LOGIN)  # DECIDE
+#: Patient data: turns on the engine's patient-data guards (fail-closed run store, Vertex only).
+PATIENT_DATA = False  # DECIDE: de-identified, approved for the subscription route (Phil 2026-10-17, 10-20)
