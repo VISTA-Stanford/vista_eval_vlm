@@ -7,6 +7,8 @@
 #
 # Settings, all optional, on the same line: RUN_ID (climb-r1), BRANCH (feat/died-ehr-over-time), ALO_ROUTE (vertex),
 # PROGRAM_MAX_CONCURRENT (2), MAX_RESUMES (20), CLIMB_BUDGET_USD (300, the hard stop), SETUP_ONLY=1.
+# One-point climb (Phil 2026-11-20): CLIMB_POINTS=restaging CLIMB_ARMS=fresh, optionally OVER_TIME_MODEL=claude-sonnet-5-5
+# (accepted only with both); give it its own CLIMB_WORKDIR and RUN_ID. Round 0 is then paid, not reused.
 # Pass: "SETUP PASS"; the log ends "FINISHED 10 iterations"; per-round VAL tables, the run summary and the best
 # version's instructions reach /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-ehr-over-time-v1_7-runs/<host>/<run id>/.
 set -euo pipefail
@@ -102,7 +104,7 @@ cl pins --write | tail -1 || fail "pins --write"
 
 rm -rf /tmp/over-time-synth
 (cd "$TASK_DIR" && uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py synth /tmp/over-time-synth >/dev/null \
-    && env -u OVER_TIME_PAST_START_GATE -u CLIMB_WORKDIR -u CLIMB_BUDGET_USD -u ITERATIONS TASK_DATA_DIR=/tmp/over-time-synth TASK_WORKDIR=/tmp/over-time-synth-work uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py check | tail -1) \
+    && env -u OVER_TIME_PAST_START_GATE -u CLIMB_WORKDIR -u CLIMB_BUDGET_USD -u ITERATIONS -u CLIMB_POINTS -u CLIMB_ARMS -u OVER_TIME_MODEL TASK_DATA_DIR=/tmp/over-time-synth TASK_WORKDIR=/tmp/over-time-synth-work uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with scikit-learn --with pyyaml python -B scripts/check_task.py check | tail -1) \
     | tee /dev/stderr | grep -q "checks PASS$" || fail "check_task.py"
 
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: climb not started)"; exit 0; fi

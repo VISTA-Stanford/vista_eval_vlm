@@ -289,6 +289,14 @@ def check_model_override() -> None:
     ok("OVER_TIME_MODEL is refused on VAL", code != 0 and "TEST runs only" in out, out[-300:])
     code, out = run_climb("report", "--run-id", "x", env={"OVER_TIME_MODEL": "claude-sonnet-5-5"})
     ok("OVER_TIME_MODEL is refused by the climb", code != 0 and "climb runs Haiku only" in out, out[-300:])
+    code, out = run_climb("report", "--run-id", "x", env={"OVER_TIME_MODEL": "claude-sonnet-5-5", "CLIMB_POINTS": "restaging"})
+    ok("OVER_TIME_MODEL is refused by a one-point climb that keeps the memory arm", code != 0 and "climb runs Haiku only" in out,
+       out[-300:])
+    code, out = run_climb("report", "--run-id", "x", env={"OVER_TIME_MODEL": "claude-sonnet-5-5",
+                                                          "CLIMB_POINTS": "restaging,m6", "CLIMB_ARMS": "fresh"})
+    ok("OVER_TIME_MODEL is refused by a two-point climb", code != 0 and "climb runs Haiku only" in out, out[-300:])
+    code, out = run_cmd("leak-check", env={"OVER_TIME_POINTS": "restaging"})
+    ok("OVER_TIME_POINTS is refused on VAL", code != 0 and "TEST runs only" in out, out[-300:])
     with tempfile.TemporaryDirectory() as tmp:
         test_env = {"OVER_TIME_SPLIT": "test", "OVER_TIME_PRIVATE_DIR": f"{tmp}/p-test",
                     "TASK_DATA_DIR": f"{tmp}/d-test", "TASK_WORKDIR": f"{tmp}/w-test"}
@@ -529,6 +537,43 @@ def check_climb() -> None:
            f"{done.group(1) if done else '?'} calls vs {want}")
 
 
+def check_one_point_climb() -> None:
+    """One-point, fresh-arm, Sonnet climb (Phil 2026-11-20) over fake sessions: only first-restaging fresh rows are
+    run and scored, round 0 is paid even with a first pass on hand, the optimizer's brief says so."""
+    import program
+
+    rows = program.rows()
+    t = sum(r["split"] == "train" and r["point"] == "restaging" for r in rows.values())
+    v = sum(r["split"] == "val" and r["point"] == "restaging" for r in rows.values())
+    with tempfile.TemporaryDirectory() as tmp:
+        w0 = Path(tmp) / "first"
+        code, out = run_cmd("run", "--run-id", "dry", "--dry-run", env={"TASK_WORKDIR": str(w0)})
+        ok("one-point climb: a first pass on hand (which it must not reuse)", code == 0, out[-300:])
+        cw = Path(tmp) / "one"
+        env = {"CLIMB_WORKDIR": str(cw), "OVER_TIME_ROUND0_DIR": str(w0 / "private" / "runs" / "dry" / "answers"),
+               "CLIMB_POINTS": "restaging", "CLIMB_ARMS": "fresh", "OVER_TIME_MODEL": "claude-sonnet-5-5"}
+        code, out = run_climb("dry-run", env=env)
+        ok("one-point Sonnet climb dry run: 2 rounds finish", code == 0 and "FINISHED 2 iterations" in out, out[-800:])
+        ok("one-point climb: round 0 not reused from the (Haiku, all-points) first pass",
+           "round 0: the seed's VAL answers reused" not in out)
+        paid = int(re.search(r"dry run paid calls: (\d+)", out).group(1)) if "dry run paid calls" in out else -1
+        want = 2 * t + 3 * v  # seed TRAIN, seed VAL (round 0, paid), v1 VAL, v1 TRAIN, v2 VAL
+        ok("one-point climb: paid calls = 2 TRAIN + 3 VAL passes over first-restaging rows only", paid == want,
+           f"{paid} vs {want} (TRAIN {t}, VAL {v} restaging rows)")
+        keys = set()
+        for f in (cw / "private" / "climb" / "climb-dry").glob("*/answers.json"):
+            keys |= set(json.loads(f.read_text())["answers"])
+        ok("one-point climb: every answer is a first-restaging fresh row",
+           keys and all(k.endswith(".fresh") and rows[k.rsplit(".", 1)[0]]["point"] == "restaging" for k in keys),
+           f"{len(keys)} answers")
+        rounds = [json.loads(x) for x in (cw / "private" / "climb" / "val_rounds.jsonl").read_text().splitlines()]
+        ok("one-point climb: VAL score over 2 cells (1 point x 1 arm x 2 horizons)",
+           rounds and all(len(r["cells"]) == 2 for r in rounds), str([len(r["cells"]) for r in rounds]))
+        brief = next((cw / "inputs").glob("task*.md")).read_text()
+        ok("one-point climb: the optimizer's brief carries the override (point, arm, 2 cells, Sonnet)",
+           "## This run" in brief and "first restaging CT" in brief and "2 cells" in brief and "claude-sonnet-5-5" in brief)
+
+
 def cmd_check() -> int:
     sys.path.insert(0, str(HERE))
     import common as c  # noqa: F401  (sets the died-2yr-ehr settings first)
@@ -541,6 +586,7 @@ def cmd_check() -> int:
     print("Sonnet-on-TEST setting"); check_model_override()
     print("dry run (fake sessions)"); check_dry_run()
     print("hill-climb (fake sessions, scripted optimizer)"); check_climb()
+    print("one-point Sonnet climb (fake sessions)"); check_one_point_climb()
     bad = [n for n, good in RESULTS if not good]
     print(f"\n{len(RESULTS) - len(bad)} of {len(RESULTS)} checks PASS" + (f"; FAIL: {bad}" if bad else ""))
     return 1 if bad else 0

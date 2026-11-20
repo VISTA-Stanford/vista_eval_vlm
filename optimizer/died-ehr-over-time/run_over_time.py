@@ -236,7 +236,7 @@ def drive(lay, runner, run_id: str, *, chunk: int = c.CHUNK, arms: tuple = progr
     answers: dict[str, dict[str, dict]] = {}  # "<point>-<arm>" -> row -> answers.json entry
     with runner:
         bound = runner.as_runner(run_id=run_id)
-        for point in c.POINT_KEYS:
+        for point in c.RUN_POINTS:
             pr = program.point_rows(point, c.SPLIT)
             n, v = record_leaks(point, c.SPLIT)
             print(f"[{point}] record leak check: {n} records, {sum(v.values())} violations {v or ''}", flush=True)
@@ -384,7 +384,7 @@ def cmd_run(args) -> int:
         digest = hashlib.sha256("".join(f"{f.relative_to(src)}:{hashlib.sha256(f.read_bytes()).hexdigest()}"
                                         for f in sorted(src.rglob("*")) if f.is_file()).encode()).hexdigest()
         print(f"fresh instructions: {src} (files sha256 {digest[:16]})", flush=True)
-        print(f"patient model: {config.PROGRAM_MODEL}", flush=True)
+        print(f"patient model: {config.PROGRAM_MODEL}; points: {', '.join(c.RUN_POINTS)}", flush=True)
         return drive(lay, runner, args.run_id, chunk=args.chunk, arms=arms)
     except Stop as exc:
         print(f"STOPPED (rule): {exc}")

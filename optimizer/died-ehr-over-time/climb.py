@@ -41,8 +41,18 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+#: A one-point climb (Phil 2026-11-20): CLIMB_POINTS=<one point> and CLIMB_ARMS=fresh tune and score only that decision
+#: point's fresh arm; the TRAIN and VAL pools are the patients with a row there. Only such a climb may put the patient
+#: sessions on Sonnet (OVER_TIME_MODEL=claude-sonnet-5-5), so a full five-point Sonnet climb can't start by accident.
+_points_env = os.environ.get("CLIMB_POINTS", "")
+_arms_env = os.environ.get("CLIMB_ARMS", "both")
+if _arms_env not in ("both", "fresh"):
+    raise SystemExit(f"CLIMB_ARMS must be both or fresh, got {_arms_env!r}")
 if os.environ.get("OVER_TIME_MODEL"):
-    raise SystemExit("the climb runs Haiku only: OVER_TIME_MODEL is for a single TEST pass (run_over_time.py)")
+    if not (_arms_env == "fresh" and _points_env and "," not in _points_env):
+        raise SystemExit("the climb runs Haiku only, unless it is a one-point fresh-arm climb (CLIMB_POINTS=<one point> "
+                         "CLIMB_ARMS=fresh): OVER_TIME_MODEL is otherwise for a single TEST pass (run_over_time.py)")
+    os.environ["_OVER_TIME_ONE_POINT_CLIMB"] = "1"
 
 import common as c  # noqa: E402  (first: died-2yr-ehr's settings, then its config)
 import config  # noqa: E402
@@ -81,6 +91,28 @@ WORKDIR = Path(os.environ.get("CLIMB_WORKDIR", Path.home() / ".cache" / "alo-tas
 BRIEF = HERE / "context" / "task_over_time.md"
 INSTRUCTIONS = HERE / "prompts" / "optimizer_instructions.md"
 SEED_DIR = program.PROGRAM_DIRS["fresh"]
+POINTS = tuple(k for k in c.POINT_KEYS if k in _points_env.split(",")) if _points_env else c.POINT_KEYS
+if _points_env and (not POINTS or set(_points_env.split(",")) - set(c.POINT_KEYS)):
+    raise SystemExit(f"CLIMB_POINTS takes a comma list of {', '.join(c.POINT_KEYS)}, got {_points_env!r}")
+ARMS = ("fresh",) if _arms_env == "fresh" else program.ARMS
+if "memory" in ARMS and POINTS != c.POINT_KEYS:
+    raise SystemExit("the memory arm needs every earlier point: use CLIMB_ARMS=fresh with CLIMB_POINTS")
+FULL = POINTS == c.POINT_KEYS and ARMS == program.ARMS
+
+
+def run_note() -> str:
+    """For a restricted climb, the section appended to the brief and the standing instructions, overriding what they
+    say about points, arms, cells and the patient model. Empty for the full climb."""
+    if FULL and not c.MODEL_OVERRIDDEN:
+        return ""
+    words = dict(c.POINTS)
+    cells = len(POINTS) * len(ARMS) * len(c.HORIZONS)
+    return ("\n\n---\n\n## This run (overrides the text above where they differ)\n\n"
+            f"- Only {', '.join(words[p] for p in POINTS)} is scored and run, in the {' and '.join(ARMS)} arm only. "
+            "Your program is still written for one decision point at a time, but no other point or arm is run.\n"
+            f"- The score is the mean AUROC over {cells} cells ({len(POINTS)} point x {len(ARMS)} arm x 2 horizons). "
+            "The mistakes file and TRAIN breakdown hold only those rows; each TRAIN batch is 100 patients who have that point.\n"
+            f"- Each patient session runs on {config.PROGRAM_MODEL}.\n")
 
 
 def layout() -> "opt.Layout":
@@ -94,9 +126,10 @@ def forbidden(lay) -> tuple:
 def optimizer_forbidden(lay) -> tuple:
     """died-2yr-ehr's optimizer list (its own + the program outputs) plus this task's folder and the first pass's work
     folder (its VAL answers and transcripts), when that folder is on this machine."""
-    first = c.WORKDIR
-    extra = ((Forbidden(first, representatives=("private/README.txt",)),)
-             if (first / "private" / "README.txt").is_file() and first != WORKDIR else ())
+    # The first pass's work folder, and a TEST run's on this machine (its TEST answers and transcripts), when present.
+    extra = tuple(Forbidden(w, representatives=("private/README.txt",))
+                  for w in (c.WORKDIR, c.WORKDIR.parent / f"{c.WORKDIR.name}-test")
+                  if (w / "private" / "README.txt").is_file() and w != WORKDIR)
     return (*forbidden(lay), Forbidden(lay.program_outputs, representatives=("archive",)), *extra)
 
 
@@ -175,7 +208,7 @@ class BoundClimb:
         self.state: dict = {}
 
     def cache_identity(self, tree: Path, inputs: RunInputs) -> str:
-        return f"{program.PROMPT_TAG}:{program.MEMORY_PARAGRAPH}"
+        return f"{program.PROMPT_TAG}:{program.MEMORY_PARAGRAPH}:{POINTS}:{ARMS}:{config.PROGRAM_MODEL}"
 
     def _cache_key(self, tree: Path, inputs: RunInputs) -> str:
         """The same program content over the same patients and split is the same pass, whatever its folder is
@@ -184,7 +217,8 @@ class BoundClimb:
 
         ids = sorted(json.loads(Path(inputs.input_ref).read_text(encoding="utf-8"))["ids"])
         return hashlib.sha256(json.dumps([tree_fingerprint(tree), inputs.split, ids, program.PROMPT_TAG,
-                                          program.MEMORY_PARAGRAPH]).encode()).hexdigest()[:20]
+                                          program.MEMORY_PARAGRAPH, POINTS, ARMS, config.PROGRAM_MODEL]
+                                         ).encode()).hexdigest()[:20]
 
     def run(self, tree: Path, inputs: RunInputs) -> RunArtifacts:
         cache = self.lay.private / "climb" / self.run_id / "done" / f"{self._cache_key(Path(tree), inputs)}.json"
@@ -215,7 +249,8 @@ class BoundClimb:
 
         patients = set(json.loads(Path(inputs.input_ref).read_text(encoding="utf-8"))["ids"])
         split = inputs.split
-        if split == "val" and is_seed(tree) and ROUND0_DIR.is_dir():
+        # Round 0 reuses the first (Haiku, all points, both arms) pass only for a climb that matches it.
+        if split == "val" and FULL and not c.MODEL_OVERRIDDEN and is_seed(tree) and ROUND0_DIR.is_dir():
             merged = {}
             for point in c.POINT_KEYS:
                 for arm in program.ARMS:
@@ -225,23 +260,24 @@ class BoundClimb:
             print(f"round 0: the seed's VAL answers reused from the first pass ({len(merged)} answers, 0 calls)",
                   flush=True)
             return merged, 0.0
-        trees = {"fresh": tree, "memory": memory_tree(tree)}
+        trees = {"fresh": tree, **({"memory": memory_tree(tree)} if "memory" in ARMS else {})}
         before, _ = rot.spend(self.lay, self.run_id)
         merged: dict[str, dict] = {}
         answers: dict[str, dict[str, dict]] = {}
         tag = f"{split}-{tree.name}"
-        for point in c.POINT_KEYS:
+        for point in POINTS:
             pr = program.point_rows(point, split, patients)
             n, v = rot.record_leaks(point, split, patients)
             print(f"[{tag} {point}] record leak check: {n} records, {sum(v.values())} violations {v or ''}", flush=True)
             if v:
                 raise rot.Stop(f"a {split} record at {point} holds something dated after its cut: stop")
-            for arm in program.ARMS:
+            for arm in ARMS:
                 name = f"{point}-{arm}"
                 if arm == "memory" and point == c.POINT_KEYS[0]:
                     answers[name] = answers[f"{point}-fresh"]  # no earlier answer: the fresh arm's (as the first pass)
                     continue
-                earlier = {p: answers[f"{p}-{arm}"] for p in c.POINT_KEYS[: c.POINT_KEYS.index(point)]}
+                earlier = ({p: answers[f"{p}-{arm}"] for p in c.POINT_KEYS[: c.POINT_KEYS.index(point)]}
+                           if arm == "memory" else {})
                 calls, leaks, dropped = [], 0, 0
                 for r in pr:
                     mem, gone = program.memory_for(r, earlier) if arm == "memory" else ([], 0)
@@ -271,8 +307,9 @@ class BoundClimb:
                                                   "memory_block": program.memory_text(x["memory"])}
                                    for x in part for r, a in [(x["row"], part_answers.get(x["row"], {"error": "missing"}))]})
                 answers[name] = got
-        for r in program.point_rows(c.POINT_KEYS[0], split, patients):  # the shared treatment-start answers
-            merged[f"{r['row']}.memory"] = {**merged[f"{r['row']}.fresh"], "shared_with": "fresh"}
+        if "memory" in ARMS:
+            for r in program.point_rows(c.POINT_KEYS[0], split, patients):  # the shared treatment-start answers
+                merged[f"{r['row']}.memory"] = {**merged[f"{r['row']}.fresh"], "shared_with": "fresh"}
         after, calls = rot.spend(self.lay, self.run_id)
         print(f"[{tag}] {len(merged)} answers, {sum(1 for a in merged.values() if a.get('error'))} failed; this pass "
               f"${after - before:.2f}; climb so far ${after:.2f} over {calls} calls", flush=True)
@@ -423,7 +460,7 @@ class PatientSource:
     def pool(self, split: str) -> list[str]:
         if split not in ("train", "val"):
             raise ValueError("the schedule never draws TEST")
-        return sorted({r["patient"] for r in program.split_rows(split).values()})
+        return sorted({r["patient"] for r in program.split_rows(split).values() if r["point"] in POINTS})
 
     def stage(self, ids, split: str, label: str) -> RunInputs:
         self.batch_dir.mkdir(parents=True, exist_ok=True)
@@ -452,12 +489,12 @@ def system_prompt() -> str:
         from engine.search_proxy import optimizer_instructions
 
         text = f"{text.rstrip()}\n\n{optimizer_instructions(SEARCH_REQUESTS_PER_ROUND)}"
-    return text
+    return text + run_note()
 
 
 def stage_brief(lay) -> None:
     lay.inputs.mkdir(parents=True, exist_ok=True)
-    brief = (BRIEF.read_text(encoding="utf-8") + f"\n\n---\n\n# Appendix: `{program.agentic.GUIDE}`, as every session "
+    brief = (BRIEF.read_text(encoding="utf-8").rstrip() + run_note() + f"\n\n---\n\n# Appendix: `{program.agentic.GUIDE}`, as every session "
              "sees it\n\n" + program.GUIDE_TEXT)
     (lay.inputs / op.TASK_BRIEF_NAME).write_text(brief, encoding="utf-8")
 
@@ -607,8 +644,10 @@ def cmd_run(args) -> int:
         print(f"STOPPED ({exc.reason}): {exc}")
         return exit_code(exc)
     print(f"climb {args.run_id}: {ITERATIONS} rounds, TRAIN {TRAIN_SIZE} patients a round, hard stop "
-          f"${CLIMB_BUDGET_USD:.0f} (the optimizer's spend counted, ${OPTIMIZER_RESERVE_USD:.0f} kept for its next round), Haiku {config.PROGRAM_MODEL}, "
-          f"optimizer {config.OPTIMIZER_MODEL}; round 0 from {ROUND0_DIR if ROUND0_DIR.is_dir() else 'nowhere (paid)'}")
+          f"${CLIMB_BUDGET_USD:.0f} (the optimizer's spend counted, ${OPTIMIZER_RESERVE_USD:.0f} kept for its next round), patient model {config.PROGRAM_MODEL}, "
+          f"points {', '.join(POINTS)}, arms {', '.join(ARMS)}, "
+          f"optimizer {config.OPTIMIZER_MODEL}; round 0 from "
+          f"{ROUND0_DIR if ROUND0_DIR.is_dir() and FULL and not c.MODEL_OVERRIDDEN else 'nowhere (paid)'}")
     cfg = driver_config(lay, run_id=args.run_id, agent=opt.ChangeNoteAgent(agent), runner=runner,
                         release_builder=ad.TaskReleaseBuilder(stamp), setup_owners=owners,
                         program_mode=ProgramMode.AGENTIC, resume=args.resume)
