@@ -252,7 +252,8 @@ def drive(lay, runner, run_id: str, *, chunk: int = c.CHUNK, arms: tuple = progr
                     (out / f"{name}.json").write_text(json.dumps({"answers": answers[name], "shared_with": "fresh"}))
                     print(f"[{name}] shares the fresh arm's {len(answers[name])} answers (no earlier point)")
                     continue
-                earlier = {p: answers[f"{p}-{arm}"] for p in c.POINT_KEYS[: c.POINT_KEYS.index(point)]}
+                earlier = ({p: answers[f"{p}-{arm}"] for p in c.POINT_KEYS[: c.POINT_KEYS.index(point)]}
+                           if arm == "memory" else {})  # the fresh arm reads none (and a TEST point subset may lack them)
                 calls = []
                 leaks = dropped = 0
                 for r in pr:

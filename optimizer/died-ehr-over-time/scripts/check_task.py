@@ -574,6 +574,35 @@ def check_one_point_climb() -> None:
            "## This run" in brief and "first restaging CT" in brief and "2 cells" in brief and "claude-sonnet-5-5" in brief)
 
 
+def check_test_points() -> None:
+    """A TEST pass over a point subset (OVER_TIME_POINTS=restaging, fresh arm, Sonnet), as the tuned-restaging TEST
+    run uses it: on a copy of the synthetic data with its VAL rows relabelled TEST, the dry run answers exactly the
+    first-restaging rows and nothing else."""
+    import shutil
+
+    import common as c
+
+    with tempfile.TemporaryDirectory() as tmp:
+        data = Path(tmp) / "d-test"
+        shutil.copytree(c.DATA_DIR, data)
+        rows = [json.loads(x) for x in (data / "rows.jsonl").read_text().splitlines()]
+        for r in rows:
+            r["split"] = "test" if r["split"] == "val" else r["split"]
+        (data / "rows.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        (data / "splits" / "test.jsonl").write_text((data / "splits" / "val.jsonl").read_text())
+        (data / "splits" / "val.jsonl").write_text("")
+        work = Path(tmp) / "w-test"
+        env = {"OVER_TIME_SPLIT": "test", "OVER_TIME_PRIVATE_DIR": f"{tmp}/p-test", "TASK_DATA_DIR": str(data),
+               "TASK_WORKDIR": str(work), "OVER_TIME_POINTS": "restaging", "OVER_TIME_MODEL": "claude-sonnet-5-5"}
+        code, out = run_cmd("run", "--run-id", "tp", "--dry-run", "--arms", "fresh", env=env)
+        files = sorted(f.name for f in (work / "private" / "runs" / "tp" / "answers").glob("*.json")) if code == 0 else []
+        want = {r["row"] for r in rows if r["split"] == "test" and r["point"] == "restaging"}
+        got = set(json.loads((work / "private" / "runs" / "tp" / "answers" / "restaging-fresh.json").read_text())["answers"]) \
+            if files == ["restaging-fresh.json"] else set()
+        ok("TEST pass with OVER_TIME_POINTS=restaging: finishes, answers exactly the TEST restaging rows",
+           code == 0 and "FINISHED" in out and got == want and len(want) > 0, out[-500:] if code else f"{len(got)} vs {len(want)}")
+
+
 def cmd_check() -> int:
     sys.path.insert(0, str(HERE))
     import common as c  # noqa: F401  (sets the died-2yr-ehr settings first)
@@ -587,6 +616,7 @@ def cmd_check() -> int:
     print("dry run (fake sessions)"); check_dry_run()
     print("hill-climb (fake sessions, scripted optimizer)"); check_climb()
     print("one-point Sonnet climb (fake sessions)"); check_one_point_climb()
+    print("TEST pass over one point (fake sessions)"); check_test_points()
     bad = [n for n, good in RESULTS if not good]
     print(f"\n{len(RESULTS) - len(bad)} of {len(RESULTS)} checks PASS" + (f"; FAIL: {bad}" if bad else ""))
     return 1 if bad else 0
