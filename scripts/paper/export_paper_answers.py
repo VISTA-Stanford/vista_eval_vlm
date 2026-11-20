@@ -10,8 +10,8 @@ purpose that is neither (the Haiku ladder's round 2) is marked ``other``. Which 
 rests on its file or folder name (the answers carry no version metadata); the climb's version hash is recorded.
 Decision points the over-time task has no label for are kept (``label`` empty) and counted in the manifest
 (``rows_without_label``); the figure readers drop them.
-Not exported here: the CT findings agent (the mount copy has no scan number; its raw answers are on phil-sllm-02,
-see scripts/paper/copy_agent_programs.sh).
+The CT findings agent is read from its raw TEST answers, copied off phil-sllm-02 by scripts/paper/copy_agent_programs.sh
+(the mount's derived rows file has no scan number).
 
   cd <vista_eval_vlm checkout> && UV_PYTHON=3.11 uv run python scripts/paper/export_paper_answers.py [--out DIR]
 """
@@ -33,6 +33,9 @@ EHR_SPLIT = M / "died-2yr-ehr-v1_7/splits/test.jsonl"
 SONNET = M / "died-2yr-ehr-v1_7-private-test-sonnet"
 OT_PRIV = M / "died-ehr-over-time-v1_7-private-test"
 OT_RUNS = OT_PRIV / "runs"
+CTF_RAW = M / "paper-agent-programs/phil-sllm-02/raw-test-answers/ct-findings-5-r2"
+CTF_IDMAP = M / "ct-findings-5-v1_7-private/id_map_test.jsonl"
+CTF_STEP2 = PE.EVALSET_RUNS / "v1/astra/step2_ct.csv"
 CLIMB = {
     "ehr_sonnet": M
     / "died-2yr-ehr-v1_7-runs/phil-sllm-02/prob-summary-r1/run_summary.json",
@@ -44,6 +47,9 @@ CLIMB = {
     / "died-2yr-ehr-v1_7-runs/phil-sllm-02/prob-summaryonly-bare-r1/run_summary.json",
     "ct_death": M / "died-2yr-ct-v1_7-runs/phil-sllm-02/prob-r2/run_summary.json",
     "ct_death_first": M / "died-2yr-ct-v1_7-runs/phil-sllm-02/prob-r1/run_summary.json",
+    "ct_findings": M / "ct-findings-5-v1_7-runs/phil-sllm-02/prob-r3/run_summary.json",
+    "ct_findings_first": M
+    / "ct-findings-5-v1_7-runs/phil-sllm-02/prob-r2/run_summary.json",
     "ot_haiku": M
     / "died-ehr-over-time-v1_7-runs/phil-sllm-01/climb-r1/run_summary.json",
     "ot_sonnet": M
@@ -54,6 +60,7 @@ OT_LABELS = f"{PE.BENCH}.per_ct_landmark_labels via the died-ehr-over-time task 
 CT_LABELS = (
     f"{PE.STEP_LABEL_TABLE[1]} via evalset_v1 step 1 (runs/v1/astra/step1_ct.csv)"
 )
+CTF_LABELS = f"{PE.STEP_LABEL_TABLE[2]} via evalset_v1 step 2 (runs/v1/astra/step2_ct.csv)"
 
 # key: (reader, reader args, climb, version tag, role, label table, run id, paper elements)
 AGENTS = {
@@ -187,6 +194,28 @@ AGENTS = {
         "agents/died-2yr-ct/prob-r1/program-v0/test",
         "Fig 2b (untuned), D4; the first climb's seed, not prob-r2's own round 0",
     ),
+    # TEST answers of both versions live in the ct-findings-5-r2 work folder; v4 is the winner of the prob-r3 record,
+    # v0 the seed of the prob-r2 record (the climb the figure's untuned arm starts from).
+    "ct_findings_v4": (
+        "ctf",
+        CTF_RAW / "test-program-v4-test-d70019e9/answers.json",
+        "ct_findings",
+        "program-v4",
+        "winner",
+        CTF_LABELS,
+        "agents/ct-findings-5/prob-r3/program-v4/test",
+        "Fig 5 CT agent (findings)",
+    ),
+    "ct_findings_v0": (
+        "ctf",
+        CTF_RAW / "test-program-v0-test-fd575829/answers.json",
+        "ct_findings_first",
+        "program-v0",
+        "seed",
+        CTF_LABELS,
+        "agents/ct-findings-5/prob-r2/program-v0/test",
+        "Fig 5 CT agent (findings, untuned)",
+    ),
 }
 #: General-purpose LLM answer files Fig 2b reads (results/fig3-v12-interim/build_c_auroc_v15.py); exported when present.
 LLM_FILES = (
@@ -257,6 +286,9 @@ def main() -> int:
                 str(OT_PRIV / "points.parquet"),
                 str(OT_PRIV / "labels.jsonl"),
             ]
+        elif kind == "ctf":
+            rows = PE.ct_findings_rows(src, CTF_IDMAP, CTF_STEP2)
+            inputs = [str(src), str(CTF_IDMAP), str(CTF_STEP2)]
         else:
             rows = PE.ct_rows_file(src)
             inputs = [str(src)]

@@ -369,3 +369,54 @@ def ct_rows_file(csv: Path) -> pd.DataFrame:
             "label": d["label"].astype(int),
         }
     )
+
+
+#: CT findings agent answer key -> (eval-set step 2 question id, benchmark task); task names as evalset.score.prepare
+#: gives them for the VLMs' step2_ct.csv.
+FINDINGS_KEYS = {
+    "lesion_liver": ("lesion_liver", "per_ct_lesion_liver"),
+    "lesion_lungs": ("lesion_lungs", "per_ct_lesion_lungs"),
+    "lesion_lymph_nodes": ("lesion_lymph_nodes", "per_ct_lesion_lymph_nodes"),
+    "lung_lobe_rul": ("lobe_rul", "per_ct_lung_lobe_rul"),
+    "pneumonitis": ("pneumonitis", "per_ct_pneumonitis"),
+}
+
+
+def ct_findings_rows(answers_json: Path, idmap: Path, step2_csv: Path) -> pd.DataFrame:
+    """ct-findings-5 agent raw TEST answers ({"answers": {case_id: {...}}}) -> one row per (patient, finding, scan).
+
+    The scan is the accession number (``case_id``, as in the eval-set step 2 files), reached through the task's
+    id_map_test.jsonl; labels come from the VLMs' step 2 answers file, and only (scan, finding) pairs it labels are
+    kept, as fig5-vlm-agent/scripts/agent_ct_test_rows.py does. A failed, missing or out-of-range answer scores 0.5
+    with ``failed = true``."""
+    idm = {
+        m["id"]: m
+        for m in (json.loads(x) for x in Path(idmap).read_text().splitlines() if x)
+    }
+    lab = pd.read_csv(step2_csv, dtype={"case_id": str})
+    lab = lab[(lab["split"] == "test") & lab["label"].notna()]
+    labels = {
+        (c, q): int(v) for c, q, v in zip(lab["case_id"], lab["question_id"], lab["label"])
+    }
+    rows = []
+    for cid, a in json.loads(Path(answers_json).read_text())["answers"].items():
+        m = idm[cid]
+        scan = str(m["accession_number"])
+        for key, (qid, task) in FINDINGS_KEYS.items():
+            if (scan, qid) not in labels:
+                continue
+            p, failed = agent_prob(a, key)
+            if not failed and not 0 <= p <= 1:
+                p, failed = 0.5, True
+            rows.append(
+                {
+                    "person_id": str(m["person_id"]),
+                    "task": task,
+                    "case_id": scan,
+                    "question_id": qid,
+                    "probability": p,
+                    "failed": failed,
+                    "label": labels[(scan, qid)],
+                }
+            )
+    return pd.DataFrame(rows)

@@ -8,6 +8,9 @@
      fig5-vlm-agent/data/agent_ct_death_r2_test_scores.csv (patients_set all_test, MACRO).
   4. General LLM runs: each exported table re-scored with evalset.score.score_rows equals the original answers file
      scored the same way (AUROC or balanced accuracy per question, 200 draws).
+  5. CT findings agent v4 / v0: mean AUROC over the five findings on every test scan-finding pair equals the saved
+     fig5-vlm-agent/data/agent_ct_findings_test_scores.csv (patients_set step2_pairs, MACRO), on the same pair and
+     patient counts.
 Prints aggregates only. Exit 0 when every check passes.
 
   cd <vista_eval_vlm checkout> && UV_PYTHON=3.11 uv run python scripts/paper/check_paper_answers.py [DIR]
@@ -164,6 +167,28 @@ def check_ct(root, man) -> bool:
     return ok
 
 
+def check_ct_findings(root, man) -> bool:
+    ref = pd.read_csv(RES / "fig5-vlm-agent/data/agent_ct_findings_test_scores.csv")
+    ref = ref[(ref.patients_set == "step2_pairs") & (ref.question_id == "MACRO")]
+    ok = True
+    for key in ("ct_findings_v4", "ct_findings_v0"):
+        d = table(root, man, key)
+        auc = float(
+            np.mean([_auroc(g.label, g.probability) for _, g in d.groupby("task")])
+        )
+        rec = ref[ref.recipe == f"ct_agent_findings_{key[-2:]}"]
+        want = float(rec.auroc.iloc[0]) if len(rec) == 1 else float("nan")
+        n_want = (int(rec.n.iloc[0]), int(rec.n_patients.iloc[0])) if len(rec) == 1 else None
+        n_got = (len(d), int(d.person_id.nunique()))
+        same = abs(auc - want) < 1e-9 and n_got == n_want and d.task.nunique() == 5
+        ok &= same
+        print(
+            f"5 {key}: mean AUROC over 5 findings {auc:.5f} on {n_got[0]:,} pairs / {n_got[1]:,} patients"
+            f" vs saved {want:.5f} on {n_want} {'PASS' if same else 'FAIL'}"
+        )
+    return ok
+
+
 def _auroc(y, s):
     from sklearn.metrics import roc_auc_score
 
@@ -211,6 +236,7 @@ def main() -> int:
         check_over_time(root, man),
         check_ct(root, man),
         check_llm(root, man),
+        check_ct_findings(root, man),
     ]
     print("PASS" if all(ok) else "FAIL")
     return 0 if all(ok) else 1

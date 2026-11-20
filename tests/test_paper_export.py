@@ -289,3 +289,53 @@ def test_check_climb_version_refuses_wrong_roles(tmp_path):
         PE.check_climb_version(p, "program-v1", "seed")
     with pytest.raises(ValueError, match="never measured"):
         PE.check_climb_version(p, "program-v9", "other")
+
+
+def test_ct_findings_rows_one_row_per_scan_and_finding(tmp_path):
+    # Made-up task: patient P1 has two scans (A1, A2), patient P2 one (B1). Expected rows worked out by hand below.
+    idmap = tmp_path / "id_map_test.jsonl"
+    idmap.write_text(
+        "\n".join(
+            json.dumps({"id": c, "person_id": p, "accession_number": acc, "split": "test"})
+            for c, p, acc in (("c1", "P1", "A1"), ("c2", "P1", "A2"), ("c3", "P2", "B1"))
+        )
+    )
+    lab = []
+    for acc, pid in (("A1", "P1"), ("A2", "P1"), ("B1", "P2")):
+        for q in ("lesion_liver", "lesion_lungs", "lesion_lymph_nodes", "lobe_rul", "pneumonitis"):
+            lab.append({"case_id": acc, "person_id": pid, "split": "test", "question_id": q, "label": 1})
+    lab[0]["label"] = 0  # A1 liver
+    lab[-1]["label"] = None  # B1 pneumonitis unlabeled -> dropped
+    lab.append({"case_id": "A1", "person_id": "P1", "split": "val", "question_id": "lesion_liver", "label": 1})
+    step2 = tmp_path / "step2_ct.csv"
+    pd.DataFrame(lab).to_csv(step2, index=False)
+    ok = {"lesion_liver": 0.2, "lesion_lungs": 0.9, "lesion_lymph_nodes": 0.4, "lung_lobe_rul": 0.7, "pneumonitis": 0.1}
+    answers = {
+        "c1": dict(ok, error=None),
+        "c2": dict(ok, lesion_lungs=1.5, pneumonitis=True, lesion_liver=None),  # out of range, yes/no, missing
+        "c3": {"error": "session died"},
+    }
+    f = tmp_path / "answers.json"
+    f.write_text(json.dumps({"answers": answers}))
+
+    d = PE.ct_findings_rows(f, idmap, step2)
+
+    assert len(d) == 14  # 3 scans x 5 findings, minus B1 pneumonitis
+    assert set(d.task) == {
+        "per_ct_lesion_liver", "per_ct_lesion_lungs", "per_ct_lesion_lymph_nodes",
+        "per_ct_lung_lobe_rul", "per_ct_pneumonitis",
+    }
+    assert not d.duplicated(["person_id", "task", "case_id"]).any()
+    assert d.duplicated(["person_id", "task"]).sum() == 5  # P1's second scan
+    r = d.set_index(["case_id", "question_id"])
+    assert r.loc[("A1", "lesion_liver"), "probability"] == 0.2
+    assert r.loc[("A1", "lesion_liver"), "label"] == 0
+    assert not r.loc[("A1", "lobe_rul"), "failed"]
+    for q in ("lesion_lungs", "pneumonitis", "lesion_liver"):
+        assert r.loc[("A2", q), "probability"] == 0.5 and r.loc[("A2", q), "failed"]
+    assert r.loc[("A2", "lobe_rul"), "probability"] == 0.7
+    assert r.xs("B1").failed.all() and (r.xs("B1").probability == 0.5).all()
+    assert int(d.failed.sum()) == 3 + 4
+
+    out = PE.export_agent_answers(d, "agents/x/test", "r/program-v4", "t", [str(f)], "how")
+    PE.check_layout(out)
