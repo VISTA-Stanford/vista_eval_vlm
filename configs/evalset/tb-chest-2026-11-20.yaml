@@ -1,0 +1,18 @@
+# Tumor board CT questions asked directly (spec planning/vista_eval_vlm/2026-11-20-tb-agent-questions.md): Argon and
+# Opus with chest windows (lung W1500/L-600, soft tissue W400/L40, bone W1800/L400; ``context.windows.RGB_SETS
+# ["chest"]``) instead of MedGemma's training windows (wide / soft tissue / 0-80 HU "brain"), which have no lung window
+# (Phil 11-20: "why brain window? these aren't brain scans"). The radiology progression runs use the same chest set.
+# Steps 4 (progression, CT pair) and 8 (pneumonitis, CT pair); step 4 is re-asked this way so its Argon and Opus rows
+# match. Probability answer: 0-100 for progression, one per letter for pneumonitis (forced by the card).
+# The other eval-set CT rows (death, findings) keep MedGemma's windows; MedGemma itself keeps its own.
+# Step 6 (treatment, summary only) sends no images, so the windows do not touch it; run it with these variants too so
+# every tumor board row comes from one arms file.
+variants:
+  argon_tb:
+    recipe: argon
+    answer_form: probability
+    windows: chest
+  opus_tb:
+    recipe: opus
+    answer_form: probability
+    windows: chest

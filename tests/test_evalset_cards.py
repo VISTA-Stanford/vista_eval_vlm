@@ -10,11 +10,19 @@ import pytest
 from evalset import recipes
 from evalset.cards import CARDS, all_questions, board
 
+#: The 10-27 page covers steps 1-4; the board questions of steps 6-8 have their own page (11-20).
+PAGE_STEPS = (1, 2, 3, 4)
+
+
+def page_questions():
+    return [(s, c, q) for s, c, q in all_questions() if s in PAGE_STEPS]
+
+
 PAGE = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil/plan-explainers/vista_eval_vlm/2026-10-27-task-card-questions.html")
 
 
 def test_twenty_one_questions_with_unique_ids():
-    qs = all_questions()
+    qs = page_questions()
     assert len(qs) == 21
     assert [len(CARDS[s].questions) for s in (1, 2, 3, 4)] == [2, 17, 1, 1]
     assert len({(s, q.id) for s, _, q in qs}) == 21
@@ -28,7 +36,7 @@ def test_cards_match_the_questions_page_word_for_word():
     blocks = [html.unescape(b) for b in re.findall(r"<pre>(.*?)</pre>", page, flags=re.S)]
     labels = [html.unescape(x) for x in re.findall(r'<span class="lab">(.*?)</span>', page)]
     ours = []
-    for step, card, q in all_questions():
+    for step, card, q in page_questions():
         t = card.text(q, "lung, soft-tissue and bone windows")
         if step == 4:
             t = t.replace(board.AND_PRIOR, "[and the prior CT]")
@@ -37,7 +45,7 @@ def test_cards_match_the_questions_page_word_for_word():
     for i, (a, b) in enumerate(zip(blocks, ours)):
         assert a == b, f"question {i + 1} ({labels[i]}) differs from the page"
     # Answer keys: the page's label column names the same task (step 3 adds "(two-way)").
-    assert [lab.split(" ")[0] for lab in labels] == [q.task for _, _, q in all_questions()]
+    assert [lab.split(" ")[0] for lab in labels] == [q.task for _, _, q in page_questions()]
 
 
 def test_card_text_uses_the_recipes_windows():

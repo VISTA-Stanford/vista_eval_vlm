@@ -24,7 +24,7 @@ import pandas as pd
 from evalset import packs, paths, samples
 from evalset.cards import CARDS
 from evalset.recipes import Recipe, get
-from evalset.score import is_refusal, parse_answer
+from evalset.score import is_refusal, parse_answer, parse_options
 
 CHOICES = ["yes", "no"]
 KEY_COLS = ["case_id", "question_id", "arm"]
@@ -33,15 +33,39 @@ KEY_COLS = ["case_id", "question_id", "arm"]
 PROBABILITY = "probability_0_100"
 
 
-def answer_spec(recipe: Recipe):
-    """What the adapters force: the yes/no options, or a 0-100 probability."""
+def option_keys(card) -> tuple:
+    """The option keys of a card whose questions are several-option ones (all of them must share the keys), else ()."""
+    keys = {tuple(k for k, _, _ in q.options) for q in card.questions}
+    if len(keys) != 1:
+        raise ValueError(f"step {card.step}: questions mix option sets {sorted(keys)}")
+    return keys.pop()
+
+
+def answer_spec(recipe: Recipe, card=None):
+    """What the adapters force: the yes/no options, a 0-100 probability, or (a several-option card) one 0-100
+    probability per option (``models.base.Distribution``), whatever the recipe's answer form."""
+    if card is not None and option_keys(card):
+        from models.base import Distribution
+        return Distribution(option_keys(card))
     return PROBABILITY if recipe.answer_form == "probability" else CHOICES
+
+
+def is_options_answer(v) -> bool:
+    """A parsed several-option answer: JSON {label code: share in 0-1, ...} adding up to 1 (``score.parse_options``)."""
+    if not isinstance(v, str) or not v.startswith("{"):
+        return False
+    try:
+        d = json.loads(v)
+    except json.JSONDecodeError:
+        return False
+    return (isinstance(d, dict) and len(d) >= 2 and all(isinstance(x, (int, float)) and 0 <= x <= 1 for x in d.values())
+            and abs(sum(d.values()) - 1) < 1e-6)
 
 
 def is_answered(v) -> bool:
     """A readable answer: 'yes' / 'no', or a probability in 0-1 (probability recipes)."""
     if isinstance(v, str):
-        return v in CHOICES
+        return v in CHOICES or is_options_answer(v)
     try:
         f = float(v)
     except (TypeError, ValueError):
@@ -96,15 +120,31 @@ def messages_for_case(recipe: Recipe, card, row, arm: str, root=None, questions=
     for q in card.questions:
         if questions and q.id not in questions:
             continue
+        if card.labelled_only and _missing(row.get(f"label__{q.task}")):
+            continue
         text = card.text(q, recipe.windows_phrase(), arm, summary=row.get("summary"))
         out.append((q, recipe.build(text, scans)))
     return out
+
+
+def _missing(v) -> bool:
+    return v is None or (isinstance(v, float) and math.isnan(v))
 
 
 class APIBackend:
     """A models.MODEL_REGISTRY adapter (AI Hub, Vertex Gemini). ``ask_many`` sends calls concurrently;
     ``is_cached`` says whether a call's answer is already in the adapter's disk cache (so it would not warm the
     provider's cache); ``per_case`` is set for an explicit-cache model, which is driven one scan at a time."""
+
+    #: Adapters that can force one probability per option (``models.base.Distribution``).
+    OPTION_MODELS = ("vertex_gemini", "vertex_claude")
+
+    def use_card(self, card):
+        """Force the answer shape ``card`` needs (set by ``run`` before each step's calls)."""
+        spec = answer_spec(self.recipe, card)
+        if not isinstance(spec, (str, list)) and self.model_type not in self.OPTION_MODELS:
+            raise ValueError(f"{self.recipe.name}: several-option questions need one of {self.OPTION_MODELS}")
+        self.choices = spec
 
     def __init__(self, recipe: Recipe, cache_dir: Path, max_spend: float | None):
         from models import MODEL_REGISTRY
@@ -124,6 +164,7 @@ class APIBackend:
         self.adapter.load()
         self.max_new_tokens = int(recipe.setting("max_new_tokens", 4096))
         self.choices = answer_spec(recipe)
+        self.model_type = recipe.model_type
 
         self.per_case = bool(getattr(self.adapter, "explicit_cache", False))
 
@@ -186,9 +227,14 @@ def result_row(recipe, step, arm, row, q, out, m=None):
     err = out.get("error")
     label = row.get(f"label__{q.task}")
     usage = out.get("usage") or {}
-    answer = parse_answer(text, recipe.answer_form) if not err else None
-    # Probability recipes: the stated P(yes) is the score (open models: from the answer token's log-probabilities).
-    prob = answer if recipe.answer_form == "probability" else p_yes(out.get("log_probs"))
+    if q.options:
+        # Several-option question: the answer is JSON {label code: share}, scored per option (``score.prepare``).
+        answer = parse_options(text, q.options) if not err else None
+        prob = None
+    else:
+        answer = parse_answer(text, recipe.answer_form) if not err else None
+        # Probability recipes: the stated P(yes) is the score (open models: from the answer token's log-probabilities).
+        prob = answer if recipe.answer_form == "probability" else p_yes(out.get("log_probs"))
     rec = {"case_id": str(row["case_id"]), "person_id": str(row["person_id"]), "split": row.get("split"),
            "step": step, "question_id": q.id, "task": q.task, "arm": arm, "recipe": recipe.name,
            "model": recipe.model_name, "label": None if label is None or (isinstance(label, float) and math.isnan(label)) else int(label),
@@ -225,6 +271,10 @@ def run(recipe: Recipe, step: int, arm: str, run_name: str, limit: int | None = 
     if backend is None:
         backend = (VLLMBackend(recipe) if recipe.model_type == "vllm"
                    else APIBackend(recipe, Path(root or paths.root()) / "model_cache", max_spend))
+    if hasattr(backend, "use_card"):
+        backend.use_card(card)
+    elif any(q.options for q in card.questions):
+        raise ValueError(f"step {step}: several-option questions are not supported for {recipe.name}")
     todo = []
     for _, r in df.iterrows():
         r = r.to_dict()

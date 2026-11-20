@@ -16,7 +16,7 @@ import hashlib
 import json
 
 from context.windows import describe
-from evalset.cards.base import ANSWER, ANSWER_PROB
+from evalset.cards.base import ANSWER, ANSWER_OPTIONS, ANSWER_PROB
 
 YES_NO = ("yes", "no")
 
@@ -85,6 +85,10 @@ class Recipe:
 
     def wrap_text(self, card_text: str, with_images: bool) -> str:
         text = card_text
+        if text.endswith(ANSWER_OPTIONS):
+            # A several-option question keeps its own answer line under every recipe (its answer is always one
+            # probability per option, forced by the adapter).
+            return self.persona + "\n" + text if with_images and self.persona else text
         if self.answer_form == "probability" and self.answer_line:
             raise ValueError(f"{self.name}: answer_line and the probability answer form both replace the answer line")
         line = ANSWER_PROB if self.answer_form == "probability" else self.answer_line

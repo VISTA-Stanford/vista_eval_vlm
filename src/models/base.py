@@ -54,6 +54,56 @@ def read_probability(text):
     return json.dumps({"probability": int(p)}), None
 
 
+class Distribution:
+    """Passed to an API adapter in place of an options list for a several-option question (board treatment and
+    pneumonitis cards, Phil 11-20): force JSON {key: whole number 0-100, ...} with one number per option key ("A",
+    "B", ...), the probability that this option is the answer. ``read_distribution`` checks the reply."""
+
+    def __init__(self, keys):
+        self.keys = tuple(str(k) for k in keys)
+        if len(self.keys) < 2 or len(set(self.keys)) != len(self.keys):
+            raise ValueError(f"a distribution needs 2+ distinct option keys, got {keys!r}")
+
+    def __eq__(self, other):
+        return isinstance(other, Distribution) and other.keys == self.keys
+
+    def __hash__(self):
+        return hash(("Distribution",) + self.keys)
+
+    def __repr__(self):
+        return f"Distribution({list(self.keys)})"
+
+
+DISTRIBUTION_DESCRIPTION = ("Probability, from 0 to 100, that this option is the answer. One whole number; the numbers "
+                            "for all options add up to 100.")
+
+
+def read_distribution(text, keys):
+    """(JSON text {key: n, ...} in ``keys`` order, error) from a forced several-option reply. Every key must be present
+    with a whole number in 0-100. The total is not checked: answers are rescaled to 100 when scored, whatever they add
+    up to (Phil 11-20: no rejecting on the arithmetic). Only an all-zero answer, which cannot be rescaled, is an error."""
+    try:
+        v = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None, f"answer is not the schema's JSON: {str(text)[:100]!r}"
+    if not isinstance(v, dict):
+        return None, f"answer is not a JSON object: {str(text)[:100]!r}"
+    out = {}
+    for k in keys:
+        p = v.get(k)
+        if isinstance(p, bool) or not isinstance(p, (int, float)) or not math.isfinite(p) or p != int(p):
+            return None, f"option {k}: {p!r} is not a whole number"
+        if not 0 <= p <= 100:
+            return None, f"option {k}: {p!r} is outside 0-100"
+        out[k] = int(p)
+    extra = set(v) - set(keys)
+    if extra:
+        return None, f"answer has keys that are not options: {sorted(extra)}"
+    if sum(out.values()) == 0:
+        return None, "every option is 0, so the answer cannot be rescaled"
+    return json.dumps(out), None
+
+
 class BaseVLMAdapter:
     # Capability seam for the context assembler (Phase 1). Models that support
     # mid-prompt image interleaving (assembly `inline_by_timestamp`) flip this to
