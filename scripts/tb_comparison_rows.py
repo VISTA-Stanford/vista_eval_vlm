@@ -36,6 +36,9 @@ TREATMENT = {"board_early_stage": "early_stage_management_answer", "board_system
 PROGRESSION = {"board_progression": "progression_assessment_answer"}
 CODES = [0, 1, 2, 3, 4]
 SUMMARY_PROBE = VB / "results/v1_7/text_llm_summary/tb_classification/gemini_emb_001_per_example.parquet"
+MASTER = VB / "embeddings/cohort_all/ct/merlinonc_10crops_v2.2_embeddings.parquet"
+PAIR_EMB = VB / "embeddings/v1_7/ct/tb_classification/merlinonc_10crops_v2.2_prior_pair_embeddings.parquet"
+PAIR_PROBE = "MerlinOnc CT + prior CT"
 CT_PROBES = {
     "MerlinOnc single CT": VB / "results/v1_7/ct/tb_classification/merlinonc_10crops_v2.2_per_example.parquet",
     "MerlinOnc CT + prior CT": VB / "results/v1_7/ct/tb_classification/merlinonc_10crops_v2.2_prior_pair_per_example.parquet",
@@ -89,6 +92,37 @@ def probe_answers(path: Path, tasks: dict, sample: pd.DataFrame, multiclass: boo
             out[qid] = pd.DataFrame({"person_id": m["person_id"], "label": m["label"].astype(int),
                                      "score": m["score"].astype(float), "readable": True})
     return out, cov
+
+
+def pair_prior_matches(s4: pd.DataFrame) -> set:
+    """Patients whose pair vector's prior half is the MerlinOnc vector of the eval set's own prior CT.
+
+    The pair file takes its prior from today's per_ct_prior_ct_link; the eval set's step 4 priors are an earlier
+    snapshot of that link (samples.py), so a few patients can have a different prior. Match = cosine > 0.999 between
+    the pair's second half and the master vector of the eval set's prior series (halves are L2-normalised separately)."""
+    import pyarrow.dataset as ds
+    import pyarrow.parquet as pq
+    # ignore_metadata: the file's pandas metadata names BigQuery's dbdate type, absent from this environment.
+    pair = pq.read_table(PAIR_EMB, columns=["image_series_uid", "embedding"]).to_pandas(ignore_metadata=True)
+    want = s4[["person_id", "series", "prior_series"]].merge(pair, left_on="series", right_on="image_series_uid",
+                                                             how="inner", validate="one_to_one")
+    m = ds.dataset(MASTER).to_table(columns=["image_series_uid", "embedding"],
+                                    filter=ds.field("image_series_uid").isin(list(s4["prior_series"]))
+                                    ).to_pandas(ignore_metadata=True)
+    if m["image_series_uid"].duplicated().any():
+        raise ValueError("master holds a prior series twice; cannot pick its vector")
+    want = want.merge(m.rename(columns={"image_series_uid": "prior_series", "embedding": "prior_vec"}),
+                      on="prior_series", how="left")
+    keep = set()
+    for pid, e, v in zip(want["person_id"], want["embedding"], want["prior_vec"]):
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            continue
+        e = np.asarray(e, dtype=float)
+        half = e[len(e) // 2:]
+        v = np.asarray(v, dtype=float)
+        if half.shape == v.shape and float(half @ v / (np.linalg.norm(half) * np.linalg.norm(v))) > 0.999:
+            keep.add(pid)
+    return keep
 
 
 # -- metrics ----------------------------------------------------------------------------------------------------------
@@ -184,6 +218,10 @@ def main(argv=None) -> int:
     for name, path in CT_PROBES.items():
         models4[name], c = probe_answers(path, PROGRESSION, s4, multiclass=False)
         cov4[name] = c
+    same_prior = pair_prior_matches(s4)
+    print(f"  pair file prior = eval set's prior for {len(same_prior)} of {len(s4)} progression patients")
+    pa = models4[PAIR_PROBE]
+    models4[PAIR_PROBE + " (eval set's prior only)"] = {q: f[f["person_id"].isin(same_prior)] for q, f in pa.items()}
     rows4, pairs4 = score_step(models4, a.n_boot, a.seed, sorted(s4["person_id"]))
     check_published(rows4, 4)
 
