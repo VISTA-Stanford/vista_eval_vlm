@@ -38,7 +38,11 @@ def check(recipe_name: str, run: str, steps, limit: int | None, questions=None, 
             cases = packs.check_cases(cases, step, limit)
         case_ids = set(cases["case_id"].astype(str))
         for arm in card.arms:
-            want = len(case_ids) * len(qids)
+            if card.labelled_only:
+                # Board cards ask a case only the questions it has a scored answer for.
+                want = sum(int(cases[f"label__{q.task}"].notna().sum()) for q in card.questions if q.id in qids)
+            else:
+                want = len(case_ids) * len(qids)
             p = out_path(run, recipe, step, arm, root)
             if not p.exists():
                 print(f"FAIL step {step} {arm}: no answers file")

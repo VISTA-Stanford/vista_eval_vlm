@@ -16,6 +16,10 @@ ANSWER = "Answer yes or no."
 #: Replaces ANSWER for recipes with ``answer_form: "probability"`` (Phil 11-17: AUROC for the LLM rows); the rest of
 #: the card text is unchanged, so the question matches the yes/no runs word for word.
 ANSWER_PROB = "Give the probability, from 0 to 100, that the answer is yes. Answer with one whole number."
+#: Answer line of a several-option question (board treatment and pneumonitis cards, Phil 11-20): one call, one
+#: probability per option, adding up to 100. Kept for every recipe (it is not a yes/no line to replace).
+ANSWER_OPTIONS = ("Give, for each option, the probability from 0 to 100 that it is the answer. The probabilities "
+                  "must add up to 100. Answer with one whole number per option.")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -24,6 +28,20 @@ class Question:
     task: str        # vista_bench task whose label is the answer key
     body: str        # everything after the opening image line
     yes_label: int = 1
+    #: Several-option question: ((key, label code, option text), ...), keys "A", "B", ... in the order shown. The
+    #: label code is the vista_bench answer the option stands for. Empty for a yes/no question.
+    options: tuple = ()
+
+    def option_code(self, key: str) -> int:
+        for k, code, _ in self.options:
+            if k == key:
+                return code
+        raise KeyError(key)
+
+
+def options_block(options) -> str:
+    """The option lines shown under a several-option question: "A. <text>" one per line."""
+    return "\n".join(f"{k}. {text}" for k, _, text in options)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -37,6 +55,9 @@ class Card:
     arms: tuple = ("ct",)
     summary_opening: str = ""    # text-only summary arm (card 1)
     question_start: str = "Question:"
+    #: Ask a question only of cases with a scored answer for it (board cards: an early-stage patient is not asked the
+    #: metastatic-regimen question). Other cards ask every question of every case, as before.
+    labelled_only: bool = False
 
     def question(self, qid: str) -> Question:
         for q in self.questions:

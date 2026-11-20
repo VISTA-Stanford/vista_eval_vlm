@@ -63,10 +63,10 @@ def _on_mount(study, series) -> bool:
     return p is not None and p.is_file()
 
 
-def _pivot(rows: pd.DataFrame, key: str, tasks: list[str]) -> pd.DataFrame:
-    """One row per ``key`` with ``label__<task>`` columns (scored 0/1 only; else NaN)."""
+def _pivot(rows: pd.DataFrame, key: str, tasks: list[str], scored=(0, 1)) -> pd.DataFrame:
+    """One row per ``key`` with ``label__<task>`` columns (answers in ``scored`` only, default 0/1; else NaN)."""
     rows = rows.assign(label=rows["label"].astype(float))
-    rows.loc[~rows["label"].isin([0, 1]), "label"] = np.nan
+    rows.loc[~rows["label"].isin(list(scored)), "label"] = np.nan
     if rows.duplicated([key, "task"]).any():
         raise ValueError(f"more than one row per {key} and task")
     lab = rows.pivot(index=key, columns="task", values="label")
@@ -258,9 +258,52 @@ def step4_test(client) -> pd.DataFrame:
     return df[df["split"] == "test"].reset_index(drop=True)
 
 
+def _board_pool(client, step: int) -> pd.DataFrame:
+    """TEST patients of a board card (steps 6-8) from v1.7 ``tb_classification_tasks``: one row per patient with a
+    scored board answer (any option code; -1 Indeterminate/Deferred is not scored) and a board date, a
+    ``label__<task>`` column per question, the board-time summary, and the board row's CT."""
+    card = CARDS[step]
+    tasks = [q.task for q in card.questions]
+    codes = sorted({c for q in card.questions for _, c, _ in q.options} or {0, 1})
+    rows = _query(client, f"""select person_id, split, task, label, compact_summary, image_study_uid, image_series_uid
+        from `{paths.table('tb_classification_tasks')}`
+        where task in unnest(@tasks) and split = 'test' and embed_time is not null and label >= 0""", {"tasks": tasks})
+    rows["person_id"] = rows["person_id"].astype(str)
+    lab = _pivot(rows, "person_id", tasks, scored=codes)
+    first = rows.sort_values("task").groupby("person_id").agg(
+        split=("split", "first"), summary=("compact_summary", "first"), n_summaries=("compact_summary", "nunique"),
+        study=("image_study_uid", "first"), series=("image_series_uid", "first"))
+    if (first["n_summaries"] > 1).any():
+        raise RuntimeError(f"step {step}: a patient has different summaries on different board rows")
+    df = lab.join(first.drop(columns="n_summaries"), how="inner").reset_index()
+    n0 = len(df)
+    if "summary" in card.arms:
+        df = df[df["summary"].notna() & (df["summary"].astype(str).str.strip() != "")]
+        print(f"    step {step} test: {n0} patients, {n0 - len(df)} without a board-time summary (dropped)")
+    if "ct" in card.arms:
+        on = [isinstance(a, str) and isinstance(b, str) and _on_mount(a, b) for a, b in zip(df["study"], df["series"])]
+        print(f"    step {step} test: {len(df)} patients, {len(df) - sum(on)} without a CT on the mount (dropped)")
+        df = df[on]
+    return df.assign(case_id=df["person_id"]).reset_index(drop=True)
+
+
+def step6_test(client) -> pd.DataFrame:
+    return _board_pool(client, 6)
+
+
+def step7_test(client) -> pd.DataFrame:
+    return _board_pool(client, 7)
+
+
+def step8_test(client) -> pd.DataFrame:
+    return _board_pool(client, 8)
+
+
 BUILDERS = {1: step1, 2: step2, 3: step3, 4: step4}
 #: ``which="test"``: the whole TEST split, the second stage after the samples (spec, Scale).
-TEST_BUILDERS = {1: step1_test, 2: step2_test, 3: step3_test, 4: step4_test}
+#: Steps 6-8 (board questions, spec 2026-11-20-tb-agent-questions.md) are asked directly on TEST only: no sample.
+TEST_BUILDERS = {1: step1_test, 2: step2_test, 3: step3_test, 4: step4_test,
+                 6: step6_test, 7: step7_test, 8: step8_test}
 
 
 def _name(step: int, which: str) -> str:
@@ -273,7 +316,8 @@ def counts(step: int, df: pd.DataFrame) -> dict:
     out = {"n": len(df), "by_split": df["split"].value_counts().sort_index().to_dict(), "answers": {}}
     for q in CARDS[step].questions:
         col = f"label__{q.task}"
-        out["answers"][q.task] = {str(int(k)): int(v) for k, v in df[col].dropna().astype(int).value_counts().sort_index().items()}
+        if col in df.columns:
+            out["answers"][q.task] = {str(int(k)): int(v) for k, v in df[col].dropna().astype(int).value_counts().sort_index().items()}
     return out
 
 

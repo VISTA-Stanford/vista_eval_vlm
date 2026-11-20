@@ -28,7 +28,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .base import PROBABILITY, PROBABILITY_DESCRIPTION, BaseVLMAdapter, read_probability
+from .base import (DISTRIBUTION_DESCRIPTION, PROBABILITY, PROBABILITY_DESCRIPTION, BaseVLMAdapter, Distribution,
+                   read_distribution, read_probability)
 
 DEFAULT_PROJECT = "som-nero-plevriti-deidbdf"
 DEFAULT_LOCATION = "global"
@@ -71,6 +72,13 @@ def build_request(question, images, choices=None, max_output_tokens=8192,
         gen["responseSchema"] = {"type": "OBJECT", "properties": {"probability": {
             "type": "INTEGER", "minimum": 0, "maximum": 100, "description": PROBABILITY_DESCRIPTION}},
             "required": ["probability"]}
+    elif isinstance(choices, Distribution):
+        if reason_field:
+            raise ValueError("reason_field is not supported with the several-option probability answer")
+        gen["responseMimeType"] = "application/json"
+        gen["responseSchema"] = {"type": "OBJECT", "properties": {k: {
+            "type": "INTEGER", "minimum": 0, "maximum": 100, "description": DISTRIBUTION_DESCRIPTION}
+            for k in choices.keys}, "required": list(choices.keys), "propertyOrdering": list(choices.keys)}
     elif choices and reason_field:
         gen["responseMimeType"] = "application/json"
         gen["responseSchema"] = {"type": "OBJECT", "properties": {
@@ -147,6 +155,9 @@ def parse_response(body, choices=None, reason_field=False):
         return None, usage, f"empty answer (finishReason={cand.get('finishReason')})"
     if choices == PROBABILITY:
         out, err = read_probability(text)
+        return out, usage, (f"{err} (finishReason={cand.get('finishReason')})" if err else None)
+    if isinstance(choices, Distribution):
+        out, err = read_distribution(text, choices.keys)
         return out, usage, (f"{err} (finishReason={cand.get('finishReason')})" if err else None)
     if choices and reason_field:
         try:

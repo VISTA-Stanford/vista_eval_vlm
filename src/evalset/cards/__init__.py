@@ -1,9 +1,10 @@
-"""One question card per step. ``CARDS[step]``; ``all_questions()`` lists the 21 (step, card, question)."""
+"""One question card per step. ``CARDS[step]``; ``all_questions()`` lists every (step, card, question): the 21 of
+steps 1-4 plus the board questions of steps 6-8 (step 5 lives on other branches)."""
 
 from .base import Card, Question  # noqa: F401
-from . import board, death, lesions, progression
+from . import board, board_questions, death, lesions, progression
 
-CARDS = {c.step: c for c in (death.CARD, lesions.CARD, progression.CARD, board.CARD)}
+CARDS = {c.step: c for c in (death.CARD, lesions.CARD, progression.CARD, board.CARD, *board_questions.CARDS)}
 
 #: Questions asked by default per step when a run names none (v1, Phil 10-29): step 2 = five findings, "2 lungs, 1
 #: pneumonitis, 1 liver, 1 lymph node". "Two lungs" is read as the any-lung finding plus the right upper lobe (the

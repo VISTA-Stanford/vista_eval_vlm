@@ -63,6 +63,36 @@ def parse_probability(t: str):
     return n / 100.0 if np.isfinite(n) and 0 <= n <= 100 else None
 
 
+#: Same rule as the adapters (``models.base.DISTRIBUTION_SUM_TOLERANCE``): option probabilities adding up to within
+#: this much of 100 are read and rescaled to 100; anything else is unreadable.
+OPTION_SUM_TOLERANCE = 10
+
+
+def parse_options(text, options):
+    """JSON {label code: share in 0-1, ...} (shares rescaled to add up to 1, codes in option order) from a
+    several-option reply, or None. ``options``: the question's ((key, label code, text), ...). The reply must be JSON
+    with every key, each a whole number 0-100, adding up to 100 within ``OPTION_SUM_TOLERANCE``, and no other keys."""
+    if text is None or (isinstance(text, float) and np.isnan(text)):
+        return None
+    try:
+        v = json.loads(str(text))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    keys = [k for k, _, _ in options]
+    if not isinstance(v, dict) or set(v) != set(keys):
+        return None
+    vals = []
+    for k in keys:
+        n = v[k]
+        if isinstance(n, bool) or not isinstance(n, (int, float)) or not np.isfinite(n) or n != int(n) or not 0 <= n <= 100:
+            return None
+        vals.append(float(n))
+    total = sum(vals)
+    if total <= 0 or abs(total - 100) > OPTION_SUM_TOLERANCE:
+        return None
+    return json.dumps({str(code): x / total for (_, code, _), x in zip(options, vals)})
+
+
 def parse_answer(text, form: str):
     """'yes', 'no' or None; for ``form`` 'probability', P(yes) in 0-1 or None. ``form``: 'final_answer' (the last
     "Final Answer: yes/no" in free text), 'schema' (a forced answer: the bare word, or JSON {"answer": ...}) or
@@ -285,6 +315,118 @@ def score_rows(df: pd.DataFrame, n_boot: int = 1000, seed: int = 0) -> pd.DataFr
     return table[TABLE_COLS + [c for c in table.columns if c not in TABLE_COLS]]
 
 
+# -- several-option questions (board treatment and pneumonitis cards, Phil 11-20) ------------------------------------
+
+OPTION_COLS = ["top2", "top2_lo", "top2_hi", "top2_chance", "n_per_answer", "option_auroc"]
+
+
+def option_questions() -> dict:
+    """{(step, question_id): Question} for every several-option question on the cards."""
+    from evalset.cards import CARDS
+    return {(c.step, q.id): q for c in CARDS.values() for q in c.questions if q.options}
+
+
+def is_option_row(df: pd.DataFrame) -> pd.Series:
+    oq = option_questions()
+    return pd.Series([(int(st), str(qid)) in oq for st, qid in zip(df["step"], df["question_id"])], index=df.index)
+
+
+def _option_metrics(P, readable, label, codes, w):
+    """(macro one-vs-rest AUROC, {code: AUROC}, top-pick balanced accuracy, top-two rate) with row weights ``w``.
+
+    AUROC: over readable rows, one per answer that has both yes and no weight, then their mean (vista-eval's multi-class
+    rule: ``roc_auc_score(multi_class="ovr", average="macro")`` over the answers present). Top pick and top two: an
+    unreadable row counts as wrong (the eval set's rule for forced answers); a top-pick tie goes to the first option
+    listed. Balanced accuracy = mean over the answers present of the share of their rows picked correctly."""
+    r = readable
+    per = {}
+    for j, c in enumerate(codes):
+        y = (label[r] == c).astype(float)
+        u, inv = np.unique(P[r, j], return_inverse=True)
+        per[c] = _weighted_auroc(inv, len(u), y, w[r]) if r.any() else float("nan")
+    vals = [v for v in per.values() if np.isfinite(v)]
+    macro = float(np.mean(vals)) if vals else float("nan")
+    Pf = np.where(r[:, None], P, -1.0)
+    pick = np.array(codes)[np.argmax(Pf, axis=1)]
+    order = np.argsort(-Pf, axis=1, kind="stable")[:, :2]
+    top2 = np.array([label[i] in (codes[order[i, 0]], codes[order[i, 1]]) for i in range(len(label))]) & r
+    correct = (pick == label) & r
+    recalls = []
+    for c in codes:
+        m = label == c
+        if w[m].sum() > 0:
+            recalls.append((w[m] * correct[m]).sum() / w[m].sum())
+    ba = float(np.mean(recalls)) if recalls else float("nan")
+    t2 = float((w * top2).sum() / w.sum()) if w.sum() > 0 else float("nan")
+    return macro, per, ba, t2
+
+
+def option_table(df: pd.DataFrame, n_boot: int = 1000, seed: int = 0, alpha: float = 0.05) -> pd.DataFrame:
+    """One row per (step, recipe, arm, several-option question), plus a MACRO row per (step, recipe, arm) with 2+
+    questions (mean of the questions' values). Intervals from one patient bootstrap per (step, recipe, arm): all of a
+    patient's rows move together, across questions too. ``df``: answers-file rows of several-option questions with a
+    scored label (step, recipe, arm, question_id, person_id, label, answer, refused)."""
+    oq = option_questions()
+    out = []
+    lo_q, hi_q = 100 * alpha / 2, 100 * (1 - alpha / 2)
+    for (step, recipe, arm), g in df.groupby(["step", "recipe", "arm"], sort=True):
+        if g["person_id"].isna().any():
+            raise ValueError("rows without a person_id; the patient bootstrap needs one")
+        pcode, _ = pd.factorize(g["person_id"])
+        n_p = int(pcode.max()) + 1
+        qs = []
+        for qid, q in g.groupby("question_id", sort=True):
+            qq = oq[(int(step), str(qid))]
+            codes = [c for _, c, _ in qq.options]
+            parsed = [json.loads(a) if isinstance(a, str) and a.startswith("{") else None for a in q["answer"]]
+            readable = np.array([p is not None for p in parsed])
+            P = np.array([[p[str(c)] for c in codes] if p is not None else [np.nan] * len(codes) for p in parsed])
+            label = q["label"].astype(int).to_numpy()
+            qs.append((qid, q, codes, P, readable, label, pcode[g.index.get_indexer(q.index)]))
+        rng = np.random.default_rng(seed)
+        draws = [rng.integers(0, n_p, n_p) for _ in range(n_boot)]
+        per_q = []
+        for qid, q, codes, P, readable, label, pc in qs:
+            point = _option_metrics(P, readable, label, codes, np.ones(len(q)))
+            boot = []
+            for d in draws:
+                w = np.bincount(d, minlength=n_p).astype(float)[pc]
+                m, _, ba, t2 = _option_metrics(P, readable, label, codes, w)
+                boot.append((m, ba, t2))
+            boot = np.array(boot)
+            per_q.append((point, boot))
+            k = len(codes)
+            out.append({"step": step, "recipe": recipe, "arm": arm, "question_id": qid, "n": len(q),
+                        "balanced_accuracy": point[2], "ba_lo": np.nanpercentile(boot[:, 1], lo_q),
+                        "ba_hi": np.nanpercentile(boot[:, 1], hi_q),
+                        "unparseable_rate": float((~readable).mean()),
+                        "refusal_rate": float(q["refused"].astype(bool).mean()), "chance": 1.0 / k,
+                        "auroc": point[0], "auroc_lo": np.nanpercentile(boot[:, 0], lo_q),
+                        "auroc_hi": np.nanpercentile(boot[:, 0], hi_q), "n_prob": int(readable.sum()),
+                        "prob_missing_rate": float((~readable).mean()),
+                        "top2": point[3], "top2_lo": np.nanpercentile(boot[:, 2], lo_q),
+                        "top2_hi": np.nanpercentile(boot[:, 2], hi_q), "top2_chance": min(1.0, 2.0 / k),
+                        "n_per_answer": json.dumps({str(c): int((label == c).sum()) for c in codes}),
+                        "option_auroc": json.dumps({str(c): (None if not np.isfinite(v) else round(v, 4))
+                                                    for c, v in point[1].items()})})
+        if len(qs) > 1:
+            pts = np.array([[p[0], p[2], p[3]] for p, _ in per_q])
+            bs = np.nanmean(np.stack([b for _, b in per_q]), axis=0)
+            out.append({"step": step, "recipe": recipe, "arm": arm, "question_id": "MACRO", "n": len(g),
+                        "auroc": float(np.nanmean(pts[:, 0])), "auroc_lo": np.nanpercentile(bs[:, 0], lo_q),
+                        "auroc_hi": np.nanpercentile(bs[:, 0], hi_q),
+                        "balanced_accuracy": float(np.nanmean(pts[:, 1])), "ba_lo": np.nanpercentile(bs[:, 1], lo_q),
+                        "ba_hi": np.nanpercentile(bs[:, 1], hi_q),
+                        "top2": float(np.nanmean(pts[:, 2])), "top2_lo": np.nanpercentile(bs[:, 2], lo_q),
+                        "top2_hi": np.nanpercentile(bs[:, 2], hi_q),
+                        "refusal_rate": float(g["refused"].astype(bool).mean())})
+    table = pd.DataFrame(out)
+    for c in TABLE_COLS + OPTION_COLS:
+        if c not in table.columns:
+            table[c] = np.nan
+    return table[TABLE_COLS + OPTION_COLS]
+
+
 def prepare(answers: pd.DataFrame) -> pd.DataFrame:
     """Answers file rows -> scoring rows (parsed answer, label, refusal), dropping rows with no scored label."""
     a = answers[answers["label"].notna()].copy()
@@ -313,7 +455,16 @@ def main() -> int:
     df = pd.concat([pd.read_csv(p, dtype={"case_id": str, "person_id": str}) for p in args.results], ignore_index=True)
     if args.split:
         df = df[df["split"] == args.split]
-    table = score_rows(prepare(df), n_boot=args.n_boot)
+    opt = is_option_row(df) if len(df) else pd.Series([], dtype=bool)
+    parts = []
+    if (~opt).any():
+        parts.append(score_rows(prepare(df[~opt]), n_boot=args.n_boot))
+    if opt.any():
+        o = df[opt & df["label"].notna()].copy()
+        o["label"] = o["label"].astype(int)
+        o["refused"] = [bool(r) for r in o["refused"]]
+        parts.append(option_table(o.reset_index(drop=True), n_boot=args.n_boot))
+    table = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=TABLE_COLS)
     table.to_csv(args.out, index=False)
     print(table.to_string(index=False))
     return 0
