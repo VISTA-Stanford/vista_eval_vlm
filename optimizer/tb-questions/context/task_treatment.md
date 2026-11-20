@@ -70,8 +70,9 @@ patients the program has answered right several rounds in a row are retired from
 - Gemini 4 Argon and Claude Opus 5.5 asked directly, the same summary and the same question words, one probability
   per letter, on the 119 TEST patients (other patients than VAL): mean AUROC 0.81 and 0.82 (early-stage 0.81 / 0.83,
   metastatic 0.81 / 0.82); top-pick balanced accuracy about 0.50; the tumor board's answer in the top two about 0.78.
-- A linear model on embeddings of the same summaries, trained on the TRAIN patients, will be added here when it is
-  scored.
+- A linear model on embeddings of the same summaries (trained on the benchmark's train patients), on the same 119 TEST
+  patients: mean AUROC 0.73 (early-stage 0.74, metastatic 0.72); top-pick balanced accuracy about 0.33. The models
+  asked directly beat it by about 0.08, so reading the summary adds more than a frozen embedding of it carries.
 - VAL is small: a gain of a few hundredths is within chance.
 
 ## What is noise

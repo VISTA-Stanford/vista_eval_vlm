@@ -71,8 +71,8 @@ the program has answered right several rounds in a row are retired from it, so l
 
 - Asked directly with 25 slices of each scan in chest windows, on other patients (the 45 TEST pairs): Gemini 4 Argon
   0.59, Claude Opus 5.5 0.70 AUROC.
-- Linear models on CT embeddings, and the version using both scans, will be added here when they are scored on
-  patients outside VAL.
+- A linear model on CT embeddings (MerlinOnc), on the same 45 TEST pairs: 0.56 AUROC from the most recent CT alone,
+  0.51 from the two scans together. Image models have not found the tumor board's call in these scans.
 - Models reading a text summary of the record have done better than models reading the scans: the tumor board's call
   depends on more than the images. Expect a ceiling well below 1.0; a VAL AUROC above about 0.85 would more likely
   mean something leaked than a breakthrough.
