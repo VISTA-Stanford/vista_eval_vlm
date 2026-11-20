@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# Set up and run the died-2yr-ehr optimization on this VM, judging every step; then run it detached, resuming
+# after network stops. Rebuilds the patients' records on local disk from the mount archive first (no BigQuery). Written for a VM other than phil-sllm-01, whose Cloud NAT runs out of its 64 ports per VM
+# when several Claude runs share it (agentic-label-opt stops with proxy_died); another VM has its own 64.
+#
+#   git -C ~/code/vista_eval_vlm fetch -q origin && git -C ~/code/vista_eval_vlm show origin/feat/died-2yr-ehr-agentic:optimizer/died-2yr-ehr/scripts/run_on_vm.sh > ~/run_died2yr_ehr.sh && bash ~/run_died2yr_ehr.sh
+#
+# Needs: Docker, the su-vista-uscentral1 mount, uv, git access to both repos, and on the seat route (the default) the
+# Claude token at ~/.config/alo/oauth_token (mode 600; `claude setup-token` makes one); with ALO_ROUTE=vertex, the
+# machine's optimizer login (/home/optimizer/.config/gcloud/application_default_credentials.json, the file crc and
+# rad-eval mount; never read here, only checked to exist). Settings, all optional, on the same line:
+# RUN_ID (yesno-r1), ITERATIONS (5), PROGRAM_MAX_CONCURRENT (3), MAX_RESUMES (20), START (a version tag to start a new run
+# from, e.g. program-v5; default the newest good version), TASK_SCHEDULE (JSON, e.g. a bigger TRAIN); SETUP_ONLY=1 stops before the run.
+# ANSWER=probability (with WITH_SUMMARY=1 for the summary arm) runs the probability version: 0-100 answers scored by
+# AUROC, defaults RUN_ID prob-summary-r1 (prob-r1 without the summary), ITERATIONS 10, its own work folder, and a stop
+# after 2 rounds with no new best VAL, which ends the run as finished (Phil 2026-10-31).
+# ANSWER=survival (Phil 2026-11-01) runs the survival-curve version the same way: integrated Brier against os_survival,
+# defaults RUN_ID surv-summary-r1 (surv-r1 without the summary), its own work folder; a failed session or unreadable
+# curve stops it (STOPPED (unreadable_curve)) for a person to look, never resumed. SUMMARY_ONLY=1 runs the bare
+# summary-only arm of either answer: run id <prob|surv>-summaryonly-r1, work folder died-2yr-ehr-<prob|surv>-summaryonly.
+# PROBES=1 (with ANSWER=probability WITH_SUMMARY=1) runs the probe-tool arm: run id prob-summary-probes-r1, work folder
+# died-2yr-ehr-prob-summary-probes, the probe files copied from the mount (spec 2026-11-09-died-2yr-ehr-probe-tool.md).
+# Pass: it prints "SETUP PASS" and the log path; the log ends in "FINISHED"; results reach
+# /mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/<host>/<run id>/ after every stop, with the
+# baselines scored on the same VAL pool (baselines_val_pool.json).
+set -euo pipefail
+
+BRANCH=feat/died-2yr-ehr-agentic
+VLM=${VLM_REPO:-$HOME/code/vista_eval_vlm}
+TASK_WT=$HOME/code/vista_eval_vlm-died2yr-ehr
+TASK_DIR=$TASK_WT/optimizer/died-2yr-ehr
+ENGINE=$HOME/code/agentic-label-opt
+ENGINE_WT=$ENGINE/.claude/worktrees/mortality-engine
+DATA=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7
+# The local working copy the task reads (config.DATA_DIR): rebuilt from $DATA/archive by build_data.py rehydrate.
+export TASK_DATA_DIR=${TASK_DATA_DIR:-$HOME/data/died-2yr-ehr-v1_7}
+export ANSWER=${ANSWER:-yesno}
+export WITH_SUMMARY=${WITH_SUMMARY:-0}
+export SUMMARY_ONLY=${SUMMARY_ONLY:-0}  # the bare summary-only arm (config.SUMMARY_ONLY; implies WITH_SUMMARY)
+if [ "$SUMMARY_ONLY" = 1 ]; then export WITH_SUMMARY=1; fi  # so the summaries are copied below, as config implies
+export PROBES=${PROBES:-0}  # the probe-tool arm (config.PROBES; probability + summary only): copies the probe files below
+if [ "$ANSWER" = probability ] || [ "$ANSWER" = survival ]; then
+    PREFIX=prob; [ "$ANSWER" = survival ] && PREFIX=surv
+    if [ "$SUMMARY_ONLY" = 1 ]; then ARM=$PREFIX-summaryonly; elif [ "$WITH_SUMMARY" = 1 ]; then ARM=$PREFIX-summary; else ARM=$PREFIX; fi
+    if [ "$PROBES" = 1 ]; then ARM=$ARM-probes; fi  # run id prob-summary-probes-r1; work folder as config.WORKDIR
+    RUN_ID=${RUN_ID:-$ARM-r1}
+    export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-2}  # spec: 2 at a time (sllm-01's network gate)
+    ITERATIONS=${ITERATIONS:-10}  # Phil 2026-10-31; the stop rule usually ends it sooner
+    export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/died-2yr-ehr-$ARM}  # config.WORKDIR's default
+fi
+RUN_ID=${RUN_ID:-yesno-r1}  # not `first`: that name is a probability-era run on both VMs
+ITERATIONS=${ITERATIONS:-5}  # Phil 2026-10-28, as the CT task
+MAX_RESUMES=${MAX_RESUMES:-20}
+export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-3}
+export AGENTIC_LABEL_OPT=$ENGINE_WT
+export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/died-2yr-ehr-yesno}  # the old folder holds the probability-era seed (config.WORKDIR)
+# WITH_SUMMARY=1: each record also holds the patient summary (config.WITH_SUMMARY); give it its own TASK_WORKDIR.
+RESULTS=/mnt/su-vista-uscentral1/chaudhari_lab/phil/died-2yr-ehr-v1_7-runs/$(hostname)/$RUN_ID
+LOG=$TASK_WORKDIR/$RUN_ID-run.log
+
+fail() { echo "SETUP FAIL: $*"; exit 1; }
+alo() { (cd "$TASK_DIR" && uv run --project "$ENGINE_WT" python run.py "$@"); }
+
+publish() {  # the report and run summary, onto the mount (inside the secure environment)
+    mkdir -p "$RESULTS"
+    alo report --run-id "$RUN_ID" > "$RESULTS/report.txt" 2>&1 || true
+    cp "$TASK_WORKDIR/private/runs/$RUN_ID/run_summary.json" "$RESULTS/" 2>/dev/null || true
+    cp "$LOG" "$RESULTS/run.log" 2>/dev/null || true
+}
+
+if [ "${1:-}" = "--loop" ]; then
+    # Detached part: run, and resume after a network stop (a resume reruns only unfinished calls).
+    attempt=0
+    mode=()
+    [ -f "$TASK_WORKDIR/private/runs/$RUN_ID/run_summary.json" ] && mode=(--resume)
+    while :; do
+        echo "=== $(date -u +%FT%TZ) run $RUN_ID ${mode[*]:-fresh} (resume $attempt of $MAX_RESUMES)"
+        alo run --run-id "$RUN_ID" --iterations "$ITERATIONS" ${START:+--start "$START"} "${mode[@]}" 2>&1 | tee "$TASK_WORKDIR/last-pass.log" || true
+        publish
+        if grep -q "^FINISHED" "$TASK_WORKDIR/last-pass.log"; then echo "FINISHED"; exit 0; fi
+        if grep -q "STOPPED (no_new_best)" "$TASK_WORKDIR/last-pass.log"; then echo "FINISHED (stop rule: no new best)"; exit 0; fi
+        if grep -q "STOPPED (proxy_died)" "$TASK_WORKDIR/last-pass.log" && [ "$attempt" -lt "$MAX_RESUMES" ]; then
+            attempt=$((attempt + 1)); mode=(--resume)
+            sleep 150  # the NAT holds a closed connection's port for 120 s
+            continue
+        fi
+        echo "STOPPED for a reason other than the network, or out of resumes: see above"; exit 1
+    done
+fi
+
+echo "host $(hostname)"
+command -v uv >/dev/null || fail "uv is not installed"
+docker info >/dev/null 2>&1 || fail "Docker is not running or this user cannot use it"
+[ -f "$DATA/pools.json" ] || fail "the data is not readable at $DATA (is the su-vista-uscentral1 mount here?)"
+[ -d "$DATA/archive/tables" ] || fail "no record archive at $DATA/archive (the export has not been run yet)"
+if [ "${ALO_ROUTE:-anthropic}" = vertex ]; then
+    LOGIN=/home/optimizer/.config/gcloud/application_default_credentials.json
+    [ -f "$LOGIN" ] && [ ! -L "$LOGIN" ] || fail "no optimizer login at $LOGIN (or run on the seat: unset ALO_ROUTE)"
+else
+    TOKEN=$HOME/.config/alo/oauth_token
+    [ -f "$TOKEN" ] || fail "no Claude token at $TOKEN: run claude setup-token, save it there with mode 600"
+    [ "$(stat -c %a "$TOKEN")" = 600 ] || fail "$TOKEN must be mode 600"
+fi
+
+# The task code, at the pushed branch.
+[ -d "$VLM/.git" ] || git clone -q git@github.com:VISTA-Stanford/vista_eval_vlm.git "$VLM"
+git -C "$VLM" fetch -q origin "$BRANCH"
+if [ -d "$TASK_WT" ]; then
+    [ -z "$(git -C "$TASK_WT" status --porcelain)" ] || fail "$TASK_WT has uncommitted changes; not touching it"
+    git -C "$TASK_WT" checkout -q --detach "origin/$BRANCH"
+else
+    git -C "$VLM" worktree add -q --detach "$TASK_WT" "origin/$BRANCH"
+fi
+PIN=$(sed -n 's/^ENGINE_PIN = "\([0-9a-f]\{40\}\)".*/\1/p' "$TASK_DIR/config.py")
+# A probability launch on a checkout without the answer setting would quietly run the yes/no task.
+if [ "$ANSWER" != yesno ]; then grep -q '^ANSWER = os.environ.get("ANSWER"' "$TASK_DIR/config.py" \
+    || fail "ANSWER=$ANSWER but origin/$BRANCH has no answer setting in config.py (is the probability branch merged?)"; fi
+if [ "$ANSWER" = survival ]; then grep -q '"survival")' "$TASK_DIR/config.py" \
+    || fail "ANSWER=survival but origin/$BRANCH has no survival mode in config.py (is feat/died-ehr-survival merged?)"; fi
+[ -n "$PIN" ] || fail "no ENGINE_PIN in config.py"
+
+# The engine, at the task's pin.
+[ -d "$ENGINE/.git" ] || git clone -q git@github.com:philadamson93/agentic-label-opt.git "$ENGINE"
+git -C "$ENGINE" fetch -q origin  # every branch: the pin can sit on a branch other than main (bb216c2, 2026-11-01)
+if [ -d "$ENGINE_WT" ]; then
+    [ -z "$(git -C "$ENGINE_WT" status --porcelain)" ] || fail "$ENGINE_WT has uncommitted changes; not touching it"
+    git -C "$ENGINE_WT" checkout -q --detach "$PIN"
+else
+    git -C "$ENGINE" worktree add -q --detach "$ENGINE_WT" "$PIN"
+fi
+[ "$(git -C "$ENGINE_WT" rev-parse HEAD)" = "$PIN" ] || fail "engine is not at the pin $PIN"
+echo "task $(git -C "$TASK_WT" rev-parse --short HEAD), engine $(git -C "$ENGINE_WT" rev-parse --short HEAD)"
+
+# The patients' records, on local disk (tens of thousands of small files are hours on gcsfuse). Only patients/<id>/
+# folders are rebuilt; the exporter's registry_dates/ side file is not in the archive, and staging refuses any file
+# outside the record whitelist (agentic.record_files).
+if [ ! -f "$TASK_DATA_DIR/pools.json" ] || [ ! -d "$TASK_DATA_DIR/patients" ]; then
+    rm -rf "$TASK_DATA_DIR/patients"
+    (cd "$TASK_DIR" && OMP_NUM_THREADS=2 nice -n 19 uv run -q --no-project --with "duckdb==1.5.6" --with pandas --with pyarrow \
+        python -B scripts/build_data.py rehydrate) || fail "rehydrate (records from $DATA/archive into $TASK_DATA_DIR)"
+fi
+[ ! -e "$TASK_DATA_DIR/registry_dates" ] || fail "$TASK_DATA_DIR/registry_dates exists: raw registry dates must not be in the task copy"
+n=$(find "$TASK_DATA_DIR/patients" -mindepth 1 -maxdepth 1 -type d | wc -l)
+[ "$n" -eq 5549 ] || fail "expected 5549 patient folders in $TASK_DATA_DIR/patients, found $n"
+cmp -s "$DATA/pools.json" "$TASK_DATA_DIR/pools.json" || fail "local pools.json differs from the mount's"
+echo "records: $n patients in $TASK_DATA_DIR"
+if [ "$ANSWER" = survival ]; then  # the survival answer key (build_data.py survival), beside the splits
+    [ -f "$DATA/survival.jsonl" ] || fail "no $DATA/survival.jsonl (run build_data.py survival)"
+    cp "$DATA/survival.jsonl" "$TASK_DATA_DIR/survival.jsonl"
+    cmp -s "$DATA/survival.jsonl" "$TASK_DATA_DIR/survival.jsonl" || fail "local survival.jsonl differs from the mount's"
+    echo "survival key: $(wc -l < "$TASK_DATA_DIR/survival.jsonl") patients"
+fi
+if [ "$WITH_SUMMARY" = 1 ]; then
+    (cd "$TASK_DIR" && uv run -q --no-project --with "duckdb<2" python -B scripts/pull_summaries.py --local-only) >/dev/null \
+        || fail "copying the summaries from the mount"
+    python3 -I -c "import json,os,sys; d=os.environ['TASK_DATA_DIR']; p=json.load(open(d+'/pools.json')); m=[i for k in ('train','val') for i in p[k] if not os.path.isfile(f'{d}/summaries/{i}.txt')]; sys.exit(f'{len(m)} pool patients have no summary' if m else 0)" \
+        || fail "summaries missing for pool patients"
+    echo "summaries: every TRAIN and VAL pool patient has one"
+fi
+if [ "$PROBES" = 1 ]; then  # the probe files, built on the mount by scripts/build_probe_tool.py
+    (cd "$TASK_DIR" && uv run -q --no-project --with pandas --with pyarrow --with scikit-learn python -B scripts/build_probe_tool.py --local-only) >/dev/null \
+        || fail "copying the probe files from the mount"
+    python3 -I -c "import json,os,sys; d=os.environ['TASK_DATA_DIR']; p=json.load(open(d+'/pools.json')); m=[i for k in ('train','val') for i in p[k] if not os.path.isfile(f'{d}/probes/{i}.json')]; sys.exit(f'{len(m)} pool patients have no probe file' if m else 0)" \
+        || fail "probe files missing for pool patients"
+    echo "probe files: every TRAIN and VAL pool patient has one"
+fi
+
+# Images, this machine's pins, the token, and the $0 dry run. A rebuild replaces the image under the same tag, so
+# a run of this task already going on this machine would lose its pinned image (it did, 2026-10-20): refuse.
+for pid in $(pgrep -f "run.py run --run-id" || true); do
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -qx run.py || continue  # run.py as its own argument
+    case "$(readlink "/proc/$pid/cwd" 2>/dev/null)" in */optimizer/died-2yr-ehr) fail "a died-2yr-ehr run is live here (pid $pid); setup would rebuild its image";; esac
+done
+alo build-images >/dev/null || fail "build-images"
+[ -d "$TASK_WORKDIR/repo" ] || alo init || fail "init"
+alo pins --write | tail -1 || fail "pins --write"
+if [ "${ALO_ROUTE:-anthropic}" != vertex ]; then
+    alo check-token | grep -q ": PASS" || fail "check-token did not PASS (try: cd $TASK_DIR && uv run --project $ENGINE_WT python run.py check-token)"
+fi
+rc=0; out=$(alo dry-run 2>&1) || rc=$?
+[ "$rc" = 0 ] || [ "$rc" = 3 ] || fail "dry-run exited $rc"  # 3 = stopped (the probability stop rule can end it)
+echo "$out" | grep -qE "^FINISHED|^STOPPED \(no_new_best\)" && ! echo "$out" | grep -q " FAIL " || { echo "$out" | tail -20; fail "dry-run"; }
+echo "$out" | grep "best program-v0"
+
+mkdir -p "$RESULTS"
+if [ "$ANSWER" = survival ]; then
+    (cd "$TASK_DIR" && uv run -q --no-project --with pandas --with pyarrow --with scikit-learn python -B scripts/score_baselines.py \
+        survival --ids pool --out "$RESULTS/baselines_val_pool.json") | tail -14 || fail "score_baselines survival"
+else
+(cd "$TASK_DIR" && uv run -q --no-project --with pandas --with pyarrow --with scikit-learn python -B scripts/score_baselines.py \
+    score --ids pool $([ "$ANSWER" = probability ] && echo --horizons both) --out "$RESULTS/baselines_val_pool.json") \
+    | tail -40 || fail "score_baselines"
+fi
+
+if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: run not started)"; exit 0; fi
+mkdir -p "$TASK_WORKDIR"
+cp "$TASK_DIR/scripts/run_on_vm.sh" "$TASK_WORKDIR/run_on_vm.sh"
+setsid nohup env RUN_ID="$RUN_ID" ITERATIONS="$ITERATIONS" MAX_RESUMES="$MAX_RESUMES" START="${START:-}" TASK_SCHEDULE="${TASK_SCHEDULE:-}" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
+echo "SETUP PASS: run $RUN_ID started detached ($PROGRAM_MAX_CONCURRENT at a time); log $LOG; results to $RESULTS"
