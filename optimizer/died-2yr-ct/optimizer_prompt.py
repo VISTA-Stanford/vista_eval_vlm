@@ -12,12 +12,13 @@ path in a prompt points at nothing inside the container, and leaks your folder l
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from config import AGENTIC, EDITABLE_FILES, ITERATIONS, TASK_BRIEF  # run.py sets ITERATIONS to the run's own count
+from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, PROBABILITY, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF  # run.py sets ITERATIONS
 
 HERE = Path(__file__).resolve().parent
-INSTRUCTIONS = HERE / "prompts" / "optimizer_instructions.md"
+INSTRUCTIONS = OPTIMIZER_INSTRUCTIONS  # optimizer_instructions_probability.md with ANSWER=probability
 
 #: Read-only files mounted into the optimizer's container, by name (see optimizer.build_agent).
 TASK_BRIEF_NAME = "task.md"
@@ -40,23 +41,41 @@ TEST_RULES_BASED = (
 
 
 def system_prompt() -> str:
-    return INSTRUCTIONS.read_text(encoding="utf-8")
+    """The standing instructions, plus how to ask the search proxy when it is on (the engine's own wording)."""
+    text = INSTRUCTIONS.read_text(encoding="utf-8")
+    if SEARCH_PROXY:
+        from engine.search_proxy import optimizer_instructions
+
+        text = f"{text.rstrip()}\n\n{optimizer_instructions(SEARCH_REQUESTS_PER_ROUND)}"
+    return text
 
 
 def build_prompt(iter_n: int, paths) -> str:
     editable = ", ".join(f"`{paths.program}/{f}`" for f in EDITABLE_FILES)
-    first = (
-        ("This is the first iteration. The program is the seed: the plain question and a slice viewer, so its "
-         "score is what a clinician-style prompt gets with no method. Read the task brief, read the mistakes, look "
-         "at some of those CTs yourself, and write a real first version: instructions.md and the tools it needs."
-         if AGENTIC else
-         "This is the first iteration: the program is the seed, so expect a low score. Read the task brief, "
-         "read the mistakes, and build a real first version rather than a one-line patch.")
-        if iter_n == 1 else
-        "Start with step 1 of your standing instructions: check last iteration's prediction."
-    )
+    start = os.environ.get("START", "")  # the launcher's START: a fresh run from a chosen version
+    if iter_n > 1:
+        first = "Start with step 1 of your standing instructions: check last iteration's prediction."
+    elif AGENTIC and start and start != "seed":
+        first = (f"This is the first iteration of a new run that starts from {start}, the best version of an earlier "
+                 "climb on these same VAL patients, not from the seed. Read your notebook and the earlier change notes "
+                 "(notes folder) first: they say what was tried and what each version scored. Then improve on this "
+                 "version.")
+    elif AGENTIC and PROBABILITY:
+        first = ("This is the first iteration. The program is the seed: the plain question and a slice viewer, so its "
+                 "score is what a clinician-style prompt gets with no method. Read the task brief, read the mistakes, "
+                 "look at some of those CTs yourself, and write a real first version of instructions.md: how to read "
+                 "the scan and how what you saw went with death in these patients (see \"Interpretation, not tools\" "
+                 "in your standing instructions).")
+    elif AGENTIC:
+        first = ("This is the first iteration. The program is the seed: the plain question and a slice viewer, so its "
+                 "score is what a clinician-style prompt gets with no method. Read the task brief, read the mistakes, "
+                 "look at some of those CTs yourself, and write a real first version: instructions.md and the tools it "
+                 "needs.")
+    else:
+        first = ("This is the first iteration: the program is the seed, so expect a low score. Read the task brief, "
+                 "read the mistakes, and build a real first version rather than a one-line patch.")
     test = (
-        ("You cannot run the patients' sessions in here: each patient is read by its own session, outside\n"
+        (("You cannot run the patients' sessions in here: each patient is read by its own session, outside\n"
          "this container. You can read what each session did, look at the same CT, and run your tools on it.\n"
          "Every file a mistake lists is a flat file in `<files>/`, named `<id>-<file>`.\n"
          "- Read a session's findings note first: `<files>/<id>-trace-findings.md`. Then its session turn by turn\n"
@@ -66,9 +85,16 @@ def build_prompt(iter_n: int, paths) -> str:
          "  && cp <files>/<id>-meta.json /tmp/ct/<id>/meta.json`, then\n"
          "  `python3 -B {program}/tools/view_ct.py /tmp/ct/<id> --plane axial --count 16 --window lung --out /tmp/v.png`\n"
          "  and open `/tmp/v.png` with Read. Each image costs tokens: look at a handful of patients, not all.\n"
-         "- Every TRAIN patient of the pass is in the mistakes file, right or wrong (`mistake` says which), with\n"
-         "  its probability: read the right ones' reasons too, since the score is how well the ranking separates\n"
-         "  the two groups. Only mistakes come with their CT and transcript.\n"
+         + ("- Every TRAIN patient of the pass is in the mistakes file with its gold and the probability it was given at\n"
+            "  each horizon, and its stated reasons. A mistake is a probability on the wrong side of that horizon's\n"
+            "  death rate (`wrong_at` says which). AUROC rewards ranking every patient who died above every one who\n"
+            "  lived, so a confident wrong probability costs most: look at the most confident wrong ones first, and\n"
+            "  at the spread of probabilities overall. Only mistakes come with their CT and transcript.\n"
+            if PROBABILITY else
+            "- Every TRAIN patient of the pass is in the mistakes file, right or wrong at each horizon (`mistake` and\n"
+            "  `wrong_at` say which), with its yes/no answers: read the right ones' reasons too, since balanced\n"
+            "  accuracy counts the patients who died and those who lived equally. Only mistakes come with their CT\n"
+            "  and transcript.\n"))
          .replace("{program}", paths.program).replace("<files>", f"{paths.feedback}/iter/{iter_n}/files"))
         if AGENTIC else
         TEST_RULES_BASED.format(program=paths.program, feedback=paths.feedback, iter_n=iter_n)
