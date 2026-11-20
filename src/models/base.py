@@ -76,14 +76,12 @@ class Distribution:
 
 DISTRIBUTION_DESCRIPTION = ("Probability, from 0 to 100, that this option is the answer. One whole number; the numbers "
                             "for all options add up to 100.")
-#: A reply whose numbers add up to within this much of 100 is accepted (and rescaled to 100 when scored); outside it
-#: is an error, so it is not cached and is asked again. Shown to Phil on the card page (11-20).
-DISTRIBUTION_SUM_TOLERANCE = 10
 
 
 def read_distribution(text, keys):
     """(JSON text {key: n, ...} in ``keys`` order, error) from a forced several-option reply. Every key must be present
-    with a whole number in 0-100, and the numbers must add up to 100 within ``DISTRIBUTION_SUM_TOLERANCE``."""
+    with a whole number in 0-100. The total is not checked: answers are rescaled to 100 when scored, whatever they add
+    up to (Phil 11-20: no rejecting on the arithmetic). Only an all-zero answer, which cannot be rescaled, is an error."""
     try:
         v = json.loads(text)
     except (json.JSONDecodeError, TypeError):
@@ -101,9 +99,8 @@ def read_distribution(text, keys):
     extra = set(v) - set(keys)
     if extra:
         return None, f"answer has keys that are not options: {sorted(extra)}"
-    total = sum(out.values())
-    if abs(total - 100) > DISTRIBUTION_SUM_TOLERANCE:
-        return None, f"option probabilities add up to {total}, not 100"
+    if sum(out.values()) == 0:
+        return None, "every option is 0, so the answer cannot be rescaled"
     return json.dumps(out), None
 
 

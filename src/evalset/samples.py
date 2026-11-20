@@ -259,20 +259,28 @@ def step4_test(client) -> pd.DataFrame:
 
 
 def _board_pool(client, step: int) -> pd.DataFrame:
-    """TEST patients of a board card (steps 6-8) from v1.7 ``tb_classification_tasks``: one row per patient with a
-    scored board answer (any option code; -1 Indeterminate/Deferred is not scored) and a board date, a
-    ``label__<task>`` column per question, the board-time summary, and the board row's CT."""
+    """TEST patients of a tumor board card (steps 6 and 8) from v1.7 ``tb_classification_tasks``: one row per patient
+    with a scored tumor board answer (any option code; -1 Indeterminate/Deferred is not scored) and a tumor board date,
+    a ``label__<task>`` column per question, the summary at the tumor board, and the tumor board row's CT. A two-scan
+    card also gets the CT's prior from the shared ``per_ct_prior_ct_link`` (the link step 4 used) and keeps only
+    patients with both scans on the mount (pairs only, Phil 11-20)."""
     card = CARDS[step]
     tasks = [q.task for q in card.questions]
     codes = sorted({c for q in card.questions for _, c, _ in q.options} or {0, 1})
-    rows = _query(client, f"""select person_id, split, task, label, compact_summary, image_study_uid, image_series_uid
-        from `{paths.table('tb_classification_tasks')}`
-        where task in unnest(@tasks) and split = 'test' and embed_time is not null and label >= 0""", {"tasks": tasks})
+    rows = _query(client, f"""select t.person_id, t.split, t.task, t.label, t.compact_summary, t.image_study_uid,
+          t.image_series_uid, l.prior_image_study_uid, l.prior_image_series_uid, l.prior_gap_days, l.prior_ambiguous
+        from `{paths.table('tb_classification_tasks')}` t
+        left join `{paths.table('per_ct_prior_ct_link')}` l
+          on l.image_series_uid = t.image_series_uid and cast(l.person_id as string) = cast(t.person_id as string)
+        where t.task in unnest(@tasks) and t.split = 'test' and t.embed_time is not null and t.label >= 0""",
+                  {"tasks": tasks})
     rows["person_id"] = rows["person_id"].astype(str)
     lab = _pivot(rows, "person_id", tasks, scored=codes)
     first = rows.sort_values("task").groupby("person_id").agg(
         split=("split", "first"), summary=("compact_summary", "first"), n_summaries=("compact_summary", "nunique"),
-        study=("image_study_uid", "first"), series=("image_series_uid", "first"))
+        study=("image_study_uid", "first"), series=("image_series_uid", "first"),
+        prior_study=("prior_image_study_uid", "first"), prior_series=("prior_image_series_uid", "first"),
+        prior_gap_days=("prior_gap_days", "first"), prior_ambiguous=("prior_ambiguous", "first"))
     if (first["n_summaries"] > 1).any():
         raise RuntimeError(f"step {step}: a patient has different summaries on different board rows")
     df = lab.join(first.drop(columns="n_summaries"), how="inner").reset_index()
@@ -284,15 +292,19 @@ def _board_pool(client, step: int) -> pd.DataFrame:
         on = [isinstance(a, str) and isinstance(b, str) and _on_mount(a, b) for a, b in zip(df["study"], df["series"])]
         print(f"    step {step} test: {len(df)} patients, {len(df) - sum(on)} without a CT on the mount (dropped)")
         df = df[on]
+        if len(card.scan_names) == 2:
+            pr = [isinstance(a, str) and isinstance(b, str) and _on_mount(a, b)
+                  for a, b in zip(df["prior_study"], df["prior_series"])]
+            print(f"    step {step} test: {len(df)} patients, {len(df) - sum(pr)} without a prior CT on the mount (dropped); "
+                  f"{int(df[pr]['prior_ambiguous'].fillna(False).astype(bool).sum())} kept with an ambiguous prior link")
+            df = df[pr]
+    if len(card.scan_names) != 2:
+        df = df.drop(columns=["prior_study", "prior_series", "prior_gap_days", "prior_ambiguous"])
     return df.assign(case_id=df["person_id"]).reset_index(drop=True)
 
 
 def step6_test(client) -> pd.DataFrame:
     return _board_pool(client, 6)
-
-
-def step7_test(client) -> pd.DataFrame:
-    return _board_pool(client, 7)
 
 
 def step8_test(client) -> pd.DataFrame:
@@ -301,9 +313,8 @@ def step8_test(client) -> pd.DataFrame:
 
 BUILDERS = {1: step1, 2: step2, 3: step3, 4: step4}
 #: ``which="test"``: the whole TEST split, the second stage after the samples (spec, Scale).
-#: Steps 6-8 (board questions, spec 2026-11-20-tb-agent-questions.md) are asked directly on TEST only: no sample.
-TEST_BUILDERS = {1: step1_test, 2: step2_test, 3: step3_test, 4: step4_test,
-                 6: step6_test, 7: step7_test, 8: step8_test}
+#: Steps 6 and 8 (tumor board questions, spec 2026-11-20-tb-agent-questions.md) are asked directly on TEST only.
+TEST_BUILDERS = {1: step1_test, 2: step2_test, 3: step3_test, 4: step4_test, 6: step6_test, 8: step8_test}
 
 
 def _name(step: int, which: str) -> str:

@@ -1,24 +1,25 @@
-"""Steps 6-8: more tumor-board questions (spec planning/vista_eval_vlm/2026-11-20-tb-agent-questions.md).
+"""Steps 6 and 8: more tumor board questions (spec planning/vista_eval_vlm/2026-11-20-tb-agent-questions.md).
 
-Answer key: the board's own answer in vista_bench v1.7 ``tb_classification_tasks``, read from the board note by a
+Answer key: the tumor board's own answer in vista_bench v1.7 ``tb_classification_tasks``, read from the tumor board note by a
 language model; "Indeterminate/Deferred" (-1) is not scored. Prediction time is one week before the patient's first
-board. The board-time summary (``compact_summary``) is written from the record up to that time.
+tumor board. The tumor board-time summary (``compact_summary``) is written from the record up to that time.
 
   step 6  treatment questions, summary only: early-stage curative plan; first-line regimen for metastatic disease.
           Five options each, one probability per option (Phil 11-20). A patient is asked only the question(s) the
-          board answered for them.
-  step 7  board progression, summary only (the CT-pair version is step 4; same question text).
-  step 8  pneumonitis vs infection, the most recent CT before the board, CT only (Phil 11-20: current CT to start).
+          tumor board answered for them.
+  step 8  pneumonitis vs infection, the most recent CT before the tumor board and its prior, CT only; patients with
+          both scans only, as for progression (Phil 11-20). Appendix result (5 TEST patients).
 
-The same question text is quoted by the tumor-board agents' starting instructions (Phil 11-20), so the agent and the
-models asked directly differ in how they work, not in the wording. DRAFT wording until Phil approves the card page.
+Progression is asked from the CT pair only (step 4); no summary version (Phil 11-20). Step 7 is unused.
+Always "tumor board", never "board" alone (Phil 11-20). The same question text is quoted by the tumor board agents'
+starting instructions, so the agent and the models asked directly differ in how they work, not in the wording.
 """
 
-from .base import ANSWER, ANSWER_OPTIONS, Card, Question, options_block
+from .base import ANSWER_OPTIONS, Card, Question, options_block
 
-#: Shared by the summary arms of steps 6 and 7.
-SUMMARY_OPENING = ("You are given a summary of this patient's record, written from the record up to one week before "
-                   "their first thoracic tumor board.")
+#: Phil's wording (11-20).
+SUMMARY_OPENING = ("You are given a summary of this patient's longitudinal electronic health record, summarized from a "
+                   "point cut off one week before their first thoracic tumor board encounter.")
 
 #: Codes and texts from vista_bench ``task_metadata.TASK_REGISTRY[<task>]["label_mapping"]`` (v1.7), in code order.
 EARLY_STAGE_OPTIONS = (
@@ -44,21 +45,18 @@ PNEUMONITIS_OPTIONS = (
 )
 
 _EARLY = ("Question: The tumor board discussed curative-intent treatment for this patient's stage I-III non-small "
-          "cell lung cancer. Which treatment will the board recommend?\n" + options_block(EARLY_STAGE_OPTIONS)
+          "cell lung cancer. Which treatment do you predict the tumor board will recommend?\n" + options_block(EARLY_STAGE_OPTIONS)
           + "\n" + ANSWER_OPTIONS)
 _SYSTEMIC = ("Question: The tumor board discussed first-line systemic treatment for this patient's metastatic "
-             "non-small cell lung cancer. Which regimen will the board recommend?\n" + options_block(SYSTEMIC_OPTIONS)
+             "non-small cell lung cancer. Which regimen do you predict the tumor board will recommend?\n" + options_block(SYSTEMIC_OPTIONS)
              + "\n" + ANSWER_OPTIONS)
-#: Step 4's question, word for word (``board.CARD``).
-_PROGRESSION = ("Question: As of one week before the tumor board, does the most recent imaging show cancer "
-                "progression?\n- Yes: progression.\n- No: response or stable disease.\n" + ANSWER)
 _PNEUMONITIS = ("Question: The tumor board discussed whether lung changes on this patient's imaging were "
-                "pneumonitis, infection, both, cancer progression, or none of these. Which will the board conclude?\n"
+                "pneumonitis, infection, both, cancer progression, or none of these. Which do you predict the tumor board will conclude?\n"
                 + options_block(PNEUMONITIS_OPTIONS) + "\n" + ANSWER_OPTIONS)
 
 TREATMENT = Card(
     step=6,
-    title="Tumor-board treatment recommendation (summary)",
+    title="Tumor board treatment recommendation (summary)",
     opening="",
     joiner="\n",
     questions=(
@@ -70,26 +68,16 @@ TREATMENT = Card(
     labelled_only=True,
 )
 
-PROGRESSION_SUMMARY = Card(
-    step=7,
-    title="Tumor-board progression (summary)",
-    opening="",
-    joiner="\n",
-    questions=(Question("board_progression", "progression_assessment_answer", _PROGRESSION),),
-    arms=("summary",),
-    summary_opening=SUMMARY_OPENING,
-    labelled_only=True,
-)
-
 PNEUMONITIS = Card(
     step=8,
-    title="Tumor-board pneumonitis vs infection (CT)",
-    opening=("These are axial slices of this patient's most recent chest CT before their thoracic tumor board, "
-             "ordered from top to bottom and shown in {windows}."),
+    title="Tumor board pneumonitis vs infection (CT and prior CT)",
+    opening=("These are axial slices of this patient's most recent chest CT before their thoracic tumor board and "
+             "the prior CT, ordered from top to bottom and shown in {windows}."),
     joiner="\n\n",
     questions=(Question("board_pneumonitis", "pneumonitis_infection_answer", _PNEUMONITIS,
                         options=PNEUMONITIS_OPTIONS),),
+    scan_names=("PRIOR", "MOST RECENT"),
     labelled_only=True,
 )
 
-CARDS = (TREATMENT, PROGRESSION_SUMMARY, PNEUMONITIS)
+CARDS = (TREATMENT, PNEUMONITIS)

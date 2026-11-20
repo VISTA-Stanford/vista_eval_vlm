@@ -1,4 +1,4 @@
-"""Board question cards (steps 6-8) and the several-option answer: one probability per option (Phil 11-20)."""
+"""Tumor board question cards (steps 6 and 8) and the several-option answer: one probability per option (Phil 11-20)."""
 
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ TASK_METADATA = Path.home() / "code/vista_bench/src/vistabench/task_metadata.py"
 
 @pytest.mark.parametrize("reply,ok", [
     ('{"A": 40, "B": 30, "C": 20, "D": 10, "E": 0}', True),
-    ('{"A": 40, "B": 30, "C": 20, "D": 5, "E": 0}', True),     # 95: within 10 of 100
-    ('{"A": 40, "B": 30, "C": 20, "D": 0, "E": 0}', True),     # 90: the edge
-    ('{"A": 40, "B": 30, "C": 15, "D": 0, "E": 0}', False),    # 85
-    ('{"A": 60, "B": 30, "C": 20, "D": 1, "E": 0}', False),    # 111
+    ('{"A": 40, "B": 30, "C": 20, "D": 5, "E": 0}', True),     # 95: rescaled when scored, whatever the total
+    ('{"A": 10, "B": 0, "C": 0, "D": 0, "E": 0}', True),       # 10
+    ('{"A": 100, "B": 100, "C": 100, "D": 100, "E": 100}', True),  # 500
+    ('{"A": 0, "B": 0, "C": 0, "D": 0, "E": 0}', False),       # cannot be rescaled
     ('{"A": 40, "B": 30, "C": 20, "D": 10}', False),           # an option missing
     ('{"A": 40, "B": 30, "C": 20, "D": 10, "E": 0, "F": 0}', False),
     ('{"A": 40.5, "B": 29.5, "C": 20, "D": 10, "E": 0}', False),
@@ -53,9 +53,9 @@ def test_gemini_forces_one_whole_number_per_option():
                             "finishReason": "STOP"}]}
     text, _, err = vertex_gemini.parse_response(good, Distribution(KEYS))
     assert err is None and json.loads(text)["D"] == 40
-    good["candidates"][0]["content"]["parts"][0]["text"] = '{"A": 10, "B": 20, "C": 30, "D": 4, "E": 0}'
+    good["candidates"][0]["content"]["parts"][0]["text"] = '{"A": 0, "B": 0, "C": 0, "D": 0, "E": 0}'
     text, _, err = vertex_gemini.parse_response(good, Distribution(KEYS))
-    assert text is None and "add up to 64" in err
+    assert text is None and "cannot be rescaled" in err
 
 
 def test_claude_forces_one_whole_number_per_option():
@@ -73,15 +73,18 @@ def test_claude_forces_one_whole_number_per_option():
 # -- the cards ------------------------------------------------------------------------------------
 
 def test_board_cards_registered_with_their_arms():
-    assert CARDS[6].arms == ("summary",) and CARDS[7].arms == ("summary",) and CARDS[8].arms == ("ct",)
+    assert CARDS[6].arms == ("summary",) and CARDS[8].arms == ("ct",) and 7 not in CARDS
+    assert CARDS[8].scan_names == ("PRIOR", "MOST RECENT")
     assert [q.task for q in CARDS[6].questions] == ["early_stage_management_answer", "optimal_systemic_therapy_answer"]
     assert all(c.labelled_only for c in board_questions.CARDS)
 
 
-def test_progression_from_the_summary_asks_step_4s_question_word_for_word():
-    b4 = board.CARD.questions[0].body
-    b7 = CARDS[7].questions[0].body
-    assert b4[b4.index("Question:"):] == b7
+def test_never_board_alone():
+    """Phil 11-20: always "tumor board", never "board" alone, in every prompt the models see."""
+    for c in board_questions.CARDS:
+        for q in c.questions:
+            t = c.text(q, "w", c.arms[0], summary="S.") if c.arms == ("summary",) else c.text(q, "w")
+            assert not re.search(r"(?<!tumor )\bboard\b", t, re.IGNORECASE), q.id
 
 
 def _label_mapping(task: str) -> dict:
@@ -118,8 +121,8 @@ def test_answer_shape_per_card():
     prob = get("argon", answer_form="probability")
     assert run.answer_spec(prob, CARDS[6]) == Distribution(KEYS)
     assert run.answer_spec(prob, CARDS[8]) == Distribution(KEYS)
-    assert run.answer_spec(prob, CARDS[7]) == run.PROBABILITY
-    assert run.answer_spec(get("argon"), CARDS[7]) == run.CHOICES
+    assert run.answer_spec(prob, board.CARD) == run.PROBABILITY
+    assert run.answer_spec(get("argon"), board.CARD) == run.CHOICES
 
 
 def test_only_the_answered_question_is_asked():
@@ -137,7 +140,9 @@ def test_parse_options_rescales_and_rejects():
     got = json.loads(score.parse_options('{"A": 50, "B": 25, "C": 20, "D": 0, "E": 0}', opts))
     assert list(got) == ["0", "1", "2", "3", "4"] and abs(sum(got.values()) - 1) < 1e-9
     assert abs(got["0"] - 50 / 95) < 1e-9
-    assert score.parse_options('{"A": 50, "B": 25, "C": 0, "D": 0, "E": 0}', opts) is None
+    low = json.loads(score.parse_options('{"A": 50, "B": 25, "C": 0, "D": 0, "E": 0}', opts))
+    assert abs(low["0"] - 2 / 3) < 1e-9 and abs(low["1"] - 1 / 3) < 1e-9
+    assert score.parse_options('{"A": 0, "B": 0, "C": 0, "D": 0, "E": 0}', opts) is None
     assert score.parse_options('{"A": 100}', opts) is None
     assert score.parse_options(None, opts) is None
     assert run.is_answered(score.parse_options('{"A": 100, "B": 0, "C": 0, "D": 0, "E": 0}', opts))

@@ -16,10 +16,9 @@ ANSWER = "Answer yes or no."
 #: Replaces ANSWER for recipes with ``answer_form: "probability"`` (Phil 11-17: AUROC for the LLM rows); the rest of
 #: the card text is unchanged, so the question matches the yes/no runs word for word.
 ANSWER_PROB = "Give the probability, from 0 to 100, that the answer is yes. Answer with one whole number."
-#: Answer line of a several-option question (board treatment and pneumonitis cards, Phil 11-20): one call, one
-#: probability per option, adding up to 100. Kept for every recipe (it is not a yes/no line to replace).
-ANSWER_OPTIONS = ("Give, for each option, the probability from 0 to 100 that it is the answer. The probabilities "
-                  "must add up to 100. Answer with one whole number per option.")
+#: Answer line of a several-option question (tumor board treatment and pneumonitis cards; Phil's wording 11-20): one
+#: call, one probability per option letter. Kept for every recipe (it is not a yes/no line to replace).
+ANSWER_OPTIONS = "Give each letter a probability from 0 to 100. These probabilities must add up to 100."
 
 
 @dataclasses.dataclass(frozen=True)

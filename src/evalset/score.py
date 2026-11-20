@@ -63,15 +63,11 @@ def parse_probability(t: str):
     return n / 100.0 if np.isfinite(n) and 0 <= n <= 100 else None
 
 
-#: Same rule as the adapters (``models.base.DISTRIBUTION_SUM_TOLERANCE``): option probabilities adding up to within
-#: this much of 100 are read and rescaled to 100; anything else is unreadable.
-OPTION_SUM_TOLERANCE = 10
-
-
 def parse_options(text, options):
     """JSON {label code: share in 0-1, ...} (shares rescaled to add up to 1, codes in option order) from a
     several-option reply, or None. ``options``: the question's ((key, label code, text), ...). The reply must be JSON
-    with every key, each a whole number 0-100, adding up to 100 within ``OPTION_SUM_TOLERANCE``, and no other keys."""
+    with every key, each a whole number 0-100, and no other keys. The shares are rescaled whatever the total (Phil 11-20);
+    an all-zero answer cannot be rescaled and is unreadable."""
     if text is None or (isinstance(text, float) and np.isnan(text)):
         return None
     try:
@@ -88,7 +84,7 @@ def parse_options(text, options):
             return None
         vals.append(float(n))
     total = sum(vals)
-    if total <= 0 or abs(total - 100) > OPTION_SUM_TOLERANCE:
+    if total <= 0:
         return None
     return json.dumps({str(code): x / total for (_, code, _), x in zip(options, vals)})
 
