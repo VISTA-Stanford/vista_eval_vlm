@@ -35,7 +35,7 @@ LOG=$CLIMB_WORKDIR/$RUN_ID-run.log
 
 fail() { echo "SETUP FAIL: $*"; exit 1; }
 cl() { (cd "$TASK_DIR" && uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with pyyaml python -B climb.py "$@"); }
-ot() { (cd "$TASK_DIR" && uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with pyyaml python -B run_over_time.py "$@"); }
+ot() { (cd "$TASK_DIR" && env -u OVER_TIME_MODEL uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow --with "duckdb<2" --with pyyaml python -B run_over_time.py "$@"); }
 
 publish() {  # aggregates and the program text to the results folder (no ids, rows or reasons)
     mkdir -p "$RESULTS"
@@ -87,7 +87,7 @@ PIN=$(sed -n 's/^ENGINE_PIN = "\([0-9a-f]\{40\}\)".*/\1/p' "$D2_DIR/config.py")
 [ -n "$PIN" ] && [ "$(git -C "$ENGINE_WT" rev-parse HEAD)" = "$PIN" ] || fail "engine at $ENGINE_WT is not at the pin $PIN"
 echo "task $(git -C "$TASK_WT" rev-parse --short HEAD), engine $(git -C "$ENGINE_WT" rev-parse --short HEAD)"
 
-(cd "$TASK_DIR" && uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow python -B build_points.py local) || fail "build_points.py local"
+(cd "$TASK_DIR" && env -u OVER_TIME_MODEL uv run -q --project "$ENGINE_WT" --with pandas --with pyarrow python -B build_points.py local) || fail "build_points.py local"
 want=$(( $(wc -l < "$PRIVATE/cutoffs.jsonl") + $(wc -l < "$PRIVATE/train/cutoffs.jsonl") ))
 n=$(find "$TASK_DATA_DIR/patients" -mindepth 1 -maxdepth 1 -type d | wc -l)
 [ "$n" -eq "$want" ] || fail "expected $want VAL+TRAIN record folders in $TASK_DATA_DIR/patients, found $n (TRAIN exported?)"
