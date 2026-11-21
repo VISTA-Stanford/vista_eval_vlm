@@ -5,6 +5,9 @@ rewrites the instructions they follow, climbing on AUROC from a zero-shot start.
     TB_AGENT=treatment   the tumor board-time summary (compact_summary, cut one week before the first thoracic tumor
                          board) -> the early-stage curative plan and/or the first-line metastatic regimen, five options
                          each, one probability per option; climb score = mean one-vs-rest AUROC over the two questions
+    TB_AGENT=treatment-record   the same questions and scoring, from the same summary plus the patient's full EHR record
+                         (OMOP tables, notes, allow-listed registry fields) cut at the same day, with a notes reader
+                         tool from round 0 (spec planning/vista_eval_vlm/2026-11-21-tb-treatment-full-record.md)
     TB_AGENT=imaging     the most recent chest CT before the tumor board and its prior CT -> progression yes/no as one
                          0-100 probability; climb score = AUROC
 
@@ -24,9 +27,11 @@ HERE = Path(__file__).resolve().parent
 
 #: Which agent this process is. Required: the two agents share code, never a work folder, data folder or image.
 AGENT = os.environ.get("TB_AGENT", "")
-if AGENT not in ("treatment", "imaging"):
-    raise SystemExit("set TB_AGENT=treatment or TB_AGENT=imaging")
-TREATMENT = AGENT == "treatment"
+if AGENT not in ("treatment", "imaging", "treatment-record"):
+    raise SystemExit("set TB_AGENT=treatment, imaging or treatment-record")
+#: The treatment questions (summary only, or summary + record). RECORD: the full-record arm.
+TREATMENT = AGENT in ("treatment", "treatment-record")
+RECORD = AGENT == "treatment-record"
 # --------------------------------------------------------------------------------------------------
 # Where the engine is. The engine checks that it runs from a git checkout that contains ENGINE_PIN.
 # --------------------------------------------------------------------------------------------------
@@ -124,7 +129,14 @@ LABELS = tuple(sorted({c for q in QUESTIONS for _k, c, _t in q.options} or {0, 1
 MOUNT = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil")
 DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", MOUNT / "tb-questions-v1_7" / AGENT))
 #: The id -> person_id (and scans) map: never mounted, listed in the forbidden set.
-ID_MAP_DIR = Path(os.environ.get("TASK_PRIVATE_DIR", MOUNT / "tb-questions-v1_7-private" / AGENT))
+#: The record agent shares the treatment agent's patients and so its id map (its own private folder holds only the
+#: exporter's cohort file, build_data.py record-cohort).
+ID_MAP_DIR = Path(os.environ.get("TASK_PRIVATE_DIR", MOUNT / "tb-questions-v1_7-private" / ("treatment" if AGENT == "treatment-record" else AGENT)))
+#: Record mode: the summaries stay in the treatment agent's folder (same patients, same ids); DATA_DIR holds the same
+#: splits and pools plus cutoffs.jsonl and the record archive. The record's patient folders (exporter output,
+#: build_data.py record-export) are on local disk: thousands of small files are slow on the mount.
+SUMMARY_PATIENTS = MOUNT / "tb-questions-v1_7" / "treatment" / "patients"
+RECORD_PATIENTS = Path(os.environ.get("TASK_RECORD_DIR", Path.home() / "data" / "tb-questions-treatment-record")) / "patients"
 PROGRAM_MODE = "agentic"
 AGENTIC = True
 ANSWER = "probability"
@@ -132,7 +144,8 @@ PROBABILITY = True
 
 #: The labeling program the optimizer starts from (program-v0), and the files it may edit. Zero-shot (spec): the
 #: card's opening and question(s) verbatim, the folder layout, and (imaging) the CT pair viewer.
-SEED_PROGRAM_DIR = HERE / ("program_treatment" if TREATMENT else "program_imaging")
+SEED_PROGRAM_DIR = HERE / {"treatment": "program_treatment", "imaging": "program_imaging",
+                           "treatment-record": "program_treatment_record"}[AGENT]
 EDITABLE_FILES = ("instructions.md", "tools")
 CONTRACT_FILES: tuple[str, ...] = ()
 #: The optimizer's task brief and its standing instructions (its system prompt).
@@ -142,8 +155,9 @@ OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / f"optimizer_instructions_{AGENT}.md"
 #: The model each patient's session runs on, how many run at once, and each one's cap (spec, Decided).
 PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-sonnet-5-5")  # DECIDE: Phil 2026-11-20
 PROGRAM_MAX_CONCURRENT = int(os.environ.get("PROGRAM_MAX_CONCURRENT", "4" if TREATMENT else "2"))  # as died-2yr-ehr / ct-findings-5
-PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD", "0.25" if TREATMENT else "0.75"))  # DECIDE: spec
-PROGRAM_CALL_TIMEOUT_SECONDS = 600 if TREATMENT else 1200  # two CTs take longer than one
+PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD",
+                                               {"treatment": "0.25", "imaging": "0.75", "treatment-record": "0.50"}[AGENT]))  # DECIDE: specs (record: Phil 2026-11-21)
+PROGRAM_CALL_TIMEOUT_SECONDS = {"treatment": 600, "imaging": 1200, "treatment-record": 900}[AGENT]  # two CTs or a record take longer
 
 # --------------------------------------------------------------------------------------------------
 # The metric: one number, higher is better. adapters.TaskScorer computes it.
@@ -165,11 +179,11 @@ CLIMB_ITERATIONS = 10  # DECIDE: spec
 ITERATIONS = int(os.environ.get("ITERATIONS", str(CLIMB_ITERATIONS)))
 #: Stop once this many rounds in a row set no new best VAL score (the seed's zero-shot VAL is the first best).
 #: Enforced by run.py before the next pass, so a resume counts the same rounds. 0 = off.
-STOP_AFTER_ROUNDS_WITHOUT_BEST = int(os.environ.get("STOP_AFTER_ROUNDS_WITHOUT_BEST", "2"))  # DECIDE: spec
+STOP_AFTER_ROUNDS_WITHOUT_BEST = int(os.environ.get("STOP_AFTER_ROUNDS_WITHOUT_BEST", "3" if RECORD else "2"))  # DECIDE: specs (record: Phil 2026-11-21)
 #: Dollar stops, enforced by run.py before each pass (0 = off): the run total counts every scan session this run id
 #: paid for plus OPTIMIZER_SESSION_BUDGET_USD for each round started; a round = its TRAIN and VAL passes' sessions.
-RUN_BUDGET_USD = float(os.environ.get("RUN_BUDGET_USD", "150" if TREATMENT else "250"))  # DECIDE: spec 2026-11-20
-ROUND_BUDGET_USD = float(os.environ.get("ROUND_BUDGET_USD", "40" if TREATMENT else "60"))  # DECIDE: spec 2026-11-20
+RUN_BUDGET_USD = float(os.environ.get("RUN_BUDGET_USD", {"treatment": "150", "imaging": "250", "treatment-record": "250"}[AGENT]))  # DECIDE: specs 2026-11-20 / 11-21
+ROUND_BUDGET_USD = float(os.environ.get("ROUND_BUDGET_USD", {"treatment": "40", "imaging": "60", "treatment-record": "60"}[AGENT]))  # DECIDE: specs 2026-11-20 / 11-21
 OPTIMIZER_SESSION_BUDGET_USD = float(os.environ.get("OPTIMIZER_SESSION_BUDGET_USD", "3.0"))  # as died-2yr-ct
 OPTIMIZER_EFFORT = os.environ.get("OPTIMIZER_EFFORT", "high")  # as died-2yr-ct
 OPTIMIZER_TIMEOUT_SECONDS = 2700

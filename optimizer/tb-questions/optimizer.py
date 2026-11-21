@@ -141,6 +141,10 @@ def forbidden(layout: Layout) -> tuple[Forbidden, ...]:
             str((DATA_DIR / "splits" / "val.jsonl").relative_to("/mnt/su-vista-uscentral1")),
             str((config.ID_MAP_DIR / "id_map.jsonl").relative_to("/mnt/su-vista-uscentral1")))),
     ]
+    if config.RECORD:
+        # The record mode's local export (every patient's record, the exporter's raw registry dates): records reach a
+        # session only by copy (agentic.stage), as died-2yr-ehr's local working copy.
+        entries.append(Forbidden(config.RECORD_PATIENTS.parent, representatives=("counts.json",)))
     return tuple(entries)
 
 

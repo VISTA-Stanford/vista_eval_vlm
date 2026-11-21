@@ -42,7 +42,8 @@ from engine.schemas import (
 )
 
 import worker as worker_module
-from config import CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, METRIC_NAME, QUESTIONS, TASK_NAME
+from config import (CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, METRIC_NAME, QUESTIONS, RECORD, RECORD_PATIENTS,
+                    SUMMARY_PATIENTS, TASK_NAME)
 
 #: TEST: built only on Phil's go (2026-11-16) by build_data.py test; until then reading it fails. Never scheduled.
 SPLITS = ("train", "val", "test")
@@ -80,7 +81,14 @@ def asked_of(pid: str) -> list[str]:
 
 
 def patient_dir(pid: str) -> Path:
-    return DATA_DIR / "patients" / pid
+    """The patient's own inputs folder: summary.txt (treatment; the record agent reads the treatment agent's copy) or
+    the CT pair (imaging). The record agent's record folder is ``record_dir``."""
+    return (SUMMARY_PATIENTS if RECORD else DATA_DIR / "patients") / pid
+
+
+def record_dir(pid: str) -> Path:
+    """Record mode: the exporter's folder for this patient (OMOP parquet, notes.txt, registry files, meta.json)."""
+    return RECORD_PATIENTS / pid
 
 
 @lru_cache(maxsize=None)

@@ -2,3 +2,7 @@ numpy
 scipy
 pillow
 nibabel
+# The treatment-record agent reads parquet: pandas, pyarrow, duckdb (as died-2yr-ehr; duckdb 2.0 removed fetchone(), stay on 1.x).
+pandas
+pyarrow
+duckdb<2

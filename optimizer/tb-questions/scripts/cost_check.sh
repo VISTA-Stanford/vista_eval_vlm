@@ -13,7 +13,7 @@
 # saved network logs. Pass: it ends "PASS: ...", and the verdict and audit.txt are on the mount at
 # tb-questions-v1_7-runs/<host>/<agent>/costcheck-<stamp>/.
 set -euo pipefail
-: "${TB_AGENT:?set TB_AGENT=treatment or TB_AGENT=imaging}"
+: "${TB_AGENT:?set TB_AGENT=treatment, imaging or treatment-record}"
 export TB_AGENT
 export ALO_ROUTE=${ALO_ROUTE:-vertex}
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,7 +21,9 @@ ENGINE=${AGENTIC_LABEL_OPT:-$HOME/code/agentic-label-opt/.claude/worktrees/morta
 STAMP=$(date +%m%d-%H%M)
 export AGENTIC_LABEL_OPT=$ENGINE
 export TASK_WORKDIR=$HOME/.cache/alo-tasks/tb-questions-$TB_AGENT-costcheck-$STAMP
-export TASK_SCHEDULE='{"train_size": "constant(5)", "val_size": "constant(5)"}'
+# COST_N patients each side: 5 by default, 10 for the record agent (its spec: a cost check of about 20 patients).
+COST_N=${COST_N:-$([ "$TB_AGENT" = treatment-record ] && echo 10 || echo 5)}
+export TASK_SCHEDULE="{\"train_size\": \"constant($COST_N)\", \"val_size\": \"constant($COST_N)\"}"
 export ITERATIONS=1
 OUT=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7-runs/$(hostname)/$TB_AGENT/costcheck-$STAMP
 PIN=$(sed -n 's/^ENGINE_PIN = "\([0-9a-f]\{40\}\)".*/\1/p' "$HERE/config.py")

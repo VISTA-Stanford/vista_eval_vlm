@@ -39,7 +39,8 @@ SAMPLES = Path("/mnt/su-vista-uscentral1/vistabench/vlm/evalset_v1/samples")
 #: The eval-set cards (feat/tb-question-cards 1888097), for checks 2 and 6. Skipped, and said so, when absent.
 CARDS_SRC = Path.home() / "code" / "vista_eval_vlm-tb-cards" / "src"
 #: What the build printed (2026-11-20): pool sizes per agent.
-SIZES = {"treatment": {"train": 492, "val": 111}, "imaging": {"train": 188, "val": 100}}
+SIZES = {"treatment": {"train": 492, "val": 111}, "imaging": {"train": 188, "val": 100},
+         "treatment-record": {"train": 492, "val": 111}}
 
 
 def cmd_check() -> int:
@@ -73,8 +74,20 @@ def cmd_check() -> int:
         got = sorted(str(p.relative_to(tmp)) for p in Path(tmp).rglob("*") if p.is_file())
         same = all((Path(tmp) / w).read_bytes() == (ad.patient_dir(pid) / w.removeprefix("ct/")).read_bytes() for w in want)
         readonly = all(not ((Path(tmp) / w).stat().st_mode & 0o222) for w in want)
+    if config.RECORD:  # the summary as above, plus record/ (exactly the record folder's files) and the guide
+        rec_files = sorted(f.name for f in ad.record_dir(pid).iterdir())
+        want = sorted(want + [agentic.GUIDE] + [f"{agentic.RECORD}/{n}" for n in rec_files])
+        with tempfile.TemporaryDirectory() as tmp:
+            spec.stage(Call(pid, {"id": pid, "asked": ad.asked(rows[pid])}), Path(tmp), "p0")
+            got = sorted(str(p.relative_to(tmp)) for p in Path(tmp).rglob("*") if p.is_file())
+            src = {"summary.txt": ad.patient_dir(pid) / "summary.txt", agentic.GUIDE: agentic.GUIDE_SRC,
+                   **{f"{agentic.RECORD}/{n}": ad.record_dir(pid) / n for n in rec_files}}
+            same = got == want and all((Path(tmp) / w).read_bytes() == src[w].read_bytes() for w in want)
+            readonly = all(not ((Path(tmp) / w).stat().st_mode & 0o222) for w in want)
     report("staging copies exactly the patient's inputs, byte for byte, read-only", got == want and same and readonly,
            f"{len(got)} files")
+    if config.RECORD:
+        check_record(report, spec)
 
     check_scorer(report)
     check_output(report, spec)
@@ -95,6 +108,75 @@ def cmd_check() -> int:
     print("--- end ---\n")
     print("ALL PASS" if not bad else f"{bad} FAILED")
     return 1 if bad else 0
+
+
+def check_record(report, spec) -> None:
+    """Record mode: the staging whitelist refuses a stray file or a folder outside the record root, and every VAL and
+    TRAIN record holds nothing dated after its cutoff (notes.txt headers and every date column of every table; end
+    dates are clipped to the cutoff by the exporter, so they count too). Counts only."""
+    import shutil
+
+    import pandas as pd
+
+    import adapters as ad
+    import agentic
+    import config
+
+    pid = sorted(ad.pools()["val"])[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_root = Path(tmp) / "patients"
+        shutil.copytree(ad.record_dir(pid), fake_root / pid)
+        (fake_root / pid / "registry_dates.parquet").write_bytes(b"x")  # the exporter's side file must never pass
+        saved, config.RECORD_PATIENTS = config.RECORD_PATIENTS, fake_root
+        try:
+            stray = _raises(lambda: agentic.record_files(fake_root / pid))
+            (fake_root / pid / "registry_dates.parquet").unlink()
+            outside = _raises(lambda: agentic.record_files(Path(tmp)))
+            clean = not _raises(lambda: agentic.record_files(fake_root / pid))
+        finally:
+            config.RECORD_PATIENTS = saved
+    report("record staging refuses a stray file and a folder outside the record root, and accepts a clean folder",
+           stray and outside and clean)
+
+    ids = sorted(ad.pools()["val"]) + sorted(ad.pools()["train"])
+    have = [i for i in ids if ad.record_dir(i).is_dir()]
+    late, tables_seen, no_meta = 0, 0, 0
+    for i in have:
+        d = ad.record_dir(i)
+        try:
+            cutoff = pd.Timestamp(json.loads((d / "meta.json").read_text())["cutoff"]).normalize()
+        except (OSError, ValueError, KeyError):
+            no_meta += 1
+            continue
+        limit = cutoff + pd.Timedelta(days=1)  # anything on the cutoff day itself is allowed (inclusive)
+        for f in d.glob("*.parquet"):
+            df = pd.read_parquet(f)
+            tables_seen += 1
+            for c in df.columns:
+                if c.endswith(("_date", "_datetime")) or str(df[c].dtype).startswith(("datetime", "date")):
+                    v = pd.to_datetime(df[c], errors="coerce")
+                    if v.dt.tz is not None:
+                        v = v.dt.tz_localize(None)
+                    late += int((v >= limit).sum())
+        notes = d / "notes.txt"
+        if notes.is_file():
+            for line in notes.open(encoding="utf-8", errors="replace"):
+                if line.startswith("===== NOTE "):
+                    parts = line.split(" | ")
+                    t = pd.to_datetime(parts[1].strip()[:10], errors="coerce") if len(parts) > 2 else pd.NaT
+                    late += int(pd.notna(t) and t >= limit)
+    report("every TRAIN and VAL patient has a record folder with meta.json", len(have) == len(ids) and not no_meta,
+           f"{len(have)} of {len(ids)} folders, {no_meta} without a readable meta.json")
+    report("no record holds anything dated after its cutoff (notes and every date column)", late == 0,
+           f"{late} late values over {tables_seen} tables")
+
+
+def _raises(fn) -> bool:
+    try:
+        fn()
+    except RuntimeError:
+        return True
+    return False
 
 
 def _score(answers: dict, split: str, gold: dict | None = None):

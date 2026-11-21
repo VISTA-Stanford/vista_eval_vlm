@@ -18,12 +18,14 @@
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7-runs/<host>/<agent>/<run id>/ after every stop.
 set -euo pipefail
 
-: "${TB_AGENT:?set TB_AGENT=treatment or TB_AGENT=imaging}"
+: "${TB_AGENT:?set TB_AGENT=treatment, imaging or treatment-record}"
 export TB_AGENT
 export ALO_ROUTE=${ALO_ROUTE:-vertex}  # the spec's route
 BRANCH=feat/tb-agent-questions
+[ "$TB_AGENT" != treatment-record ] || BRANCH=feat/tb-treatment-record  # the full-record arm's branch (spec 2026-11-21)
 VLM=${VLM_REPO:-$HOME/code/vista_eval_vlm}
 TASK_WT=${TASK_WT:-$HOME/code/vista_eval_vlm-tb-questions-run}
+[ "$TB_AGENT" != treatment-record ] || TASK_WT=${TASK_WT_RECORD:-$HOME/code/vista_eval_vlm-tb-record-run}  # its own checkout: the summary runs keep theirs
 TASK_DIR=$TASK_WT/optimizer/tb-questions
 ENGINE=$HOME/code/agentic-label-opt
 ENGINE_WT=$ENGINE/.claude/worktrees/mortality-engine
@@ -32,7 +34,7 @@ RESULTS_ROOT=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7-runs
 RUN_ID=${RUN_ID:-r1}
 ITERATIONS=${ITERATIONS:-10}  # spec; the stop rule usually ends it sooner
 MAX_RESUMES=${MAX_RESUMES:-20}
-if [ "$TB_AGENT" = treatment ]; then export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-4}; else export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-2}; fi
+if [ "$TB_AGENT" != imaging ]; then export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-4}; else export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-2}; fi
 export AGENTIC_LABEL_OPT=$ENGINE_WT
 export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/tb-questions-$TB_AGENT}  # config.WORKDIR's default
 RESULTS=$RESULTS_ROOT/$(hostname)/$TB_AGENT/$RUN_ID
@@ -73,6 +75,9 @@ echo "host $(hostname)"
 command -v uv >/dev/null || fail "uv is not installed"
 docker info >/dev/null 2>&1 || fail "Docker is not running or this user cannot use it"
 [ -f "$DATA/pools.json" ] || fail "the data is not readable at $DATA (is the su-vista-uscentral1 mount here?)"
+if [ "$TB_AGENT" = treatment-record ]; then  # the record's patient folders are local (build_data.py record-export)
+    [ -d "${TASK_RECORD_DIR:-$HOME/data/tb-questions-treatment-record}/patients" ] || fail "no record folders at ${TASK_RECORD_DIR:-$HOME/data/tb-questions-treatment-record}/patients: run build_data.py record-export on this machine"
+fi
 if [ "$ALO_ROUTE" = vertex ]; then
     LOGIN=/home/optimizer/.config/gcloud/application_default_credentials.json
     [ -f "$LOGIN" ] && [ ! -L "$LOGIN" ] || fail "no optimizer login at $LOGIN (or run on the seat: unset ALO_ROUTE)"

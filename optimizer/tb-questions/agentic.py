@@ -4,6 +4,8 @@ is. Copied from ct-findings-5 (2026-11-20), with died-2yr-ehr's summary staging 
 
 Each call gets, in its own folder (its only writable mount):
     treatment  summary.txt: the tumor board-time summary, read-only (also quoted in the prompt, as the eval-set card does)
+    treatment-record  the same summary.txt, plus record/ (the exporter's patient files, cut at the same day, staged only
+               if the folder holds nothing but RECORD_FILES) and record_guide.md
     imaging    ct/prior/ and ct/current/, each ct.npz + meta.json (scripts/build_data.py volumes)
 The session reads ``instructions.md`` from the read-only program, writes a short findings note, then ``output.json``
 with an answer for each question the tumor board answered for this patient (the wrapper names them): one 0-100
@@ -14,18 +16,53 @@ probability of yes (yes/no question), or one 0-100 probability per letter A-E (s
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import shutil
 from pathlib import Path
 
 import config
-from adapters import QUESTION, asked, asked_of, patient_dir, rows_for
+from adapters import QUESTION, asked, asked_of, patient_dir, record_dir, rows_for
 
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever you change ``prompt`` below.
 PROMPT_TAG = f"tb-questions-{config.AGENT}-v1"
+#: Record mode: the record's folder name in the call folder, and the guide staged beside it (copied from the
+#: died-2yr-ehr guide, edited for a tumor board cutoff and no registry treatment table). The guide's hash is in the
+#: prompt tag, so editing the guide never reuses a pass.
+RECORD = "record"
+GUIDE = "record_guide.md"
+GUIDE_SRC = Path(__file__).resolve().parent / "context" / "record_guide.md"
+if config.RECORD:
+    PROMPT_TAG = f"tb-questions-{config.AGENT}-v1-guide-{hashlib.sha256(GUIDE_SRC.read_bytes()).hexdigest()[:10]}"
+#: The OMOP tables the exporter writes (no death table), in the order the prompt lists them, and the registry tables
+#: of registry_allowlist_record.yaml (no treatments table: its first-course codes are the tumor board's answer).
+OMOP_TABLES = ("person", "observation_period", "visit_occurrence", "visit_detail", "condition_occurrence",
+               "procedure_occurrence", "drug_exposure", "drug_era", "device_exposure", "episode", "image_occurrence",
+               "measurement", "observation", "note")
+REGISTRY_TABLES = ("diagnoses", "outcomes", "events", "misc_details")
+#: Every file a session may be given from a record folder (as died-2yr-ehr): the exporter's registry_dates/ side
+#: folder, or anything else stray, can never reach a session.
+RECORD_FILES = frozenset({f"{t}.parquet" for t in OMOP_TABLES} | {f"registry_{t}.parquet" for t in REGISTRY_TABLES}
+                         | {"notes.txt", "meta.json"})
+
+
+def record_files(src: Path) -> list[Path]:
+    """The files of one record folder that may be staged, after checking the folder holds nothing else. Raises on a
+    folder outside config.RECORD_PATIENTS, a subfolder, or any file not in RECORD_FILES."""
+    src = Path(src)
+    if src.resolve().parent != config.RECORD_PATIENTS.resolve():
+        raise RuntimeError("a record folder must be RECORD_PATIENTS/<id>")
+    files = sorted(src.iterdir())
+    stray = [f for f in files if f.is_dir() or f.name not in RECORD_FILES]
+    if stray:
+        raise RuntimeError(f"refusing to stage a record folder with {len(stray)} unexpected entries "
+                           f"(first: {stray[0].name}); only the exporter's patient files may reach a session")
+    if "meta.json" not in {f.name for f in files}:
+        raise RuntimeError("a record folder without meta.json: not the exporter's")
+    return files
 MAX_REASONS = 5
 #: The session's reasoning is not kept in its transcript, so it writes what it used; the optimizer reads it.
 FINDINGS = "findings.md"
@@ -99,6 +136,16 @@ def program_spec(forbidden):
         if config.TREATMENT:
             shutil.copy2(src / SUMMARY, Path(folder) / SUMMARY)
             (Path(folder) / SUMMARY).chmod(0o444)
+            if config.RECORD:
+                files = record_files(record_dir(call.payload["id"]))  # checked before anything is copied
+                dest = Path(folder) / RECORD
+                dest.mkdir()
+                dest.chmod(0o755)  # readable by the container user on Vertex (died-2yr-ehr 2026-10-21)
+                for f in files:
+                    shutil.copy2(f, dest / f.name)
+                    (dest / f.name).chmod(0o444)
+                shutil.copy2(GUIDE_SRC, Path(folder) / GUIDE)
+                (Path(folder) / GUIDE).chmod(0o444)
             return
         for scan in SCANS:
             dest = Path(folder) / "ct" / scan
@@ -119,6 +166,24 @@ def program_spec(forbidden):
             given = (f"{config.SUMMARY_OPENING}\n\nPATIENT SUMMARY:\n{summary}\n\n"
                      f"The summary is also the file {paths.call}/{SUMMARY}.")
             reason = '{"fact": "<one fact from the summary>", "where": "<the part of the summary it is in>"}'
+            if config.RECORD:
+                rec = f"{paths.call}/{RECORD}"
+                given += (
+                    f"\n\nYou also have this patient's full electronic health record, the folder {rec}/ (read-only). "
+                    f"It stops at the same day as the summary, one week before their first thoracic tumor board "
+                    f"encounter: nothing dated after that day is in it.\n"
+                    f"- notes.txt: every clinical note in date order, each starting with a header line that begins "
+                    f"'===== NOTE'. Search it with grep.\n"
+                    f"- one parquet file per table of the OMOP common data model: {', '.join(OMOP_TABLES)}. A table "
+                    f"with no rows for this patient may be absent.\n"
+                    f"- {', '.join(f'registry_{t}.parquet' for t in REGISTRY_TABLES)}: the cancer registry's record "
+                    f"of this cancer, limited to the fields allowed at that day (absent if the registry has none).\n"
+                    f"- meta.json: the patient's opaque id and the cutoff date.\n"
+                    f"python3 has pandas, pyarrow and duckdb for the parquet files. Read {paths.call}/{GUIDE} before "
+                    f"the record: it says what each file holds, where each kind of fact lives, and which sources "
+                    f"mislead.")
+                reason = ('{"fact": "<one fact from the summary or the record>", "where": "<the summary, or the '
+                          'record file and note type it is in>"}')
         else:
             given = (f"{config.IMAGING_OPENING} The PRIOR CT is the folder {paths.call}/ct/prior/ and the MOST RECENT "
                      f"CT is {paths.call}/ct/current/ (each ct.npz and meta.json).")

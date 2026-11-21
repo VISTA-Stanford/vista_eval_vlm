@@ -723,6 +723,10 @@ def score_pass(answers: dict, split: str, *, draws: int = 2000, seed: int = 0) -
             "bootstrap_draws": draws, "questions": table}
 
 
+#: Record mode's stop-and-come-back line (spec 2026-11-21-tb-treatment-full-record.md, Phil 2026-11-21).
+RECORD_ZERO_SHOT_FLOOR = 0.78
+
+
 def zero_shot_gate(result: dict) -> str | None:
     """Why the spec says stop and come back, or None. Failures over 10% fail the Done-when; the treatment agent at
     chance on both questions (every 95% interval for AUROC reaches 0.5) stops before any climb (spec, Done when)."""
@@ -730,6 +734,9 @@ def zero_shot_gate(result: dict) -> str | None:
         return f"{result['failed']} of {result['patients']} answers failed (over 10%)"
     if config.TREATMENT and all(q["auroc_ci"][0] <= 0.5 for q in result["questions"].values()):
         return "the zero-shot treatment agent is at chance on both questions (each AUROC interval reaches 0.5)"
+    if config.RECORD and result["climb_score"] < RECORD_ZERO_SHOT_FLOOR:
+        return (f"the summary + record zero-shot scores {result['climb_score']:.3f}, below {RECORD_ZERO_SHOT_FLOOR} (more "
+                f"than 0.03 under the summary-only zero-shot 0.814): the record gets in the way (spec 2026-11-21)")
     if any(abs(q["always_most_common"]["auroc"] - 0.5) > 1e-9 for q in result["questions"].values()):
         return "the always-most-common-answer row is not at AUROC 0.5: the scorer is wrong"
     return None
