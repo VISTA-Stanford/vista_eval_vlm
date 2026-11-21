@@ -44,8 +44,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 AGENT = os.environ.get("TB_AGENT", "")
-if AGENT not in ("treatment", "imaging"):
-    raise SystemExit("set TB_AGENT=treatment or TB_AGENT=imaging")
+if AGENT not in ("treatment", "imaging", "treatment-record"):
+    raise SystemExit("set TB_AGENT=treatment, imaging or treatment-record")
 PROJECT = "som-nero-plevriti-deidbdf"
 TABLE = f"{PROJECT}.vista_bench_v1_7.tb_classification_tasks"
 #: (answer key, vista_bench task), in config.QUESTIONS order.
@@ -326,6 +326,126 @@ def cmd_volumes(args) -> int:
     return 1 if status["failed"] else 0
 
 
+# ==================================================================================================
+# Treatment + full record (spec planning/vista_eval_vlm/2026-11-21-tb-treatment-full-record.md)
+# ==================================================================================================
+#: The record mode reuses the treatment agent's patients, ids, splits, pools and summaries (the summary stays in the
+#: treatment folder); this folder adds cutoffs.jsonl and the record archive. The exporter writes the patient folders to
+#: local disk (REC_LOCAL): thousands of small files are slow on the mount.
+TREATMENT_DIR = MOUNT / "tb-questions-v1_7" / "treatment"
+TREATMENT_PRIVATE = MOUNT / "tb-questions-v1_7-private" / "treatment"
+REC_LOCAL = Path(os.environ.get("TASK_RECORD_DIR", Path.home() / "data" / "tb-questions-treatment-record"))
+REC_STAGE = Path(os.environ.get("TASK_EXPORT_STAGE", Path.home() / ".cache" / "tb-questions-record-export-stage"))
+EXPORTER = Path(os.environ.get("OMOP_EXPORT_REPO", Path.home() / "code" / "vista-onc-labelers-omop-export")) / "common" / "omop_export" / "export_omop.py"
+REC_ALLOWLIST = Path(__file__).resolve().parents[1] / "registry_allowlist_record.yaml"
+#: The index tumour for the registry files: a thoracic tumour (the death task's vista_bench primary-site / histology
+#: filter) diagnosed on or before the cutoff, latest first, then tumor_key. No such tumour -> no registry files.
+THORACIC = """(d.primarysite IN ('C150','C151','C152','C153','C154','C155','C158','C159',
+    'C339','C340','C341','C342','C343','C348','C349','C379','C380','C381','C382','C383','C384','C388','C390','C398',
+    'C399','C412','C413'))
+  OR (d.primarysite = 'C493' AND d.morphtypebehavicdo3 NOT IN ('9220','9240'))
+  OR (d.morphtypebehavicdo3 IN ('9050','9051','9052','9053','9054','9055'))"""
+REC_COHORT_SQL = f"""
+WITH cohort AS (
+  SELECT person_id, ANY_VALUE(DATE(embed_time)) AS cutoff, COUNT(DISTINCT DATE(embed_time)) AS n_cut,
+         LOGICAL_AND(cutoff_inclusive) AS inclusive,
+         MIN(DATE_DIFF(DATE(first_tb_encounter_ts), DATE(embed_time), DAY)) AS gap_min,
+         MAX(DATE_DIFF(DATE(first_tb_encounter_ts), DATE(embed_time), DAY)) AS gap_max
+  FROM `{TABLE}`
+  WHERE task IN UNNEST(@tasks) AND embed_time IS NOT NULL AND label >= 0 AND person_id IN UNNEST(@pids)
+  GROUP BY person_id
+),
+dx AS (
+  SELECT d.person_id, d.tumor_key,
+    CASE
+      WHEN REGEXP_CONTAINS(d.dateofdiagnosis, r'^\\d{{8}}$') THEN SAFE.PARSE_DATE('%Y%m%d', d.dateofdiagnosis)
+      WHEN REGEXP_CONTAINS(d.dateofdiagnosis, r'^\\d{{6}}$') AND SAFE_CAST(SUBSTR(d.dateofdiagnosis,5,2) AS INT64) BETWEEN 1 AND 12
+        THEN DATE(SAFE_CAST(SUBSTR(d.dateofdiagnosis,1,4) AS INT64), SAFE_CAST(SUBSTR(d.dateofdiagnosis,5,2) AS INT64), 1)
+    END AS dxd
+  FROM `{PROJECT}.vista_cohort_omop_aug2026_v1_7.registry_case_diagnoses` d
+  WHERE d.person_id IN (SELECT person_id FROM cohort) AND ({THORACIC})
+)
+SELECT c.person_id, c.cutoff, c.n_cut, c.inclusive, c.gap_min, c.gap_max, x.tumor_key
+FROM cohort c
+LEFT JOIN (
+  SELECT * EXCEPT (rn) FROM (
+    SELECT x.person_id, x.tumor_key,
+           ROW_NUMBER() OVER (PARTITION BY x.person_id ORDER BY x.dxd DESC, x.tumor_key) AS rn
+    FROM dx x JOIN cohort c USING (person_id) WHERE x.dxd <= c.cutoff)
+  WHERE rn = 1) x USING (person_id)
+"""
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def record_cohort() -> int:
+    """PRIVATE/cohort.parquet (id, person_id, cutoff, tumor_key: the exporter's input) and DATA/cutoffs.jsonl, for the
+    treatment agent's TRAIN + VAL patients (their id map). The cutoff is the table's embed_time: it must be one date
+    per patient, 7 days before the first tumor board, inclusive (checked, else stop). Also copies the treatment
+    splits and pools here unchanged. TEST waits for the TEST look's go."""
+    import pandas as pd
+    from google.cloud import bigquery
+
+    id_map = read_jsonl(TREATMENT_PRIVATE / "id_map.jsonl")
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ArrayQueryParameter("tasks", "STRING", [t for _k, t in TREATMENT_QUESTIONS]),
+        bigquery.ArrayQueryParameter("pids", "INT64", [int(m["person_id"]) for m in id_map])])
+    rows = {r["person_id"]: dict(r) for r in bigquery.Client(project=PROJECT).query(REC_COHORT_SQL, job_config=cfg).result()}
+    if len(rows) != len(id_map) or any(int(m["person_id"]) not in rows for m in id_map):
+        raise SystemExit(f"STOP: {len(rows)} cutoff rows for {len(id_map)} patients")
+    bad = [r for r in rows.values() if r["n_cut"] != 1 or not r["inclusive"] or r["gap_min"] != 7 or r["gap_max"] != 7]
+    if bad:
+        raise SystemExit(f"STOP: {len(bad)} patients whose cutoff is not one inclusive date 7 days before the tumor board")
+    out = pd.DataFrame([{"id": m["id"], "person_id": int(m["person_id"]), "cutoff": rows[int(m["person_id"])]["cutoff"],
+                         "tumor_key": rows[int(m["person_id"])]["tumor_key"]} for m in id_map])
+    out["tumor_key"] = out["tumor_key"].astype("Int64")
+    out["cutoff"] = pd.to_datetime(out["cutoff"]).dt.date
+    PRIVATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"tb_record_cohort_{os.getpid()}.parquet"
+    out.to_parquet(tmp, index=False)
+    (PRIVATE_DIR / "cohort.parquet").write_bytes(tmp.read_bytes())  # gcsfuse: plain write, no rename
+    tmp.unlink()
+    (DATA_DIR / "splits").mkdir(parents=True, exist_ok=True)
+    for n in ("splits/train.jsonl", "splits/val.jsonl", "pools.json"):
+        (DATA_DIR / n).write_bytes((TREATMENT_DIR / n).read_bytes())
+    write_jsonl(DATA_DIR / "cutoffs.jsonl", [{"id": r.id, "cutoff": r.cutoff.isoformat()} for r in out.itertuples()])
+    by = Counter(m["split"] for m in id_map)
+    print(f"cohort: {len(out)} patients {dict(by)}; one cutoff each, 7 days before the tumor board, inclusive; "
+          f"index thoracic tumour found for {int(out['tumor_key'].notna().sum())}, none for {int(out['tumor_key'].isna().sum())}")
+    return 0
+
+
+def exporter_cmd(*extra: str) -> list[str]:
+    if not EXPORTER.is_file():
+        raise SystemExit(f"no exporter at {EXPORTER}: set OMOP_EXPORT_REPO to a vista-onc-labelers checkout of "
+                         "feat/shared-omop-export")
+    return ["uv", "run", str(EXPORTER), "--cohort", str(PRIVATE_DIR / "cohort.parquet"),
+            "--registry-allowlist", str(REC_ALLOWLIST), "--out", str(REC_LOCAL), "--stage", str(REC_STAGE), *extra]
+
+
+def record_export(args) -> int:
+    """The exporter into REC_LOCAL, its leak check, then the archive on the mount. The first PHI write (an Expensive
+    step, approved with the spec 2026-11-21): refuses without --go; --dry-run prices the queries."""
+    import subprocess
+
+    if args.dry_run:
+        return subprocess.run(exporter_cmd("--dry-run")).returncode
+    if not args.go:
+        raise SystemExit("record-export writes PHI to disk: rerun with --go (approved with the spec) or --dry-run")
+    env = {**os.environ, "OMP_NUM_THREADS": "2"}
+    code = subprocess.run(["nice", "-n", "19", *exporter_cmd("--archive", str(DATA_DIR / "archive"))], env=env).returncode
+    if code == 0:
+        # The leak check again, on its own (the exporter's --check reads only the written files; no --stage).
+        code = subprocess.run(["uv", "run", str(EXPORTER), "--cohort", str(PRIVATE_DIR / "cohort.parquet"),
+                               "--registry-allowlist", str(REC_ALLOWLIST), "--out", str(REC_LOCAL), "--check"]).returncode
+        n = sum(1 for _ in (REC_LOCAL / "patients").iterdir())
+        print(f"export done: {n} patient folders in {REC_LOCAL}; archive in {DATA_DIR / 'archive'}; "
+              f"leak check {'PASS' if code == 0 else 'FAIL'}")
+    return code
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -335,7 +455,17 @@ def main() -> int:
     v.add_argument("--limit", type=int, default=0)
     v.add_argument("--split", choices=("pools", "test"), default="pools")
     sub.add_parser("test")
+    sub.add_parser("record-cohort")
+    e = sub.add_parser("record-export")
+    e.add_argument("--go", action="store_true", help="the export was approved (spec 2026-11-21)")
+    e.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+    if args.cmd.startswith("record-") != (AGENT == "treatment-record"):
+        raise SystemExit("record-cohort and record-export are for TB_AGENT=treatment-record, and that agent has only those")
+    if args.cmd == "record-cohort":
+        return record_cohort()
+    if args.cmd == "record-export":
+        return record_export(args)
     if args.cmd == "volumes":
         return cmd_volumes(args)
     return {("select", "treatment"): treatment_select, ("select", "imaging"): imaging_select,
