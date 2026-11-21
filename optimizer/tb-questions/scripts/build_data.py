@@ -380,15 +380,17 @@ def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def record_cohort() -> int:
+def record_cohort(test: bool = False) -> int:
     """PRIVATE/cohort.parquet (id, person_id, cutoff, tumor_key: the exporter's input) and DATA/cutoffs.jsonl, for the
     treatment agent's TRAIN + VAL patients (their id map). The cutoff is the table's embed_time: it must be one date
     per patient, 7 days before the first tumor board, inclusive (checked, else stop). Also copies the treatment
-    splits and pools here unchanged. TEST waits for the TEST look's go."""
+    splits and pools here unchanged. --test (after the treatment agent's ``test``, on Phil's go for the TEST look): the
+    TEST patients instead, into cohort_test.parquet and cutoffs_test.jsonl, and splits/test.jsonl copied here."""
     import pandas as pd
     from google.cloud import bigquery
 
-    id_map = read_jsonl(TREATMENT_PRIVATE / "id_map.jsonl")
+    id_map = read_jsonl(TREATMENT_PRIVATE / ("id_map_test.jsonl" if test else "id_map.jsonl"))
+    sfx = "_test" if test else ""
     cfg = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ArrayQueryParameter("tasks", "STRING", [t for _k, t in TREATMENT_QUESTIONS]),
         bigquery.ArrayQueryParameter("pids", "INT64", [int(m["person_id"]) for m in id_map])])
@@ -405,24 +407,29 @@ def record_cohort() -> int:
     PRIVATE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"tb_record_cohort_{os.getpid()}.parquet"
     out.to_parquet(tmp, index=False)
-    (PRIVATE_DIR / "cohort.parquet").write_bytes(tmp.read_bytes())  # gcsfuse: plain write, no rename
+    (PRIVATE_DIR / f"cohort{sfx}.parquet").write_bytes(tmp.read_bytes())  # gcsfuse: plain write, no rename
     tmp.unlink()
     (DATA_DIR / "splits").mkdir(parents=True, exist_ok=True)
-    for n in ("splits/train.jsonl", "splits/val.jsonl", "pools.json"):
+    for n in (("splits/test.jsonl",) if test else ("splits/train.jsonl", "splits/val.jsonl", "pools.json")):
         (DATA_DIR / n).write_bytes((TREATMENT_DIR / n).read_bytes())
-    write_jsonl(DATA_DIR / "cutoffs.jsonl", [{"id": r.id, "cutoff": r.cutoff.isoformat()} for r in out.itertuples()])
+    write_jsonl(DATA_DIR / f"cutoffs{sfx}.jsonl", [{"id": r.id, "cutoff": r.cutoff.isoformat()} for r in out.itertuples()])
     by = Counter(m["split"] for m in id_map)
     print(f"cohort: {len(out)} patients {dict(by)}; one cutoff each, 7 days before the tumor board, inclusive; "
           f"index thoracic tumour found for {int(out['tumor_key'].notna().sum())}, none for {int(out['tumor_key'].isna().sum())}")
     return 0
 
 
-def exporter_cmd(*extra: str) -> list[str]:
+def exporter_cmd(*extra: str, test: bool = False) -> list[str]:
+    """The exporter on the TRAIN+VAL cohort, or (test) on the TEST cohort into its own output and stage folders: the
+    exporter reuses a stage's downloaded tables by name, so a second cohort must never share the first one's stage."""
     if not EXPORTER.is_file():
         raise SystemExit(f"no exporter at {EXPORTER}: set OMOP_EXPORT_REPO to a vista-onc-labelers checkout of "
                          "feat/shared-omop-export")
-    return ["uv", "run", str(EXPORTER), "--cohort", str(PRIVATE_DIR / "cohort.parquet"),
-            "--registry-allowlist", str(REC_ALLOWLIST), "--out", str(REC_LOCAL), "--stage", str(REC_STAGE), *extra]
+    out, stage = (REC_LOCAL.with_name(REC_LOCAL.name + "-test"), REC_STAGE.with_name(REC_STAGE.name + "-test")) if test \
+        else (REC_LOCAL, REC_STAGE)
+    cohort = PRIVATE_DIR / ("cohort_test.parquet" if test else "cohort.parquet")
+    return ["uv", "run", str(EXPORTER), "--cohort", str(cohort), "--registry-allowlist", str(REC_ALLOWLIST),
+            "--out", str(out), *(["--stage", str(stage)] if "--check" not in extra else []), *extra]
 
 
 def record_export(args) -> int:
@@ -430,19 +437,32 @@ def record_export(args) -> int:
     step, approved with the spec 2026-11-21): refuses without --go; --dry-run prices the queries."""
     import subprocess
 
+    import shutil
+
+    t = args.test
     if args.dry_run:
-        return subprocess.run(exporter_cmd("--dry-run")).returncode
+        return subprocess.run(exporter_cmd("--dry-run", test=t)).returncode
     if not args.go:
         raise SystemExit("record-export writes PHI to disk: rerun with --go (approved with the spec) or --dry-run")
     env = {**os.environ, "OMP_NUM_THREADS": "2"}
-    code = subprocess.run(["nice", "-n", "19", *exporter_cmd("--archive", str(DATA_DIR / "archive"))], env=env).returncode
+    archive = DATA_DIR / ("archive-test" if t else "archive")
+    code = subprocess.run(["nice", "-n", "19", *exporter_cmd("--archive", str(archive), test=t)], env=env).returncode
     if code == 0:
         # The leak check again, on its own (the exporter's --check reads only the written files; no --stage).
-        code = subprocess.run(["uv", "run", str(EXPORTER), "--cohort", str(PRIVATE_DIR / "cohort.parquet"),
-                               "--registry-allowlist", str(REC_ALLOWLIST), "--out", str(REC_LOCAL), "--check"]).returncode
-        n = sum(1 for _ in (REC_LOCAL / "patients").iterdir())
-        print(f"export done: {n} patient folders in {REC_LOCAL}; archive in {DATA_DIR / 'archive'}; "
-              f"leak check {'PASS' if code == 0 else 'FAIL'}")
+        code = subprocess.run(exporter_cmd("--check", test=t)).returncode
+    out = REC_LOCAL.with_name(REC_LOCAL.name + "-test") if t else REC_LOCAL
+    if code == 0 and t:
+        # TEST's patient folders join the TRAIN+VAL ones, where staging reads them (agentic.record_files); the TEST
+        # export's own registry_dates/ side folder stays behind in its folder. Refuses an id already present.
+        clash = [p.name for p in (out / "patients").iterdir() if (REC_LOCAL / "patients" / p.name).exists()]
+        if clash:
+            raise SystemExit(f"STOP: {len(clash)} TEST ids already have a record folder")
+        for p in sorted((out / "patients").iterdir()):
+            shutil.copytree(p, REC_LOCAL / "patients" / p.name)
+    if code == 0 or not t:
+        n = sum(1 for _ in (out / "patients").iterdir()) if (out / "patients").is_dir() else 0
+        print(f"export done: {n} patient folders in {out}{' (copied beside TRAIN+VAL)' if t else ''}; archive in "
+              f"{archive}; leak check {'PASS' if code == 0 else 'FAIL'}")
     return code
 
 
@@ -455,15 +475,17 @@ def main() -> int:
     v.add_argument("--limit", type=int, default=0)
     v.add_argument("--split", choices=("pools", "test"), default="pools")
     sub.add_parser("test")
-    sub.add_parser("record-cohort")
+    c = sub.add_parser("record-cohort")
+    c.add_argument("--test", action="store_true", help="the TEST patients (after the treatment agent's test; Phil's go)")
     e = sub.add_parser("record-export")
+    e.add_argument("--test", action="store_true", help="the TEST cohort, its own folders, then copied beside TRAIN+VAL")
     e.add_argument("--go", action="store_true", help="the export was approved (spec 2026-11-21)")
     e.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if args.cmd.startswith("record-") != (AGENT == "treatment-record"):
         raise SystemExit("record-cohort and record-export are for TB_AGENT=treatment-record, and that agent has only those")
     if args.cmd == "record-cohort":
-        return record_cohort()
+        return record_cohort(args.test)
     if args.cmd == "record-export":
         return record_export(args)
     if args.cmd == "volumes":
