@@ -40,6 +40,20 @@ asked directly?
 | Work folder | `~/.cache/alo-tasks/tb-questions-<agent>`, run `r1`; results to `chaudhari_lab/phil/tb-questions-v1_7-runs/<host>/<agent>/<run id>/` |
 | Data | `chaudhari_lab/phil/tb-questions-v1_7/<agent>/` (`splits/{train,val}.jsonl`, `pools.json`, `patients/<id>/`); id map in `.../tb-questions-v1_7-private/<agent>/`. Ids are salted hashes of the patient |
 
+### The full-record arm (`TB_AGENT=treatment-record`, spec planning/vista_eval_vlm/2026-11-21-tb-treatment-full-record.md, Approved 2026-11-21)
+
+| Decision | Answer |
+|---|---|
+| Input | the treatment agent's summary (same patients, ids, splits, pools) + the full EHR record cut at the same day, staged as `record/` (whitelisted exporter files) + `record_guide.md` (Phil 11-21) |
+| Cutoff | `embed_time` of `tb_classification_tasks`: one date per patient, 7 days before the first tumor board, inclusive (checked for all 603 + TEST 119) |
+| Export | shared OMOP exporter (vista-onc-labelers `feat/shared-omop-export`), `build_data.py record-cohort` / `record-export`; local `~/data/tb-questions-treatment-record`, archive on the mount; exporter leak check must PASS |
+| Registry | `registry_allowlist_record.yaml` = died-2yr-ehr's list minus the whole treatments table (its first-course codes are the tumor board's answer; build 11-21) |
+| Pre-cutoff plan notes | kept, counted (`scripts/count_plan_notes.py`): VAL 56% have a note naming a treatment in the last 60 days, upper bound (Phil 11-21: fair, count them) |
+| Seed | the bare treatment seed + one paragraph naming the record and the notes reader `tools/digest.py` (died-2yr-ehr summary arm v6, "now" from meta.json); not r1's v1 (Phil 11-21) |
+| Model, caps, stops | Sonnet 5.5; $0.50 a session, 15 min, $60 a round, $250 a run; 3 rounds without a new best, at most 10 (Phil 11-21) |
+| Zero-shot gate | stop and come back if VAL < 0.78 (summary-only zero-shot 0.814; Phil 11-21) |
+| Images | sessions need pandas, pyarrow, duckdb<2: added to `docker/requirements.in` (all agents' images get them) |
+
 ## Data (built 2026-11-20)
 
 - Treatment TRAIN 492 patients (18 asked both questions): early-stage A/B/C/D/E 79/22/84/61/109; metastatic 66/29/11/37/12.
@@ -55,6 +69,9 @@ asked directly?
     TB_AGENT=treatment uv run --project $AGENTIC_LABEL_OPT python run.py zero-shot                    PAID VAL pass (approved)
     TB_AGENT=treatment uv run --project $AGENTIC_LABEL_OPT python run.py score-pass <answers.json>    $0
     TB_AGENT=treatment bash scripts/run_on_vm.sh                                                      PAID climb (approved, sllm-02)
+    TB_AGENT=treatment-record uv run -q --no-project --with google-cloud-bigquery --with pandas --with pyarrow --with db-dtypes python -B scripts/build_data.py record-cohort
+    TB_AGENT=treatment-record uv run ... python -B scripts/build_data.py record-export --dry-run | --go   (--go: first PHI write, approved 11-21)
+    TB_AGENT=treatment-record uv run --project $AGENTIC_LABEL_OPT --with pandas python -B scripts/count_plan_notes.py --split val
 
 ## Reference points (in the task briefs)
 
