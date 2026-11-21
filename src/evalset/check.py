@@ -73,7 +73,7 @@ def main() -> int:
     ap.add_argument("--questions", nargs="+", default=None)
     ap.add_argument("--arms", default=None)
     ap.add_argument("--variant", default=None)
-    ap.add_argument("--which", choices=["sample", "test"], default="sample")
+    ap.add_argument("--which", choices=list(samples.WHICHES), default="sample")
     a = ap.parse_args()
     ok = check(a.recipe, a.run, a.steps, a.limit, a.questions, arms=a.arms, variant=a.variant, which=a.which)
     print("ALL PARSED" if ok else "NOT ALL PARSED")

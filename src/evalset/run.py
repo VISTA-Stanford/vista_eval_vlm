@@ -522,7 +522,7 @@ def main() -> int:
     ap.add_argument("--questions", nargs="+", default=None, help="question ids to ask (default: all on each card)")
     ap.add_argument("--arms", default=None, help="arms YAML (see evalset.arms); with --variant")
     ap.add_argument("--variant", default=None, help="variant name in the arms file")
-    ap.add_argument("--which", choices=["sample", "test"], default="sample",
+    ap.add_argument("--which", choices=list(samples.WHICHES), default="sample",
                     help="the step's sample (default) or its whole TEST split")
     args = ap.parse_args()
     recipe, variant = recipe_for(args.recipe, args.arms, args.variant)

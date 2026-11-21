@@ -1,0 +1,26 @@
+# Step 3, progression vs the prior CT, asked directly on the fixed 1,000 TEST pairs (--which test1000; spec
+# planning/vista_eval_vlm/2026-11-21-radprog-vlm-agent-arms.md, Approved 2026-11-21). Same card text for every model
+# (src/evalset/cards/progression.py), probability answer (0-100) so every row is scored by AUROC beside the CT probes.
+# Images follow each vendor's documented format (Phil 2026-11-21):
+#   Argon, Opus   chest windows (lung W1500/L-600, soft tissue W400/L40, bone W1800/L400; context.windows.RGB_SETS
+#                 ["chest"]), as the tumor board CT runs (tb-chest-2026-11-20.yaml)
+#   Astra         25 slices per scan (its gateway's 50-image cap), chest windows too: OpenAI documents no CT format, and
+#                 the chest set is what the other frontier rows get (build decision 2026-11-21)
+#   MedGemma      its own recipe unchanged (Google's documented windows wide / soft tissue / 0-80 HU, 42 slices per scan,
+#                 yes/no token probabilities as the score)
+# Argon and Opus run on phil-sllm-01; Astra and MedGemma on weill-p01 (scripts/evalset_weill.sh).
+variants:
+  argon_rp:
+    recipe: argon
+    answer_form: probability
+    windows: chest
+  opus_rp:
+    recipe: opus
+    answer_form: probability
+    windows: chest
+  astra_rp:
+    recipe: astra
+    answer_form: probability
+    windows: chest
+  medgemma_rp:
+    recipe: medgemma

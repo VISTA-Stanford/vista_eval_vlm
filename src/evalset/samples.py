@@ -12,6 +12,9 @@ model and the Claude Code agent read these files, so they all answer about the s
           (rarest answer first, reusing scans already chosen; the 10-25 sizing rule, 522 scans then)
   step 3  progression vs prior: the 400 TEST pairs GPT-6 Astra answered on 10-19 (100 per four-way
           class, so 200 yes / 200 no two-way)
+  step 3, which="test1000"  the fixed 1,000 TEST pairs for the VLM and agent arms (spec
+          planning/vista_eval_vlm/2026-11-21-radprog-vlm-agent-arms.md): today's whole step-3 TEST list (v2 labels),
+          kept to pairs every comparison probe scored (PROBE_FILES), then a simple random 1,000 (seed STEP3_1000_SEED)
   step 4  board progression: the 334 board cases the rev-5 board CT run answered (scored answer, CT and
           prior CT; all splits, 45 TEST reported separately). One case has no split in the board table: it
           counts in the all-cases score and in no per-split score
@@ -42,6 +45,14 @@ ASTRA_400 = ("vistabench/vlm/results_radprog_v1_7/astra_400/radiology_progressio
              "gpt-6-astra/radiology_progression_results_ct_pair.csv")
 BOARD_334 = ("vistabench/vlm/results_tb_v1_7_rev5/tb_classification_tasks/progression_assessment_answer/"
              "gemini-3.1-pro-preview/progression_assessment_answer_results_axial_all_image.csv")
+#: The CT probes the step-3 arms are compared with (spec 2026-11-21): vista-eval's v1.7 current + prior pair
+#: per-example files. The 1,000 and the agent's pools only use pairs all three scored.
+PROBE_DIR = "vistabench/results/v1_7/ct/radiology_progression_tasks"
+PROBE_FILES = {"Pillar0": "pillar0_prior_pair_per_example.parquet",
+               "COLIPRI": "colipri_prior_pair_per_example.parquet",
+               "MerlinOnc v2.2": "merlinonc_top_centered_v2.2_prior_pair_per_example.parquet"}
+STEP3_1000_N = 1000
+STEP3_1000_SEED = 20261121
 STEP1_NOTE = ("Balanced on the 2-year answer (100 / 100). The 1-year answer is then about 60 yes / 140 no: 200 "
               "patients cannot hold 100 per answer on both horizons without dropping the deaths between 1 and 2 years.")
 
@@ -235,7 +246,7 @@ def step3_test(client) -> pd.DataFrame:
     """Whole TEST split for step 3: every scored scan with its prior (the task table's own prior columns), both
     NIfTIs on the mount (missing ones counted)."""
     rows = _query(client, f"""select person_id, split, label, ct_accession_number, image_study_uid, image_series_uid,
-          prior_image_study_uid, prior_image_series_uid, prior_gap_days
+          prior_image_study_uid, prior_image_series_uid, prior_gap_days, prior_source, prior_ambiguous
         from `{paths.table('radiology_progression_tasks')}`
         where task = 'radiology_progression' and split = 'test' and label in (0, 1, 2, 3)
           and image_series_uid is not null and prior_image_series_uid is not null""")
@@ -250,6 +261,32 @@ def step3_test(client) -> pd.DataFrame:
     a["label__radiology_progression"] = a["label"].astype(int).map(TWO_WAY)
     a["ct_accession_number"] = a["ct_accession_number"].astype(str)
     return a.drop(columns="label").assign(case_id=a["ct_accession_number"]).reset_index(drop=True)
+
+
+def probe_accessions(split: str | None = None) -> set[str]:
+    """CT accessions every comparison probe scored on the radiology_progression task (one split, or all)."""
+    sets = []
+    for f in PROBE_FILES.values():
+        pe = pd.read_parquet(paths.mount_root() / paths.BUCKET / PROBE_DIR / f, columns=["task", "split", "accession_number"])
+        pe = pe[pe["task"] == "radiology_progression"]
+        if split:
+            pe = pe[pe["split"].replace({"valid": "val"}) == split]
+        sets.append(set(pe["accession_number"].astype(str)))
+    return set.intersection(*sets)
+
+
+def step3_test1000(client) -> pd.DataFrame:
+    """The fixed 1,000 TEST pairs for the step-3 VLM and agent arms: today's whole step-3 TEST list, kept to pairs
+    every comparison probe scored, then a simple random draw at the natural rate (spec 2026-11-21)."""
+    df = step3_test(client)
+    keep = probe_accessions("test")
+    on = df["ct_accession_number"].isin(keep)
+    print(f"    step 3 test1000: {len(df)} pairs on the mount, {int((~on).sum())} not scored by every probe (dropped)")
+    df = df[on].sort_values("case_id").reset_index(drop=True)
+    if len(df) < STEP3_1000_N:
+        raise RuntimeError(f"step 3 test1000: only {len(df)} eligible pairs")
+    idx = np.random.default_rng(STEP3_1000_SEED).choice(len(df), STEP3_1000_N, replace=False)
+    return df.iloc[np.sort(idx)].reset_index(drop=True)
 
 
 def step4_test(client) -> pd.DataFrame:
@@ -315,12 +352,15 @@ BUILDERS = {1: step1, 2: step2, 3: step3, 4: step4}
 #: ``which="test"``: the whole TEST split, the second stage after the samples (spec, Scale).
 #: Steps 6 and 8 (tumor board questions, spec 2026-11-20-tb-agent-questions.md) are asked directly on TEST only.
 TEST_BUILDERS = {1: step1_test, 2: step2_test, 3: step3_test, 4: step4_test, 6: step6_test, 8: step8_test}
+#: ``which="test1000"``: a fixed subset of the whole TEST split (step 3 only, spec 2026-11-21).
+SUBSET_BUILDERS = {3: step3_test1000}
+WHICHES = ("sample", "test", "test1000")
 
 
 def _name(step: int, which: str) -> str:
-    if which not in ("sample", "test"):
-        raise ValueError(f"which must be 'sample' or 'test', not {which!r}")
-    return f"step{step}" if which == "sample" else f"step{step}_test"
+    if which not in WHICHES:
+        raise ValueError(f"which must be one of {WHICHES}, not {which!r}")
+    return f"step{step}" if which == "sample" else f"step{step}_{which}"
 
 
 def counts(step: int, df: pd.DataFrame) -> dict:
@@ -359,6 +399,10 @@ def save(step: int, df: pd.DataFrame, root: Path | None = None, which: str = "sa
                      "seed": STEP2_SEED, "pool": "per_ct_diagnostic_tasks TEST, any of the 17 items labelled"})
     elif which == "sample":
         meta.update({"seed": SEED, "per_answer": PER_ANSWER})
+    elif step == 3 and which == "test1000":
+        meta.update({"rule": (f"simple random {STEP3_1000_N} of the whole step-3 TEST list (v2 labels, both NIfTIs on "
+                              "the mount) kept to pairs every comparison probe scored"),
+                     "seed": STEP3_1000_SEED, "probes": PROBE_FILES})
     if step == 1 and which == "sample":
         meta["note"] = STEP1_NOTE
     (root / f"{_name(step, which)}.json").write_text(json.dumps(meta, indent=1))
@@ -373,12 +417,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["build"])
     ap.add_argument("--steps", type=int, nargs="+", default=[1, 2, 3, 4])
-    ap.add_argument("--which", choices=["sample", "test"], default="sample")
+    ap.add_argument("--which", choices=list(WHICHES), default="sample")
     ap.add_argument("--force", action="store_true", help="replace an existing file with a different case set")
     args = ap.parse_args()
     client = _bq()
     for s in args.steps:
-        df = (BUILDERS if args.which == "sample" else TEST_BUILDERS)[s](client)
+        df = {"sample": BUILDERS, "test": TEST_BUILDERS, "test1000": SUBSET_BUILDERS}[args.which][s](client)
         out = save(s, df, which=args.which, force=args.force)
         print(f"step {s}: {json.dumps(counts(s, df))} -> {out}")
     return 0

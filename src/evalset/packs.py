@@ -157,7 +157,7 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--arms", default=None, help="arms YAML (see evalset.arms); with --variant")
     ap.add_argument("--variant", default=None)
-    ap.add_argument("--which", choices=["sample", "test"], default="sample")
+    ap.add_argument("--which", choices=list(samples.WHICHES), default="sample")
     args = ap.parse_args()
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     from evalset.run import recipe_for

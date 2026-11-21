@@ -10,7 +10,7 @@
 # Env: RECIPE (medgemma | astra), RUN (run name), LIMIT (cases per step; unset = the whole sample),
 # STEPS (default "1 2 3 4"), QUESTIONS (space-separated question ids; default all), MAX_SPEND (USD cap, Astra), VISTA_VENV (default .venv for medgemma, .venv-api
 # for astra), CUDA_VISIBLE_DEVICES (MedGemma's GPU, default 0), EVALSET_MOUNT_ROOT (default weill's).
-# WHICH: 'sample' (default) or 'test' (the step's whole TEST split; its own go per run).
+# WHICH: 'sample' (default), 'test' (the step's whole TEST split) or 'test1000' (step 3's fixed 1,000); its own go per run.
 # ARMS + VARIANT: a recipe variant from an arms YAML (src/evalset/arms.py), e.g. ARMS=../configs/evalset/x.yaml.
 # EVALSET_MODEL_CACHE: MedGemma's weights folder (default: the mount's shared cache, slow to read; a local
 # folder that already has the model loads offline, an empty one downloads once with HF_TOKEN set).
