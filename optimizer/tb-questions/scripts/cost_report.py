@@ -62,6 +62,10 @@ def main(argv: list[str]) -> int:
     stop = json.loads(summary_file.read_text()).get("stop") if summary_file else "no run summary"
     mean = total / sessions if sessions else 0.0
     n_train, n_val = len(ad.pools()["train"]), len(ad.pools()["val"])
+    m = re.fullmatch(r"linear\((\d+),\s*(\d+),\s*over=(\d+)\)", str(config.CLIMB_SCHEDULE["train_size"]))
+    a0, a1, over = (int(x) for x in m.groups())
+    # A full round: the schedule's largest TRAIN batch (all of TRAIN for the patient agents; boards 600 of 2,916).
+    n_train = min(n_train, a1)
     round_usd = mean * (n_train + n_val) + config.OPTIMIZER_SESSION_BUDGET_USD
     zero_shot_usd = mean * n_val
     within = round_usd <= config.ROUND_BUDGET_USD
@@ -71,8 +75,6 @@ def main(argv: list[str]) -> int:
     # Rounds that fit in the run cap on the climb's real schedule (TRAIN growing, VAL whole), ignoring retirement
     # (which only shrinks TRAIN, so this is a floor). Fewer than MIN_ROUNDS means the dollar cap, not the no-new-best
     # rule, would likely end the climb: that changes what it can conclude, so it needs Phil's go (hand-off 3).
-    m = re.fullmatch(r"linear\((\d+),\s*(\d+),\s*over=(\d+)\)", str(config.CLIMB_SCHEDULE["train_size"]))
-    a0, a1, over = (int(x) for x in m.groups())
     spent, fit = 0.0, 0
     for k in range(1, config.CLIMB_ITERATIONS + 1):
         t = min(a1, round(a0 + (a1 - a0) * (k - 1) / (over - 1)))

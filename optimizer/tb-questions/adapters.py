@@ -42,8 +42,8 @@ from engine.schemas import (
 )
 
 import worker as worker_module
-from config import (CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, METRIC_NAME, QUESTIONS, RECORD, RECORD_PATIENTS,
-                    SUMMARY_PATIENTS, TASK_NAME)
+from config import (BOARDS, CLIMB_KEYS, CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, METRIC_NAME, QUESTIONS, RECORD,
+                    RECORD_PATIENTS, SUMMARY_PATIENTS, TASK_NAME)
 
 #: TEST: built only on Phil's go (2026-11-16) by build_data.py test; until then reading it fails. Never scheduled.
 SPLITS = ("train", "val", "test")
@@ -82,8 +82,19 @@ def asked_of(pid: str) -> list[str]:
 
 def patient_dir(pid: str) -> Path:
     """The patient's own inputs folder: summary.txt (treatment; the record agent reads the treatment agent's copy) or
-    the CT pair (imaging). The record agent's record folder is ``record_dir``."""
+    the CT pair (imaging). The record agent's record folder is ``record_dir``. Boards: the board's record folder (no
+    summary)."""
+    if BOARDS:
+        return record_dir(pid)
     return (SUMMARY_PATIENTS if RECORD else DATA_DIR / "patients") / pid
+
+
+@lru_cache(maxsize=None)
+def read_strata() -> dict[str, dict]:
+    """Boards: {id: {"patient": hash, "first_board": bool, "already_treated": bool}} for TRAIN + VAL (TEST's are in
+    the private folder until the TEST look). Subgroup tables and the patient-level bootstrap; never staged."""
+    path = DATA_DIR / "strata.jsonl"
+    return {r["id"]: r for r in map(json.loads, path.read_text(encoding="utf-8").splitlines()) if r}
 
 
 def record_dir(pid: str) -> Path:
@@ -393,7 +404,8 @@ class TaskScorer:
 
     def score_answers(self, gold: dict, answers: dict, task_config: dict, split: str) -> ScoreResult:
         per = question_scores(gold, answers)
-        live = [q["auroc"] for q in per.values() if q["asked"]]
+        # The climb's number: the mean over CLIMB_KEYS (boards: T1, T2, T3; T3b and T4 too small, Phil 2026-11-22).
+        live = [q["auroc"] for k, q in per.items() if q["asked"] and k in CLIMB_KEYS]
         value = sum(live) / len(live) if live else 0.0
         for q in per.values():  # rounded for reading only, after the score is taken
             q["auroc"] = round(q["auroc"], 4)
@@ -439,11 +451,20 @@ def _copy_over(src: Path, dest: Path) -> None:
     shutil.copy2(src, dest)
 
 
+#: Boards: a mistake's record is copied for the optimizer whole unless its notes are over this size; then the two
+#: notes files are left out (the session's transcript still shows what it read). Build 2026-11-22.
+FEEDBACK_NOTES_MAX_BYTES = 2_000_000
+
+
 def patient_files(pid: str) -> list[tuple[Path, str]]:
     """Every input file of one patient and its flat name in the optimizer's feedback folder: summary.txt, or
-    prior/ct.npz -> prior-ct.npz, current/meta.json -> current-meta.json."""
+    prior/ct.npz -> prior-ct.npz, current/meta.json -> current-meta.json. Boards: the record's files, without
+    notes.txt and note.parquet when notes.txt is over FEEDBACK_NOTES_MAX_BYTES."""
     root = patient_dir(pid)
-    return [(f, "-".join(f.relative_to(root).parts)) for f in sorted(root.rglob("*")) if f.is_file()]
+    files = [f for f in sorted(root.rglob("*")) if f.is_file()]
+    if BOARDS and (root / "notes.txt").is_file() and (root / "notes.txt").stat().st_size > FEEDBACK_NOTES_MAX_BYTES:
+        files = [f for f in files if f.name not in ("notes.txt", "note.parquet")]
+    return [(f, "-".join(f.relative_to(root).parts)) for f in files]
 
 
 def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult], MistakeCorpus]:

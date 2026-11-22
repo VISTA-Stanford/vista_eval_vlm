@@ -40,7 +40,7 @@ SAMPLES = Path("/mnt/su-vista-uscentral1/vistabench/vlm/evalset_v1/samples")
 CARDS_SRC = Path.home() / "code" / "vista_eval_vlm-tb-cards" / "src"
 #: What the build printed (2026-11-20): pool sizes per agent.
 SIZES = {"treatment": {"train": 492, "val": 111}, "imaging": {"train": 188, "val": 100},
-         "treatment-record": {"train": 492, "val": 111}}
+         "treatment-record": {"train": 492, "val": 111}, "boards-record": {"train": 2916, "val": 637}}
 
 
 def cmd_check() -> int:
@@ -66,27 +66,34 @@ def cmd_check() -> int:
     # 1. staging
     rows = {r["id"]: r for r in ad.read_split("val")}
     pid = next(i for i in sorted(ad.pools()["val"])
-               if config.TREATMENT or (ad.patient_dir(i) / "current" / "meta.json").is_file())
-    want = (["summary.txt"] if config.TREATMENT else
+               if config.TREATMENT or config.BOARDS or (ad.patient_dir(i) / "current" / "meta.json").is_file())
+    want = (["summary.txt"] if config.TREATMENT else [] if config.BOARDS else
             ["ct/current/ct.npz", "ct/current/meta.json", "ct/prior/ct.npz", "ct/prior/meta.json"])
-    with tempfile.TemporaryDirectory() as tmp:
+    have_records = not config.BOARDS or ad.record_dir(pid).is_dir()
+    if not have_records:
+        report("staging (skipped: no board records exported on this machine yet; build_data.py record-export)", True)
+    elif config.BOARDS:
+        got, same, readonly = [], True, True
+    else:
+      with tempfile.TemporaryDirectory() as tmp:
         spec.stage(Call(pid, {"id": pid, "asked": ad.asked(rows[pid])}), Path(tmp), "p0")
         got = sorted(str(p.relative_to(tmp)) for p in Path(tmp).rglob("*") if p.is_file())
         same = all((Path(tmp) / w).read_bytes() == (ad.patient_dir(pid) / w.removeprefix("ct/")).read_bytes() for w in want)
         readonly = all(not ((Path(tmp) / w).stat().st_mode & 0o222) for w in want)
-    if config.RECORD:  # the summary as above, plus record/ (exactly the record folder's files) and the guide
+    if config.HAS_RECORD and have_records:  # the summary (not boards) as above, plus record/ and the guide
         rec_files = sorted(f.name for f in ad.record_dir(pid).iterdir())
         want = sorted(want + [agentic.GUIDE] + [f"{agentic.RECORD}/{n}" for n in rec_files])
         with tempfile.TemporaryDirectory() as tmp:
             spec.stage(Call(pid, {"id": pid, "asked": ad.asked(rows[pid])}), Path(tmp), "p0")
             got = sorted(str(p.relative_to(tmp)) for p in Path(tmp).rglob("*") if p.is_file())
-            src = {"summary.txt": ad.patient_dir(pid) / "summary.txt", agentic.GUIDE: agentic.GUIDE_SRC,
+            src = {"summary.txt": SUMMARY_SRC(ad, pid), agentic.GUIDE: agentic.GUIDE_SRC,
                    **{f"{agentic.RECORD}/{n}": ad.record_dir(pid) / n for n in rec_files}}
             same = got == want and all((Path(tmp) / w).read_bytes() == src[w].read_bytes() for w in want)
             readonly = all(not ((Path(tmp) / w).stat().st_mode & 0o222) for w in want)
-    report("staging copies exactly the patient's inputs, byte for byte, read-only", got == want and same and readonly,
-           f"{len(got)} files")
-    if config.RECORD:
+    if have_records:
+        report("staging copies exactly the patient's inputs, byte for byte, read-only", got == want and same and readonly,
+               f"{len(got)} files")
+    if config.HAS_RECORD and have_records:
         check_record(report, spec)
 
     check_scorer(report)
@@ -108,6 +115,10 @@ def cmd_check() -> int:
     print("--- end ---\n")
     print("ALL PASS" if not bad else f"{bad} FAILED")
     return 1 if bad else 0
+
+
+def SUMMARY_SRC(ad, pid):  # noqa: N802 - the summary a record-arm session gets (boards: none staged)
+    return ad.patient_dir(pid) / "summary.txt"
 
 
 def check_record(report, spec) -> None:
@@ -165,7 +176,7 @@ def check_record(report, spec) -> None:
                     parts = line.split(" | ")
                     t = pd.to_datetime(parts[1].strip()[:10], errors="coerce") if len(parts) > 2 else pd.NaT
                     late += int(pd.notna(t) and t >= limit)
-    report("every TRAIN and VAL patient has a record folder with meta.json", len(have) == len(ids) and not no_meta,
+    report("every TRAIN and VAL example has a record folder with meta.json", len(have) == len(ids) and not no_meta,
            f"{len(have)} of {len(ids)} folders, {no_meta} without a readable meta.json")
     report("no record holds anything dated after its cutoff (notes and every date column)", late == 0,
            f"{late} late values over {tables_seen} tables")
@@ -282,7 +293,7 @@ def check_scorer(report) -> None:
                 a[q.key] = None
             elif q.options:
                 cs = [c for _k, c, _t in q.options]
-                raw = ([5 if c != g else 60 for c in cs] if n % 3 == 1 else [20] * 5 if n % 3 == 0
+                raw = ([5 if c != g else 60 for c in cs] if n % 3 == 1 else [20] * len(cs) if n % 3 == 0
                        else [r2.randint(0, 9) + 1 for _ in cs])
                 a[q.key] = {str(c): v / sum(raw) for c, v in zip(cs, raw)}
             else:
@@ -295,15 +306,15 @@ def check_scorer(report) -> None:
         ids = [i for i in pool if rows[i].get(q.key) is not None]
         if q.options:
             cs = [c for _k, c, _t in q.options]
-            pr = lambda i, c: 0.2 if answers[i]["error"] else answers[i][q.key][str(c)]  # noqa: E731
+            pr = lambda i, c, cs=cs: 1 / len(cs) if answers[i]["error"] else answers[i][q.key][str(c)]  # noqa: E731
             sk = [roc_auc_score([int(rows[i][q.key] == c) for i in ids], [pr(i, c) for i in ids]) for c in cs
                   if 0 < sum(rows[i][q.key] == c for i in ids) < len(ids)]
             per[q.key] = sum(sk) / len(sk)
         else:
             per[q.key] = roc_auc_score([rows[i][q.key] for i in ids],
                                        [0.5 if answers[i]["error"] else answers[i][q.key] for i in ids])
-    want = sum(per.values()) / len(per)
-    report("task score on VAL == mean over the questions of sklearn's AUROC (failures as no information)",
+    want = sum(v for k, v in per.items() if k in config.CLIMB_KEYS) / len(config.CLIMB_KEYS)
+    report(f"task score on VAL == mean over {list(config.CLIMB_KEYS)} of sklearn's AUROC (failures as no information)",
            abs(score.primary_metric.value - want) < 1e-9, f"{score.primary_metric.value:.4f} vs {want:.4f}; "
            + " ".join(f"{k}={v:.3f}" for k, v in per.items()))
     asked_ok = all(score.breakdown[q.key]["asked"] == sum(rows[i].get(q.key) is not None for i in pool)
@@ -324,7 +335,7 @@ def check_scorer(report) -> None:
         good = lambda i: i[-1] != "f" and int(i[-1], 16) % 2 == 0  # noqa: E731
         if q.options:
             cs = [c for _k, c, _t in q.options]
-            pr = lambda i, c: (0.8 if rows[i][q.key] == c else 0.05) if good(i) else 0.2  # noqa: E731
+            pr = lambda i, c, cs=cs: (0.8 if rows[i][q.key] == c else 0.05) if good(i) else 1 / len(cs)  # noqa: E731
             sk = [roc_auc_score([int(rows[i][q.key] == c) for i in ids], [pr(i, c) for i in ids]) for c in cs
                   if 0 < sum(rows[i][q.key] == c for i in ids) < len(ids)]
             exp[q.key] = sum(sk) / len(sk)
@@ -333,13 +344,15 @@ def check_scorer(report) -> None:
                                        [(0.8 if rows[i][q.key] == 1 else 0.2) if good(i) else
                                         (0.5 if i[-1] == "f" else 0.3) for i in ids])
     report("the dry run's stand-in scores what sklearn says it should", abs(s.primary_metric.value
-           - sum(exp.values()) / len(exp)) < 1e-9, f"{s.primary_metric.value:.4f}")
+           - sum(v for k, v in exp.items() if k in config.CLIMB_KEYS) / len(config.CLIMB_KEYS)) < 1e-9,
+           f"{s.primary_metric.value:.4f}")
 
     # 2e. per-example right and the mistakes file, on TRAIN patients answered 99% on the first option / yes
     from engine.schemas import ArtifactRef, RunArtifacts
 
     trows = {r["id"]: r for r in ad.read_split("train")}
-    train = sorted(i for i in ad.pools()["train"] if len(ad.asked(trows[i])) > 1)[:2] + sorted(ad.pools()["train"])[:6]
+    train = list(dict.fromkeys(sorted(i for i in ad.pools()["train"] if len(ad.asked(trows[i])) > 1)[:2]
+                               + sorted(ad.pools()["train"])[:6]))
 
     def first(q):
         if q.options:
@@ -356,8 +369,7 @@ def check_scorer(report) -> None:
         tscore = ad.TaskScorer().score(arts, "train", {"_iter": 1})
         corpus = ad.mistake_corpus(Path(tmp) / "fb")(arts, tscore)
         entries = json.loads(Path(corpus.ref).read_text())
-        n_files = 1 if config.TREATMENT else 4
-        copied = all(len(e["input_files"]) == (n_files if e["mistake"] else 0)
+        copied = all(len(e["input_files"]) == (len(ad.patient_files(e["id"])) if e["mistake"] else 0)
                      and all(Path(c).is_file() for c in e["input_files"]) for e in entries)
 
     def wrong(i, q):
@@ -366,7 +378,7 @@ def check_scorer(report) -> None:
     good = all(set(e["wrong_at"]) == {q.key for q in config.QUESTIONS if trows[e["id"]].get(q.key) is not None
                                       and wrong(e["id"], q)}
                and e["mistake"] == bool(e["wrong_at"]) and e["asked"] == ad.asked(trows[e["id"]])
-               and all((e["tumor_board_answer"][k] in "ABCDE") if ad.QUESTION[k].options else
+               and all((e["tumor_board_answer"][k] in [x for x, _c, _t in ad.QUESTION[k].options]) if ad.QUESTION[k].options else
                        e["tumor_board_answer"][k] == trows[e["id"]][k] for k in e["asked"])
                for e in entries)
     right_ok = correct == {e["id"]: not e["wrong_at"] for e in entries}
@@ -384,7 +396,31 @@ def check_output(report, spec) -> None:
     import agentic
 
     rows = ad.read_split("val")
-    if config.TREATMENT:
+    if config.BOARDS:
+        two = next(r for r in rows if ad.asked(r) == ["decision_type", "intent"])
+        three = next(r for r in rows if "early_stage_plan" in ad.asked(r))
+        L9, L5, L8 = "ABCDEFGHI", "ABCDE", "ABCDEFGH"
+        D = {k: 10 for k in L9}
+        D["A"] = 20
+        Iu = dict.fromkeys(L5, 20)
+        E = dict.fromkeys(L8, 10)
+        E["H"] = 30
+        dw = {str(c): (0.2 if c == 0 else 0.1) for c in range(9)}
+        iw = {str(c): 0.2 for c in range(5)}
+        ew = {str(c): (0.3 if c == 7 else 0.1) for c in range(8)}
+        cases = [
+            (two, {"decision_type": D, "intent": Iu}, {"decision_type": dw, "intent": iw}, None),
+            (two, {"decision_type": {**D, "a": 20}, "intent": Iu}, {"decision_type": dw}, None),  # lower case ok
+            (two, {"decision_type": {k: v for k, v in D.items() if k != "I"}, "intent": Iu}, None, "not_a_probability"),
+            (two, {"decision_type": D}, None, "not_a_probability"),  # intent asked but missing
+            (two, {"decision_type": D, "intent": {**Iu, "C": 101}}, None, "not_a_probability"),
+            (three, {"decision_type": D, "intent": Iu, "early_stage_plan": E},
+             {"decision_type": dw, "intent": iw, "early_stage_plan": ew}, None),
+            (three, {"decision_type": D, "intent": Iu, "early_stage_plan": dict.fromkeys(L5, 20)}, None,
+             "not_a_probability"),  # only the old five letters: F-H missing
+            (three, {"decision_type": D, "intent": Iu}, None, "not_a_probability"),
+        ]
+    elif config.TREATMENT:
         one = next(r for r in rows if ad.asked(r) == ["early_stage_plan"])
         both = next((r for r in rows if len(ad.asked(r)) == 2), None)
         A = {"A": 10, "B": 20, "C": 30, "D": 20, "E": 20}
@@ -466,12 +502,24 @@ def check_pools(report) -> None:
                for s in ("train", "val")), f"{len(pools['train'])} / {len(pools['val'])}")
     id_map = [json.loads(x) for x in (config.ID_MAP_DIR / "id_map.jsonl").read_text().splitlines() if x]
     by = {s: [m for m in id_map if m["split"] == s] for s in ("train", "val")}
-    one_each = all(len({m["person_id"] for m in by[s]}) == len(by[s]) == len(pools[s])
+    key = (lambda m: (m["person_id"], m["board_date"])) if config.BOARDS else (lambda m: m["person_id"])
+    one_each = all(len({key(m) for m in by[s]}) == len(by[s]) == len(pools[s])
                    and {m["id"] for m in by[s]} == pools[s] for s in ("train", "val"))
     disjoint = not ({m["person_id"] for m in by["train"]} & {m["person_id"] for m in by["val"]})
-    report("one row per patient in each pool, and no patient in both TRAIN and VAL", one_each and disjoint)
-    test_file = "step6_test.parquet" if config.TREATMENT else "step4_test.parquet"
-    test = set(pd.read_parquet(SAMPLES / test_file, columns=["person_id"])["person_id"].astype(int))
+    report(f"one row per {'tumor board encounter' if config.BOARDS else 'patient'} in each pool, and no patient in both "
+           "TRAIN and VAL", one_each and disjoint)
+    if config.BOARDS:
+        strata = ad.read_strata()
+        report("every pool example has its subgroup facts; patient hashes agree with the id map",
+               set(strata) == pools["train"] | pools["val"] and
+               len({strata[m["id"]]["patient"] for m in id_map}) == len({m["person_id"] for m in id_map}))
+        import datetime as _dt
+        report("every cutoff is 7 days before its tumor board",
+               all(_dt.date.fromisoformat(m["board_date"]) - _dt.date.fromisoformat(m["cutoff"]) == _dt.timedelta(days=7)
+                   for m in id_map))
+    test_file = "step6_test.parquet" if config.TREATMENT else "id_map_test.jsonl" if config.BOARDS else "step4_test.parquet"
+    test = ({int(json.loads(x)["person_id"]) for x in (config.ID_MAP_DIR / test_file).read_text().splitlines() if x}
+            if config.BOARDS else set(pd.read_parquet(SAMPLES / test_file, columns=["person_id"])["person_id"].astype(int)))
     overlap = len(test & {int(m["person_id"]) for m in id_map})
     report(f"none of the TEST list's patients ({test_file}) in TRAIN or VAL", len(test) > 0 and overlap == 0,
            f"{len(test)} TEST patients, {overlap} in the pools")
@@ -483,7 +531,7 @@ def check_pools(report) -> None:
         have = sum((ad.patient_dir(i) / "summary.txt").is_file() and (ad.patient_dir(i) / "summary.txt").stat().st_size > 50
                    for s in ("train", "val") for i in pools[s])
         report("every pool patient has a non-empty summary", have == sum(want.values()), f"{have} of {sum(want.values())}")
-    else:
+    elif not config.BOARDS:
         yes = {s: sum(r["progression"] for r in ad.read_split(s)) for s in ("train", "val")}
         tot = sum(yes.values())
         n = sum(want.values())
@@ -566,7 +614,9 @@ def check_wording(report) -> None:
     "board" without "tumor" (Phil 2026-11-20)."""
     import config
 
-    if (CARDS_SRC / "evalset" / "cards" / "board_questions.py").is_file():
+    if config.BOARDS:
+        report("question text: the boards questions are new (no eval-set card yet); options from board_options.py", True)
+    elif (CARDS_SRC / "evalset" / "cards" / "board_questions.py").is_file():
         sys.path.insert(0, str(CARDS_SRC))
         try:
             from evalset.cards import base, board, board_questions as bq  # noqa: PLC0415
@@ -585,12 +635,16 @@ def check_wording(report) -> None:
     files = [config.SEED_PROGRAM_DIR / "instructions.md", config.TASK_BRIEF, config.OPTIMIZER_INSTRUCTIONS,
              HERE / "agentic.py", HERE / "optimizer_prompt.py"]
     bare = re.compile(r"(?<!tumor )\bboards?\b", re.IGNORECASE)
-    hits = {f.name: len(bare.findall(re.sub(r"\s+", " ", f.read_text()))) for f in files}  # "tumor" may end a line
+    def text(f):  # code names (BOARDS, boards-record, record_guide_boards) are not prose
+        t = re.sub(r"\bBOARDS?\b|boards-record|record_guide_boards", "", f.read_text())
+        return re.sub(r"\s+", " ", t)  # "tumor" may end a line
+    hits = {f.name: len(bare.findall(text(f))) for f in files}
     report('no bare "board" in the seed, the briefs, the wrapper or the optimizer prompt (always "tumor board")',
            not any(hits.values()), str({k: v for k, v in hits.items() if v}))
     seed = (config.SEED_PROGRAM_DIR / "instructions.md").read_text()
     quoted = all(q.text in seed for q in config.QUESTIONS) and (
-        config.SUMMARY_OPENING in seed if config.TREATMENT else config.IMAGING_OPENING in seed)
+        config.SUMMARY_OPENING in seed if config.TREATMENT else config.BOARDS_OPENING in seed if config.BOARDS
+        else config.IMAGING_OPENING in seed)
     report("the seed instructions quote the opening and every question word for word", quoted)
 
 

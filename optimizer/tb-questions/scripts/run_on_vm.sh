@@ -18,26 +18,30 @@
 # /mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7-runs/<host>/<agent>/<run id>/ after every stop.
 set -euo pipefail
 
-: "${TB_AGENT:?set TB_AGENT=treatment, imaging or treatment-record}"
+: "${TB_AGENT:?set TB_AGENT=treatment, imaging, treatment-record or boards-record}"
 export TB_AGENT
+export TB_MODEL=${TB_MODEL:-sonnet}  # boards only: sonnet or haiku (config.TB_MODEL)
+LABEL=$TB_AGENT$([ "$TB_MODEL" = haiku ] && echo -haiku || true)  # config.RUN_LABEL: work folder, images, results
 export ALO_ROUTE=${ALO_ROUTE:-vertex}  # the spec's route
 BRANCH=feat/tb-agent-questions
 [ "$TB_AGENT" != treatment-record ] || BRANCH=feat/tb-treatment-record  # the full-record arm's branch (spec 2026-11-21)
+[ "$TB_AGENT" != boards-record ] || BRANCH=feat/tb-board-questions  # the board questions agent (spec 2026-11-22)
 VLM=${VLM_REPO:-$HOME/code/vista_eval_vlm}
 TASK_WT=${TASK_WT:-$HOME/code/vista_eval_vlm-tb-questions-run}
 [ "$TB_AGENT" != treatment-record ] || TASK_WT=${TASK_WT_RECORD:-$HOME/code/vista_eval_vlm-tb-record-run}  # its own checkout: the summary runs keep theirs
+[ "$TB_AGENT" != boards-record ] || TASK_WT=${TASK_WT_BOARDS:-$HOME/code/vista_eval_vlm-tb-boards-run}
 TASK_DIR=$TASK_WT/optimizer/tb-questions
 ENGINE=$HOME/code/agentic-label-opt
 ENGINE_WT=$ENGINE/.claude/worktrees/mortality-engine
 DATA=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7/$TB_AGENT
 RESULTS_ROOT=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7-runs
 RUN_ID=${RUN_ID:-r1}
-ITERATIONS=${ITERATIONS:-10}  # spec; the stop rule usually ends it sooner
+ITERATIONS=${ITERATIONS:-$([ "$TB_AGENT" = boards-record ] && echo 8 || echo 10)}  # specs; the stop rule usually ends it sooner
 MAX_RESUMES=${MAX_RESUMES:-20}
 if [ "$TB_AGENT" != imaging ]; then export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-4}; else export PROGRAM_MAX_CONCURRENT=${PROGRAM_MAX_CONCURRENT:-2}; fi
 export AGENTIC_LABEL_OPT=$ENGINE_WT
-export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/tb-questions-$TB_AGENT}  # config.WORKDIR's default
-RESULTS=$RESULTS_ROOT/$(hostname)/$TB_AGENT/$RUN_ID
+export TASK_WORKDIR=${TASK_WORKDIR:-$HOME/.cache/alo-tasks/tb-questions-$LABEL}  # config.WORKDIR's default
+RESULTS=$RESULTS_ROOT/$(hostname)/$LABEL/$RUN_ID
 LOG=$TASK_WORKDIR/$RUN_ID-run.log
 
 fail() { echo "SETUP FAIL: $*"; exit 1; }
@@ -75,8 +79,9 @@ echo "host $(hostname)"
 command -v uv >/dev/null || fail "uv is not installed"
 docker info >/dev/null 2>&1 || fail "Docker is not running or this user cannot use it"
 [ -f "$DATA/pools.json" ] || fail "the data is not readable at $DATA (is the su-vista-uscentral1 mount here?)"
-if [ "$TB_AGENT" = treatment-record ]; then  # the record's patient folders are local (build_data.py record-export)
-    [ -d "${TASK_RECORD_DIR:-$HOME/data/tb-questions-treatment-record}/patients" ] || fail "no record folders at ${TASK_RECORD_DIR:-$HOME/data/tb-questions-treatment-record}/patients: run build_data.py record-export on this machine"
+if [ "$TB_AGENT" = treatment-record ] || [ "$TB_AGENT" = boards-record ]; then  # the record folders are local (build_data.py record-export)
+    REC=${TASK_RECORD_DIR:-$HOME/data/tb-questions-${TB_AGENT%-record}-record}
+    [ -d "$REC/patients" ] || fail "no record folders at $REC/patients: run build_data.py record-export on this machine"
 fi
 if [ "$ALO_ROUTE" = vertex ]; then
     LOGIN=/home/optimizer/.config/gcloud/application_default_credentials.json
@@ -116,6 +121,8 @@ echo "task $(git -C "$TASK_WT" rev-parse --short HEAD), engine $(git -C "$ENGINE
 for pid in $(pgrep -f "run.py run --run-id" || true); do
     tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -qx run.py || continue  # run.py as its own argument
     [ "$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^TB_AGENT=//p')" = "$TB_AGENT" ] || continue
+    pm=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^TB_MODEL=//p')
+    [ "${pm:-sonnet}" = "$TB_MODEL" ] || continue  # the Sonnet and Haiku arms have their own images
     case "$(readlink "/proc/$pid/cwd" 2>/dev/null)" in */optimizer/tb-questions) fail "a tb-questions $TB_AGENT run is live here (pid $pid); setup would rebuild its image";; esac
 done
 alo build-images >/dev/null || fail "build-images"
@@ -131,7 +138,7 @@ echo "$out" | grep -E "^(FINISHED|STOPPED)" || true
 if [ -n "${SETUP_ONLY:-}" ]; then echo "SETUP PASS (SETUP_ONLY: zero-shot pass and run not started)"; exit 0; fi
 
 # The zero-shot VAL pass (spec, Done when), unless one for this agent is already on the mount (from any host).
-done_zs=$(ls "$RESULTS_ROOT"/*/"$TB_AGENT"/zero-shot/zero_shot_val.json 2>/dev/null | head -1 || true)
+done_zs=$(ls "$RESULTS_ROOT"/*/"$LABEL"/zero-shot/zero_shot_val.json 2>/dev/null | head -1 || true)
 if [ -n "${SKIP_ZERO_SHOT:-}" ]; then
     echo "zero-shot pass skipped (SKIP_ZERO_SHOT)"
 elif [ -n "$done_zs" ]; then
@@ -146,5 +153,5 @@ else
 fi
 mkdir -p "$TASK_WORKDIR"
 cp "$TASK_DIR/scripts/run_on_vm.sh" "$TASK_WORKDIR/run_on_vm.sh"
-setsid nohup env TB_AGENT="$TB_AGENT" ALO_ROUTE="$ALO_ROUTE" RUN_ID="$RUN_ID" ITERATIONS="$ITERATIONS" MAX_RESUMES="$MAX_RESUMES" START="${START:-}" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
+setsid nohup env TB_AGENT="$TB_AGENT" TB_MODEL="$TB_MODEL" ALO_ROUTE="$ALO_ROUTE" RUN_ID="$RUN_ID" ITERATIONS="$ITERATIONS" MAX_RESUMES="$MAX_RESUMES" START="${START:-}" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
 echo "SETUP PASS: run $RUN_ID started detached ($PROGRAM_MAX_CONCURRENT at a time); log $LOG; results to $RESULTS"

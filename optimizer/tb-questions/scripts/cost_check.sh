@@ -7,30 +7,33 @@
 #
 #   TB_AGENT=treatment bash optimizer/tb-questions/scripts/cost_check.sh
 #   TB_AGENT=imaging bash optimizer/tb-questions/scripts/cost_check.sh
+#   TB_AGENT=boards-record [TB_MODEL=haiku] bash optimizer/tb-questions/scripts/cost_check.sh   (10 boards each side)
 #
 # Then the engine's after-run audit (scripts/audit_vertex_run.py) over the throwaway folder: no session command naming
 # the credential, gcloud, bq, BigQuery, storage or a non-model Vertex request, and no refused or unexpected host in the
 # saved network logs. Pass: it ends "PASS: ...", and the verdict and audit.txt are on the mount at
 # tb-questions-v1_7-runs/<host>/<agent>/costcheck-<stamp>/.
 set -euo pipefail
-: "${TB_AGENT:?set TB_AGENT=treatment, imaging or treatment-record}"
+: "${TB_AGENT:?set TB_AGENT=treatment, imaging, treatment-record or boards-record}"
 export TB_AGENT
+export TB_MODEL=${TB_MODEL:-sonnet}
+LABEL=$TB_AGENT$([ "$TB_MODEL" = haiku ] && echo -haiku || true)  # config.RUN_LABEL
 export ALO_ROUTE=${ALO_ROUTE:-vertex}
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ENGINE=${AGENTIC_LABEL_OPT:-$HOME/code/agentic-label-opt/.claude/worktrees/mortality-engine}
 STAMP=$(date +%m%d-%H%M)
 export AGENTIC_LABEL_OPT=$ENGINE
-export TASK_WORKDIR=$HOME/.cache/alo-tasks/tb-questions-$TB_AGENT-costcheck-$STAMP
+export TASK_WORKDIR=$HOME/.cache/alo-tasks/tb-questions-$LABEL-costcheck-$STAMP
 # COST_N patients each side: 5 by default, 10 for the record agent (its spec: a cost check of about 20 patients).
-COST_N=${COST_N:-$([ "$TB_AGENT" = treatment-record ] && echo 10 || echo 5)}
+COST_N=${COST_N:-$(case "$TB_AGENT" in treatment-record|boards-record) echo 10;; *) echo 5;; esac)}  # boards: spec 10
 export TASK_SCHEDULE="{\"train_size\": \"constant($COST_N)\", \"val_size\": \"constant($COST_N)\"}"
 export ITERATIONS=1
-OUT=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7-runs/$(hostname)/$TB_AGENT/costcheck-$STAMP
+OUT=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7-runs/$(hostname)/$LABEL/costcheck-$STAMP
 PIN=$(sed -n 's/^ENGINE_PIN = "\([0-9a-f]\{40\}\)".*/\1/p' "$HERE/config.py")
 [ "$(git -C "$ENGINE" rev-parse HEAD)" = "$PIN" ] || { echo "FAIL: engine at $ENGINE is not at the pin $PIN"; exit 1; }
 cd "$HERE"
 alo() { uv run -q --project "$ENGINE" python run.py "$@"; }
-docker image inspect "alo-tb-questions-$TB_AGENT-optimizer:$(sed -n 's/^CLAUDE_CODE_VERSION = "\([0-9.]*\)".*/\1/p' config.py)" >/dev/null 2>&1 \
+docker image inspect "alo-tb-questions-$LABEL-optimizer:$(sed -n 's/^CLAUDE_CODE_VERSION = "\([0-9.]*\)".*/\1/p' config.py)" >/dev/null 2>&1 \
     || alo build-images >/dev/null
 alo init
 alo pins --write | tail -1
@@ -42,7 +45,7 @@ audit=0
 python3 -I "$ENGINE/scripts/audit_vertex_run.py" "$TASK_WORKDIR" --route "$ALO_ROUTE" --skip private/archive \
     ${AUDIT_PRINCIPAL:+--principal "$AUDIT_PRINCIPAL"} | tee "$OUT/audit.txt" || audit=$?
 if [ "$report" -eq 0 ] && [ "$audit" -eq 0 ]; then
-    echo "PASS: the cost check and the after-run audit both passed ($TB_AGENT, route $ALO_ROUTE)"
+    echo "PASS: the cost check and the after-run audit both passed ($LABEL, route $ALO_ROUTE)"
 else
     echo "FAIL: cost check exit $report, after-run audit exit $audit (0 pass, 1 found something, 2 incomplete); see above"
     exit 1

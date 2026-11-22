@@ -665,6 +665,9 @@ def _metrics(rows: dict, answers: dict, ids: list[str]) -> dict:
                           "top_pick_balanced_accuracy": sum(recalls) / len(recalls),
                           "top_two": sum(tops) / len(tops), "option_auroc": m["option_auroc"],
                           "n_per_answer": m["n_per_answer"]}
+            if q.key in config.A_TO_E_KEYS:
+                out[q.key]["auroc_a_to_e"] = a_to_e_auroc(q, [rows[i][q.key] for i in sel],
+                                                          [ad.option_probs(answers[i], q.key) for i in sel])
         else:
             ps = {i: ad.prob(answers[i], q.key) for i in sel}
             hit = {i: (not answers[i].get("error")) and ((ps[i] >= 0.5) == (rows[i][q.key] == 1)) for i in sel}
@@ -677,7 +680,40 @@ def _metrics(rows: dict, answers: dict, ids: list[str]) -> dict:
     return out
 
 
-def score_pass(answers: dict, split: str, *, draws: int = 2000, seed: int = 0) -> dict:
+def a_to_e_auroc(q, golds: list[int], probs: list[dict]) -> float | None:
+    """The A-E-only score (Phil 2026-11-22): boards whose answer is one of the old five options, each probability
+    renormalised over A-E (an all-zero A-E answer gets an equal share), mean one-vs-rest AUROC over A-E present."""
+    five = [c for k, c, _t in q.options if k in "ABCDE"]
+    keep = [(g, p) for g, p in zip(golds, probs) if g in five]
+    if not keep:
+        return None
+    norm = []
+    for _g, p in keep:
+        tot = sum(p[c] for c in five)
+        norm.append({c: (p[c] / tot if tot > 0 else 1 / len(five)) for c in five})
+    return ad.option_scores([g for g, _p in keep], norm, five)["auroc"]
+
+
+def bootstrap_ids(ids: list[str], rng) -> list[str]:
+    """One bootstrap draw. Boards: patients are drawn with replacement and each brings all its boards (a patient's
+    boards are not independent); other agents: ids are patients already."""
+    if not config.BOARDS:
+        return [rng.choice(ids) for _ in ids]
+    strata = ad.read_strata()
+    by: dict[str, list[str]] = {}
+    for i in ids:
+        by.setdefault(strata[i]["patient"], []).append(i)
+    groups = list(by.values())
+    return [i for _ in groups for i in rng.choice(groups)]
+
+
+#: Boards: the subgroups reported beside the whole table (spec Done when): first vs later board, already treated vs
+#: untreated.
+SUBGROUPS = (("first_board", True, "first boards"), ("first_board", False, "later boards"),
+             ("already_treated", True, "already treated"), ("already_treated", False, "untreated"))
+
+
+def score_pass(answers: dict, split: str, *, draws: int = 2000, seed: int = 0, subgroups: bool = True) -> dict:
     """The zero-shot (or any pass's) table: per question the point values and a 95% patient-bootstrap interval for
     AUROC, top-pick balanced accuracy and top two, failures, and the same numbers for an always-the-most-common-answer
     row (each question's most common TRAIN answer at 100, every other option 0; yes/no: one number for everyone), which
@@ -690,7 +726,7 @@ def score_pass(answers: dict, split: str, *, draws: int = 2000, seed: int = 0) -
         raise SystemExit("answers for patients not in this split")
     point = _metrics(rows, answers, ids)
     rng = random.Random(seed)
-    boots = [_metrics(rows, answers, [rng.choice(ids) for _ in ids]) for _ in range(draws)]
+    boots = [_metrics(rows, answers, bootstrap_ids(ids, rng)) for _ in range(draws)]
     train = ad.read_split("train")
     common = {}
     for q in config.QUESTIONS:
@@ -703,7 +739,7 @@ def score_pass(answers: dict, split: str, *, draws: int = 2000, seed: int = 0) -
     table = {}
     for key, m in point.items():
         row = {"n": m["n"], "failed": sum(1 for i in ids if rows[i].get(key) is not None and answers[i].get("error"))}
-        for k in ("auroc", "auroc_readable_only", "top_pick_balanced_accuracy", "top_two", "balanced_accuracy"):
+        for k in ("auroc", "auroc_readable_only", "auroc_a_to_e", "top_pick_balanced_accuracy", "top_two", "balanced_accuracy"):
             if m.get(k) is None:
                 continue
             vals = sorted(b[key][k] for b in boots if key in b and b[key].get(k) is not None)
@@ -716,11 +752,27 @@ def score_pass(answers: dict, split: str, *, draws: int = 2000, seed: int = 0) -
                                      if k in ("auroc", "top_pick_balanced_accuracy", "top_two", "balanced_accuracy")}
         row["chance_balanced_accuracy"] = (round(1 / sum(v > 0 for v in m["n_per_answer"].values()), 4)
                                            if "n_per_answer" in m else 0.5)
+        if key in config.SMALL_KEYS:
+            row["flag"] = "too small to read alone (Phil 2026-11-22)"
         table[key] = row
-    live = [r["auroc"] for r in table.values()]
-    return {"agent": config.AGENT, "split": split, "patients": len(ids),
-            "failed": sum(1 for i in ids if answers[i].get("error")), "climb_score": round(sum(live) / len(live), 4),
-            "bootstrap_draws": draws, "questions": table}
+    live = [r["auroc"] for k, r in table.items() if k in config.CLIMB_KEYS]
+    out = {"agent": config.RUN_LABEL, "split": split, "patients": len(ids),
+           "failed": sum(1 for i in ids if answers[i].get("error")), "climb_score": round(sum(live) / len(live), 4),
+           "climb_keys": list(config.CLIMB_KEYS), "bootstrap_draws": draws, "questions": table}
+    if config.BOARDS:
+        strata = ad.read_strata()
+        out["bootstrap"] = "patients drawn with replacement, each with all its boards"
+        out["patients"] = len({strata[i]["patient"] for i in ids})
+        out["boards"] = len(ids)
+        if subgroups:
+            out["subgroups"] = {}
+            for field, value, name in SUBGROUPS:
+                sub = {i: answers[i] for i in ids if strata[i][field] is value}
+                if sub:
+                    s = score_pass(sub, split, draws=draws, seed=seed, subgroups=False)
+                    out["subgroups"][name] = {"boards": s["boards"], "patients": s["patients"],
+                                              "climb_score": s["climb_score"], "questions": s["questions"]}
+    return out
 
 
 #: Record mode's stop-and-come-back line (spec 2026-11-21-tb-treatment-full-record.md, Phil 2026-11-21).
@@ -730,10 +782,17 @@ RECORD_ZERO_SHOT_FLOOR = 0.78
 def zero_shot_gate(result: dict) -> str | None:
     """Why the spec says stop and come back, or None. Failures over 10% fail the Done-when; the treatment agent at
     chance on both questions (every 95% interval for AUROC reaches 0.5) stops before any climb (spec, Done when)."""
-    if result["failed"] > 0.10 * result["patients"]:
-        return f"{result['failed']} of {result['patients']} answers failed (over 10%)"
+    n = result.get("boards", result["patients"])  # boards: one answer per tumor board encounter, not per patient
+    if result["failed"] > 0.10 * n:
+        return f"{result['failed']} of {n} answers failed (over 10%)"
     if config.TREATMENT and all(q["auroc_ci"][0] <= 0.5 for q in result["questions"].values()):
         return "the zero-shot treatment agent is at chance on both questions (each AUROC interval reaches 0.5)"
+    if config.BOARDS and config.TB_MODEL == "sonnet":
+        # Spec 2026-11-22: stop if untuned Sonnet is at or below the most common answer on T1 (decision type).
+        t1 = result["questions"]["decision_type"]
+        if t1["auroc"] <= t1["always_most_common"]["auroc"] or (
+                t1["top_pick_balanced_accuracy"] <= t1["always_most_common"]["top_pick_balanced_accuracy"]):
+            return "untuned Sonnet is at or below the most common answer on decision type (T1)"
     if config.RECORD and result["climb_score"] < RECORD_ZERO_SHOT_FLOOR:
         return (f"the summary + record zero-shot scores {result['climb_score']:.3f}, below {RECORD_ZERO_SHOT_FLOOR} (more "
                 f"than 0.03 under the summary-only zero-shot 0.814): the record gets in the way (spec 2026-11-21)")
@@ -749,7 +808,7 @@ def cmd_zero_shot(args) -> int:
     import socket
 
     layout = opt.Layout()
-    out_dir = RESULTS_ROOT / socket.gethostname() / config.AGENT / "zero-shot"
+    out_dir = RESULTS_ROOT / socket.gethostname() / config.RUN_LABEL / "zero-shot"
     if (out_dir / "zero_shot_val.json").exists() and not args.again:
         print(f"already scored: {out_dir / 'zero_shot_val.json'} (pass --again to pay for another pass)")
         return 1

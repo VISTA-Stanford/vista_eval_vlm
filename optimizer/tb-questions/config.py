@@ -27,11 +27,22 @@ HERE = Path(__file__).resolve().parent
 
 #: Which agent this process is. Required: the two agents share code, never a work folder, data folder or image.
 AGENT = os.environ.get("TB_AGENT", "")
-if AGENT not in ("treatment", "imaging", "treatment-record"):
-    raise SystemExit("set TB_AGENT=treatment, imaging or treatment-record")
+if AGENT not in ("treatment", "imaging", "treatment-record", "boards-record"):
+    raise SystemExit("set TB_AGENT=treatment, imaging, treatment-record or boards-record")
 #: The treatment questions (summary only, or summary + record). RECORD: the full-record arm.
 TREATMENT = AGENT in ("treatment", "treatment-record")
 RECORD = AGENT == "treatment-record"
+#: BOARDS: one session per tumor board (not per patient), the record cut 7 days before that board, no summary; each
+#: board's routed questions (spec planning/vista_eval_vlm/2026-11-22-tb-board-questions-agent.md, Approved 2026-11-22).
+BOARDS = AGENT == "boards-record"
+#: Either record mode: a record/ folder is staged and its local export is forbidden to the optimizer.
+HAS_RECORD = RECORD or BOARDS
+#: Boards only: which model answers (spec: Sonnet and Haiku arms, same data). Names the work folder, images and
+#: results folder (``RUN_LABEL``), never the data folder.
+TB_MODEL = os.environ.get("TB_MODEL", "sonnet")
+if TB_MODEL not in ("sonnet", "haiku") or (TB_MODEL != "sonnet" and not BOARDS):
+    raise SystemExit("TB_MODEL=haiku is for TB_AGENT=boards-record only")
+RUN_LABEL = AGENT + ("-haiku" if TB_MODEL == "haiku" else "")
 # --------------------------------------------------------------------------------------------------
 # Where the engine is. The engine checks that it runs from a git checkout that contains ENGINE_PIN.
 # --------------------------------------------------------------------------------------------------
@@ -47,7 +58,7 @@ if str(ENGINE_ROOT) not in sys.path:
 # --------------------------------------------------------------------------------------------------
 # The task
 # --------------------------------------------------------------------------------------------------
-TASK_NAME = f"tb-questions-{AGENT}"  # names the work folder and images
+TASK_NAME = f"tb-questions-{RUN_LABEL}"  # names the work folder and images
 
 #: Phil's summary opening (11-20), verbatim from the eval-set card (vista_eval_vlm feat/tb-question-cards 1888097,
 #: src/evalset/cards/board_questions.py SUMMARY_OPENING). scripts/check_task.py compares every quoted text here with
@@ -59,21 +70,9 @@ SUMMARY_OPENING = ("You are given a summary of this patient's longitudinal elect
 ANSWER_OPTIONS = "Give each letter a probability from 0 to 100. These probabilities must add up to 100."
 ANSWER_PROB = "Give the probability, from 0 to 100, that the answer is yes. Answer with one whole number."
 
-#: Options: (letter, vista_bench label code, text) in code order, verbatim from the card.
-EARLY_STAGE_OPTIONS = (
-    ("A", 0, "Systemic therapy followed by surgery, with or without adjuvant therapy"),
-    ("B", 1, "Surgery followed by systemic therapy"),
-    ("C", 2, "Surgery alone"),
-    ("D", 3, "Radiation alone"),
-    ("E", 4, "Definitive chemoradiation, with or without adjuvant systemic therapy"),
-)
-SYSTEMIC_OPTIONS = (
-    ("A", 0, "Chemotherapy alone"),
-    ("B", 1, "Chemotherapy with immunotherapy"),
-    ("C", 2, "Chemotherapy with targeted therapy"),
-    ("D", 3, "Targeted therapy alone"),
-    ("E", 4, "Immunotherapy alone"),
-)
+from board_options import *  # noqa: E402,F403  (the option tables: EARLY_STAGE_OPTIONS, ..., BOARD_ANSWER_CODES)
+from board_options import (AFTER_SURGERY_OPTIONS, BOARD_EARLY_OPTIONS, BOARD_FIRST_LINE_OPTIONS,  # noqa: E402
+                           DECISION_OPTIONS, EARLY_STAGE_OPTIONS, INTENT_OPTIONS, SYSTEMIC_OPTIONS)
 
 
 def _options_block(options) -> str:
@@ -117,7 +116,36 @@ IMAGING_QUESTIONS = (
 #: itself; the scans named as the card names them).
 IMAGING_OPENING = ("You are given this patient's most recent chest CT before their thoracic tumor board and the prior "
                    "CT, as two CT volumes: PRIOR and MOST RECENT.")
-QUESTIONS = TREATMENT_QUESTIONS if TREATMENT else IMAGING_QUESTIONS
+
+# --------------------------------------------------------------------------------------------------
+# Boards (TB_AGENT=boards-record): the board questions; option tables in board_options.py.
+# --------------------------------------------------------------------------------------------------
+def _board_q(key, task, text, options):
+    opts = tuple((k, c, t) for k, c, t, _v in options)
+    return Question(key, task, f"Question: {text}\n" + _options_block(opts) + "\n" + ANSWER_OPTIONS, opts)
+
+
+BOARD_QUESTIONS = (
+    _board_q("decision_type", "T1", "What will the tumor board decide for this patient at this encounter?", DECISION_OPTIONS),
+    _board_q("intent", "T2", "What will the intent of the tumor board's plan be?", INTENT_OPTIONS),
+    _board_q("early_stage_plan", "T3", "This patient has untreated stage I-III non-small cell lung cancer. What will "
+             "the tumor board recommend?", BOARD_EARLY_OPTIONS),
+    _board_q("after_surgery_plan", "T3b", "This patient has stage I-III non-small cell lung cancer and has had surgery "
+             "or chemoradiation. What will the tumor board recommend next?", AFTER_SURGERY_OPTIONS),
+    _board_q("first_line_regimen", "T4", "This patient has untreated stage IV or recurrent non-small cell lung "
+             "cancer. Which first-line plan will the tumor board recommend?", BOARD_FIRST_LINE_OPTIONS),
+)
+#: The climb's score: the mean over these questions only. T3b and T4 are scored and reported, flagged too small to
+#: read alone (VAL 19 and 36 boards; Phil 2026-11-22).
+CLIMB_KEYS = ("decision_type", "intent", "early_stage_plan")
+#: The A-E-only score for T3 / T4 (Phil 2026-11-22): boards whose answer is A-E, probabilities renormalised over A-E.
+A_TO_E_KEYS = ("early_stage_plan", "first_line_regimen")
+SMALL_KEYS = ("after_surgery_plan", "first_line_regimen")
+
+QUESTIONS = BOARD_QUESTIONS if BOARDS else TREATMENT_QUESTIONS if TREATMENT else IMAGING_QUESTIONS
+if not BOARDS:
+    CLIMB_KEYS = tuple(q.key for q in QUESTIONS)
+    A_TO_E_KEYS = SMALL_KEYS = ()
 LABELS = tuple(sorted({c for q in QUESTIONS for _k, c, _t in q.options} or {0, 1}))
 
 #: Built by scripts/build_data.py: splits/{train,val}.jsonl ({"id", <question keys>: answer code | null}; null = the
@@ -132,11 +160,13 @@ DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", MOUNT / "tb-questions-v1_7" / AG
 #: The record agent shares the treatment agent's patients and so its id map (its own private folder holds only the
 #: exporter's cohort file, build_data.py record-cohort).
 ID_MAP_DIR = Path(os.environ.get("TASK_PRIVATE_DIR", MOUNT / "tb-questions-v1_7-private" / ("treatment" if AGENT == "treatment-record" else AGENT)))
+#: Boards: each board's subgroup facts (patient hash for the patient-level bootstrap, first board, already treated),
+#: kept out of the splits so nothing but answers is in them.
 #: Record mode: the summaries stay in the treatment agent's folder (same patients, same ids); DATA_DIR holds the same
 #: splits and pools plus cutoffs.jsonl and the record archive. The record's patient folders (exporter output,
 #: build_data.py record-export) are on local disk: thousands of small files are slow on the mount.
 SUMMARY_PATIENTS = MOUNT / "tb-questions-v1_7" / "treatment" / "patients"
-RECORD_PATIENTS = Path(os.environ.get("TASK_RECORD_DIR", Path.home() / "data" / "tb-questions-treatment-record")) / "patients"
+RECORD_PATIENTS = Path(os.environ.get("TASK_RECORD_DIR", Path.home() / "data" / f"tb-questions-{'boards' if BOARDS else 'treatment'}-record")) / "patients"
 PROGRAM_MODE = "agentic"
 AGENTIC = True
 ANSWER = "probability"
@@ -145,7 +175,7 @@ PROBABILITY = True
 #: The labeling program the optimizer starts from (program-v0), and the files it may edit. Zero-shot (spec): the
 #: card's opening and question(s) verbatim, the folder layout, and (imaging) the CT pair viewer.
 SEED_PROGRAM_DIR = HERE / {"treatment": "program_treatment", "imaging": "program_imaging",
-                           "treatment-record": "program_treatment_record"}[AGENT]
+                           "treatment-record": "program_treatment_record", "boards-record": "program_boards_record"}[AGENT]
 EDITABLE_FILES = ("instructions.md", "tools")
 CONTRACT_FILES: tuple[str, ...] = ()
 #: The optimizer's task brief and its standing instructions (its system prompt).
@@ -153,11 +183,12 @@ TASK_BRIEF = HERE / "context" / f"task_{AGENT}.md"
 OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / f"optimizer_instructions_{AGENT}.md"
 
 #: The model each patient's session runs on, how many run at once, and each one's cap (spec, Decided).
-PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-sonnet-5-5")  # DECIDE: Phil 2026-11-20
+PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-haiku-5-5" if TB_MODEL == "haiku" else "claude-sonnet-5-5")  # DECIDE: Phil 2026-11-20
 PROGRAM_MAX_CONCURRENT = int(os.environ.get("PROGRAM_MAX_CONCURRENT", "4" if TREATMENT else "2"))  # as died-2yr-ehr / ct-findings-5
 PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD",
-                                               {"treatment": "0.25", "imaging": "0.75", "treatment-record": "0.50"}[AGENT]))  # DECIDE: specs (record: Phil 2026-11-21)
-PROGRAM_CALL_TIMEOUT_SECONDS = {"treatment": 600, "imaging": 1200, "treatment-record": 900}[AGENT]  # two CTs or a record take longer
+                                               {"treatment": "0.25", "imaging": "0.75", "treatment-record": "0.50",
+                                                "boards-record": "0.50"}[AGENT]))  # DECIDE: specs (record: Phil 2026-11-21)
+PROGRAM_CALL_TIMEOUT_SECONDS = {"treatment": 600, "imaging": 1200, "treatment-record": 900, "boards-record": 900}[AGENT]  # two CTs or a record take longer
 
 # --------------------------------------------------------------------------------------------------
 # The metric: one number, higher is better. adapters.TaskScorer computes it.
@@ -175,15 +206,15 @@ METRIC_NAME = "auroc"  # DECIDE
 OPTIMIZER_MODEL = os.environ.get("OPTIMIZER_MODEL", "claude-opus-5-5")  # DECIDE: Phil 2026-11-20
 #: The climb's round limit (spec). ITERATIONS may be overridden for one run (the cost check sets 1); the cost report
 #: extrapolates over CLIMB_ITERATIONS.
-CLIMB_ITERATIONS = 10  # DECIDE: spec
+CLIMB_ITERATIONS = 8 if BOARDS else 10  # DECIDE: specs (boards: Phil 2026-11-22)
 ITERATIONS = int(os.environ.get("ITERATIONS", str(CLIMB_ITERATIONS)))
 #: Stop once this many rounds in a row set no new best VAL score (the seed's zero-shot VAL is the first best).
 #: Enforced by run.py before the next pass, so a resume counts the same rounds. 0 = off.
-STOP_AFTER_ROUNDS_WITHOUT_BEST = int(os.environ.get("STOP_AFTER_ROUNDS_WITHOUT_BEST", "3" if RECORD else "2"))  # DECIDE: specs (record: Phil 2026-11-21)
+STOP_AFTER_ROUNDS_WITHOUT_BEST = int(os.environ.get("STOP_AFTER_ROUNDS_WITHOUT_BEST", "3" if RECORD else "2"))  # boards: 2 (Phil 2026-11-22)  # DECIDE: specs (record: Phil 2026-11-21)
 #: Dollar stops, enforced by run.py before each pass (0 = off): the run total counts every scan session this run id
 #: paid for plus OPTIMIZER_SESSION_BUDGET_USD for each round started; a round = its TRAIN and VAL passes' sessions.
-RUN_BUDGET_USD = float(os.environ.get("RUN_BUDGET_USD", {"treatment": "150", "imaging": "250", "treatment-record": "250"}[AGENT]))  # DECIDE: specs 2026-11-20 / 11-21
-ROUND_BUDGET_USD = float(os.environ.get("ROUND_BUDGET_USD", {"treatment": "40", "imaging": "60", "treatment-record": "60"}[AGENT]))  # DECIDE: specs 2026-11-20 / 11-21
+RUN_BUDGET_USD = float(os.environ.get("RUN_BUDGET_USD", {"treatment": "150", "imaging": "250", "treatment-record": "250", "boards-record": "600"}[AGENT]))  # DECIDE: specs 2026-11-20 / 11-21
+ROUND_BUDGET_USD = float(os.environ.get("ROUND_BUDGET_USD", {"treatment": "40", "imaging": "60", "treatment-record": "60", "boards-record": "100"}[AGENT]))  # DECIDE: specs 2026-11-20 / 11-21
 OPTIMIZER_SESSION_BUDGET_USD = float(os.environ.get("OPTIMIZER_SESSION_BUDGET_USD", "3.0"))  # as died-2yr-ct
 OPTIMIZER_EFFORT = os.environ.get("OPTIMIZER_EFFORT", "high")  # as died-2yr-ct
 OPTIMIZER_TIMEOUT_SECONDS = 2700
@@ -201,8 +232,11 @@ TOKEN_BUDGET: int | None = None
 #: patients), VAL = the official valid split (111). Imaging: the 288 train + valid CT pairs redrawn into 188 feedback
 #: (TRAIN) and 100 picking (VAL). VAL is scored whole every round; TRAIN grows to the whole feedback set by round 5
 #: (spec: "feedback grows to the whole feedback set"; round 5 because past climbs stopped by rounds 4-7).
-CLIMB_SCHEDULE: dict = ({"train_size": "linear(200, 492, over=5)", "val_size": "constant(111)"} if TREATMENT else
+CLIMB_SCHEDULE: dict = ({"train_size": "linear(300, 600, over=4)", "val_size": "constant(637)"} if BOARDS else
+                        {"train_size": "linear(200, 492, over=5)", "val_size": "constant(111)"} if TREATMENT else
                         {"train_size": "linear(90, 188, over=5)", "val_size": "constant(100)"})  # DECIDE: build 2026-11-20
+# Boards (build 2026-11-22): all 637 VAL boards each round; TRAIN 300 growing to 600 of the 2,916 by round 4, so a
+# round (about 1,240 sessions at the spec's ~$0.07) stays under the $100 round cap; the cost check measures it.
 #: Patients answered right several rounds in a row are retired from TRAIN by the engine, so later batches are smaller.
 SCHEDULE: dict | None = CLIMB_SCHEDULE
 if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: the cost check uses it

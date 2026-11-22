@@ -44,8 +44,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 AGENT = os.environ.get("TB_AGENT", "")
-if AGENT not in ("treatment", "imaging", "treatment-record"):
-    raise SystemExit("set TB_AGENT=treatment, imaging or treatment-record")
+if AGENT not in ("treatment", "imaging", "treatment-record", "boards-record"):
+    raise SystemExit("set TB_AGENT=treatment, imaging, treatment-record or boards-record")
+BOARDS = AGENT == "boards-record"
 PROJECT = "som-nero-plevriti-deidbdf"
 TABLE = f"{PROJECT}.vista_bench_v1_7.tb_classification_tasks"
 #: (answer key, vista_bench task), in config.QUESTIONS order.
@@ -334,8 +335,10 @@ def cmd_volumes(args) -> int:
 #: local disk (REC_LOCAL): thousands of small files are slow on the mount.
 TREATMENT_DIR = MOUNT / "tb-questions-v1_7" / "treatment"
 TREATMENT_PRIVATE = MOUNT / "tb-questions-v1_7-private" / "treatment"
-REC_LOCAL = Path(os.environ.get("TASK_RECORD_DIR", Path.home() / "data" / "tb-questions-treatment-record"))
-REC_STAGE = Path(os.environ.get("TASK_EXPORT_STAGE", Path.home() / ".cache" / "tb-questions-record-export-stage"))
+_REC = "boards" if BOARDS else "treatment"
+REC_LOCAL = Path(os.environ.get("TASK_RECORD_DIR", Path.home() / "data" / f"tb-questions-{_REC}-record"))
+REC_STAGE = Path(os.environ.get("TASK_EXPORT_STAGE", Path.home() / ".cache" /
+                                ("tb-questions-boards-export-stage" if BOARDS else "tb-questions-record-export-stage")))
 EXPORTER = Path(os.environ.get("OMOP_EXPORT_REPO", Path.home() / "code" / "vista-onc-labelers-omop-export")) / "common" / "omop_export" / "export_omop.py"
 REC_ALLOWLIST = Path(__file__).resolve().parents[1] / "registry_allowlist_record.yaml"
 #: The index tumour for the registry files: a thoracic tumour (the death task's vista_bench primary-site / histology
@@ -389,6 +392,8 @@ def record_cohort(test: bool = False) -> int:
     import pandas as pd
     from google.cloud import bigquery
 
+    if BOARDS:
+        return boards_cohort(test)
     id_map = read_jsonl(TREATMENT_PRIVATE / ("id_map_test.jsonl" if test else "id_map.jsonl"))
     sfx = "_test" if test else ""
     cfg = bigquery.QueryJobConfig(query_parameters=[
@@ -466,6 +471,165 @@ def record_export(args) -> int:
     return code
 
 
+# ==================================================================================================
+# Boards + record (spec planning/vista_eval_vlm/2026-11-22-tb-board-questions-agent.md, Approved 2026-11-22)
+# ==================================================================================================
+#: vista_bench tb_classification.py board-questions output: one row per (followed exact-date board, question asked),
+#: with person_id, board date, cutoff (7 days before), split, answer and the subgroup facts. Private (person level).
+BOARD_ROWS = MOUNT / "tb-relabel-v1-private" / "board_questions_v1.parquet"
+#: The spec's counts (Done when): followed exact-date boards per split, unsplit ones already dropped by the builder.
+BOARD_COUNTS = {"train": 2916, "val": 637, "test": 689}
+
+
+def board_id(person_id, board_date) -> str:
+    return hashlib.sha1(f"{SALT}:{int(person_id)}:{board_date}".encode()).hexdigest()[:16]
+
+
+def patient_hash(person_id) -> str:
+    return hashlib.sha1(f"{SALT}:patient:{int(person_id)}".encode()).hexdigest()[:16]
+
+
+def boards_select(rows_path: Path, *, data_dir: Path | None = None, private_dir: Path | None = None,
+                  expected: dict | None = None) -> int:
+    """splits/{train,val,test}.jsonl ({"id", <question key>: code | null}), pools.json (TRAIN = train boards, VAL =
+    val boards; TEST never pooled), strata.jsonl ({"id", "patient", "first_board", "already_treated"}: subgroups and the
+    patient-level bootstrap; never staged) and the private id map ({"id", "person_id", "board_date", "cutoff",
+    "split"}). TEST's rows go to the private folder (test_split.jsonl); ``boards-test`` puts them in splits/ on
+    Phil's go. Counts only on screen."""
+    import pandas as pd
+
+    codes = _board_codes()
+    data_dir = data_dir or DATA_DIR
+    private_dir = private_dir or PRIVATE_DIR
+    d = pd.read_parquet(rows_path)
+    bad = sorted({f"{q}:{a}" for q, a in zip(d["question"], d["answer"]) if a not in codes.get(q, {})})
+    if bad:
+        raise SystemExit(f"STOP: answers with no option: {bad[:5]}")
+    boards: dict[tuple, dict] = {}
+    for r in d.itertuples(index=False):
+        k = (int(r.person_id), str(r.board_date))
+        b = boards.setdefault(k, {"row": {"id": board_id(*k), **dict.fromkeys(codes)},
+                                  "strata": {"id": board_id(*k), "patient": patient_hash(r.person_id),
+                                             "first_board": bool(r.first_board), "already_treated": bool(r.already_treated)},
+                                  "map": {"id": board_id(*k), "person_id": k[0], "board_date": k[1],
+                                          "cutoff": str(r.cutoff), "split": r.split}})
+        if b["map"]["split"] != r.split or b["map"]["cutoff"] != str(r.cutoff):
+            raise SystemExit("STOP: one board with two splits or cutoffs")
+        if b["row"][r.question] is not None:
+            raise SystemExit("STOP: one board asked one question twice")
+        b["row"][r.question] = codes[r.question][r.answer]
+    if len({b["row"]["id"] for b in boards.values()}) != len(boards):
+        raise SystemExit("two boards share an opaque id")
+    by = {s: sorted((b for b in boards.values() if b["map"]["split"] == s), key=lambda b: b["row"]["id"])
+          for s in ("train", "val", "test")}
+    got = {s: len(v) for s, v in by.items()}
+    if got != (expected or BOARD_COUNTS):
+        raise SystemExit(f"STOP: boards per split {got} differ from the spec's {expected or BOARD_COUNTS}")
+    pats = {s: {b["strata"]["patient"] for b in v} for s, v in by.items()}
+    if pats["train"] & pats["val"] or (pats["train"] | pats["val"]) & pats["test"]:
+        raise SystemExit("STOP: a patient in two splits")
+    for s in ("train", "val"):
+        write_jsonl(data_dir / "splits" / f"{s}.jsonl", [b["row"] for b in by[s]])
+    # TEST stays sealed (spec: one look per arm, on Phil's go): its answers go to the private folder, and
+    # ``boards-test`` copies them into splits/ for run.py test.
+    write_jsonl(private_dir / "test_split.jsonl", [b["row"] for b in by["test"]])
+    write_jsonl(data_dir / "strata.jsonl", [b["strata"] for s in ("train", "val") for b in by[s]])
+    write_jsonl(private_dir / "id_map.jsonl", [b["map"] for s in ("train", "val") for b in by[s]])
+    write_jsonl(private_dir / "id_map_test.jsonl", [b["map"] for b in by["test"]])
+    write_jsonl(private_dir / "strata_test.jsonl", [b["strata"] for b in by["test"]])
+    keys = list(codes)
+    counts = {s: {"boards": len(by[s]), "patients": len(pats[s]),
+                  "asked": {k: sum(b["row"][k] is not None for b in by[s]) for k in keys},
+                  "answers": answer_counts([b["row"] for b in by[s]], keys)} for s in ("train", "val")}
+    counts["test"] = {"boards": len(by["test"]), "patients": len(pats["test"])}  # TEST answers not printed (sealed)
+    (data_dir / "pools.json").write_text(json.dumps({
+        "train": [b["row"]["id"] for b in by["train"]], "val": [b["row"]["id"] for b in by["val"]],
+        "_draw": {"built_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": str(rows_path),
+                  "rule": "official split per patient: train -> TRAIN (feedback), valid -> VAL (picking); every "
+                          "followed exact-date board", "salt": SALT, "counts": counts}}, indent=1), encoding="utf-8")
+    for s, c in counts.items():
+        print(f"{s}: {json.dumps(c)}")
+    return 0
+
+
+def boards_test() -> int:
+    """On Phil's go for the TEST look (spec): splits/test.jsonl and TEST's subgroup facts beside TRAIN + VAL's. The
+    TEST records need ``record-cohort --test`` and ``record-export --test`` too."""
+    rows = read_jsonl(PRIVATE_DIR / "test_split.jsonl")
+    if len(rows) != BOARD_COUNTS["test"]:
+        raise SystemExit(f"STOP: {len(rows)} TEST boards, not {BOARD_COUNTS['test']}")
+    write_jsonl(DATA_DIR / "splits" / "test.jsonl", rows)
+    strata = read_jsonl(DATA_DIR / "strata.jsonl")
+    have = {r["id"] for r in strata}
+    write_jsonl(DATA_DIR / "strata.jsonl", strata + [r for r in read_jsonl(PRIVATE_DIR / "strata_test.jsonl")
+                                                     if r["id"] not in have])
+    print(f"test: {len(rows)} boards copied into splits/test.jsonl (answers not printed)")
+    return 0
+
+
+def _board_codes() -> dict:
+    """board_options.BOARD_ANSWER_CODES (engine-free; config.py imports the same tables)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from board_options import BOARD_ANSWER_CODES
+
+    return BOARD_ANSWER_CODES
+
+
+BOARDS_COHORT_SQL = f"""
+WITH cohort AS (SELECT * FROM UNNEST(@cohort)),
+dx AS (
+  SELECT d.person_id, d.tumor_key,
+    CASE
+      WHEN REGEXP_CONTAINS(d.dateofdiagnosis, r'^\\d{{8}}$') THEN SAFE.PARSE_DATE('%Y%m%d', d.dateofdiagnosis)
+      WHEN REGEXP_CONTAINS(d.dateofdiagnosis, r'^\\d{{6}}$') AND SAFE_CAST(SUBSTR(d.dateofdiagnosis,5,2) AS INT64) BETWEEN 1 AND 12
+        THEN DATE(SAFE_CAST(SUBSTR(d.dateofdiagnosis,1,4) AS INT64), SAFE_CAST(SUBSTR(d.dateofdiagnosis,5,2) AS INT64), 1)
+    END AS dxd
+  FROM `{PROJECT}.vista_cohort_omop_aug2026_v1_7.registry_case_diagnoses` d
+  WHERE d.person_id IN (SELECT person_id FROM cohort) AND ({THORACIC})
+)
+SELECT c.id, x.tumor_key FROM cohort c
+LEFT JOIN (
+  SELECT * EXCEPT (rn) FROM (
+    SELECT c.id, x.tumor_key, ROW_NUMBER() OVER (PARTITION BY c.id ORDER BY x.dxd DESC, x.tumor_key) AS rn
+    FROM dx x JOIN cohort c USING (person_id) WHERE x.dxd <= c.cutoff)
+  WHERE rn = 1) x USING (id)
+"""
+
+
+def boards_cohort(test: bool = False) -> int:
+    """PRIVATE/cohort.parquet (id, person_id, cutoff, tumor_key), one row per board: the exporter's per-row cutoffs
+    (several per patient, keyed on id). The index tumour is the latest thoracic tumour diagnosed on or before that
+    board's cutoff (the record arm's rule, per board). Checks each cutoff is 7 days before its board."""
+    from datetime import date, timedelta
+
+    import pandas as pd
+    from google.cloud import bigquery
+
+    sfx = "_test" if test else ""
+    id_map = read_jsonl(PRIVATE_DIR / f"id_map{sfx}.jsonl")
+    if any(date.fromisoformat(m["board_date"]) - date.fromisoformat(m["cutoff"]) != timedelta(days=7) for m in id_map):
+        raise SystemExit("STOP: a cutoff that is not 7 days before its board")
+    cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ArrayQueryParameter("cohort", "STRUCT", [
+        bigquery.StructQueryParameter(None, bigquery.ScalarQueryParameter("id", "STRING", m["id"]),
+                                      bigquery.ScalarQueryParameter("person_id", "INT64", int(m["person_id"])),
+                                      bigquery.ScalarQueryParameter("cutoff", "DATE", m["cutoff"])) for m in id_map])])
+    tk = {r["id"]: r["tumor_key"] for r in bigquery.Client(project=PROJECT).query(BOARDS_COHORT_SQL, job_config=cfg).result()}
+    if set(tk) != {m["id"] for m in id_map}:
+        raise SystemExit(f"STOP: {len(tk)} cohort rows back for {len(id_map)} boards")
+    out = pd.DataFrame([{"id": m["id"], "person_id": int(m["person_id"]), "cutoff": m["cutoff"], "tumor_key": tk[m["id"]]}
+                        for m in id_map])
+    out["tumor_key"] = out["tumor_key"].astype("Int64")
+    out["cutoff"] = pd.to_datetime(out["cutoff"]).dt.date
+    tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"tb_boards_cohort_{os.getpid()}.parquet"
+    out.to_parquet(tmp, index=False)
+    (PRIVATE_DIR / f"cohort{sfx}.parquet").write_bytes(tmp.read_bytes())  # gcsfuse: plain write, no rename
+    tmp.unlink()
+    write_jsonl(DATA_DIR / f"cutoffs{sfx}.jsonl", [{"id": r.id, "cutoff": r.cutoff.isoformat()} for r in out.itertuples()])
+    print(f"cohort: {len(out)} boards, {out['person_id'].nunique()} patients; every cutoff 7 days before its board; "
+          f"index thoracic tumour found for {int(out['tumor_key'].notna().sum())}, none for {int(out['tumor_key'].isna().sum())}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -481,8 +645,19 @@ def main() -> int:
     e.add_argument("--test", action="store_true", help="the TEST cohort, its own folders, then copied beside TRAIN+VAL")
     e.add_argument("--go", action="store_true", help="the export was approved (spec 2026-11-21)")
     e.add_argument("--dry-run", action="store_true")
+    b = sub.add_parser("boards-select")
+    b.add_argument("--rows", type=Path, default=BOARD_ROWS)
     args = ap.parse_args()
-    if args.cmd.startswith("record-") != (AGENT == "treatment-record"):
+    if BOARDS:
+        if args.cmd == "boards-select":
+            return boards_select(args.rows)
+        if args.cmd == "test":
+            return boards_test()
+        if not args.cmd.startswith("record-"):
+            raise SystemExit("TB_AGENT=boards-record has boards-select, test (Phil's go), record-cohort and record-export")
+    elif args.cmd == "boards-select":
+        raise SystemExit("boards-select is for TB_AGENT=boards-record")
+    elif args.cmd.startswith("record-") != (AGENT == "treatment-record"):
         raise SystemExit("record-cohort and record-export are for TB_AGENT=treatment-record, and that agent has only those")
     if args.cmd == "record-cohort":
         return record_cohort(args.test)

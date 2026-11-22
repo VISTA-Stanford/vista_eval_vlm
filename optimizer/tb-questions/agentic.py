@@ -34,8 +34,8 @@ PROMPT_TAG = f"tb-questions-{config.AGENT}-v1"
 #: prompt tag, so editing the guide never reuses a pass.
 RECORD = "record"
 GUIDE = "record_guide.md"
-GUIDE_SRC = Path(__file__).resolve().parent / "context" / "record_guide.md"
-if config.RECORD:
+GUIDE_SRC = Path(__file__).resolve().parent / "context" / ("record_guide_boards.md" if config.BOARDS else "record_guide.md")
+if config.HAS_RECORD:
     PROMPT_TAG = f"tb-questions-{config.AGENT}-v1-guide-{hashlib.sha256(GUIDE_SRC.read_bytes()).hexdigest()[:10]}"
 #: The OMOP tables the exporter writes (no death table), in the order the prompt lists them, and the registry tables
 #: of registry_allowlist_record.yaml (no treatments table: its first-course codes are the tumor board's answer).
@@ -120,6 +120,34 @@ def answer_template(keys: list[str]) -> str:
     return ", ".join(parts)
 
 
+def _stage_record(pid: str, folder: Path) -> None:
+    """record/ (the exporter's files, checked before anything is copied) and the record guide, read-only."""
+    files = record_files(record_dir(pid))
+    dest = folder / RECORD
+    dest.mkdir()
+    dest.chmod(0o755)  # readable by the container user on Vertex (died-2yr-ehr 2026-10-21)
+    for f in files:
+        shutil.copy2(f, dest / f.name)
+        (dest / f.name).chmod(0o444)
+    shutil.copy2(GUIDE_SRC, folder / GUIDE)
+    (folder / GUIDE).chmod(0o444)
+
+
+def record_description(rec: str, guide: str, when: str) -> str:
+    """The wrapper's paragraph naming the record's files (both record modes)."""
+    return (f"It stops at {when}: nothing dated after that day is in it.\n"
+            f"- notes.txt: every clinical note in date order, each starting with a header line that begins "
+            f"'===== NOTE'. Search it with grep.\n"
+            f"- one parquet file per table of the OMOP common data model: {', '.join(OMOP_TABLES)}. A table "
+            f"with no rows for this patient may be absent.\n"
+            f"- {', '.join(f'registry_{t}.parquet' for t in REGISTRY_TABLES)}: the cancer registry's record "
+            f"of this cancer, limited to the fields allowed at that day (absent if the registry has none).\n"
+            f"- meta.json: the patient's opaque id and the cutoff date.\n"
+            f"python3 has pandas, pyarrow and duckdb for the parquet files. Read {guide} before "
+            f"the record: it says what each file holds, where each kind of fact lives, and which sources "
+            f"mislead.")
+
+
 def program_spec(forbidden):
     from isolation.pass_outputs import Call
     from isolation.program_runner import ProgramSpec
@@ -133,19 +161,14 @@ def program_spec(forbidden):
         # Leave the call folder's own permissions as the runner set them (on Vertex it is 0o777 so the container user
         # can write; died-2yr-ehr 2026-11-01). Staged files are made read-only and readable by others.
         src = patient_dir(call.payload["id"])
+        if config.BOARDS:  # the tumor board encounter's record only, no summary (spec 2026-11-22)
+            _stage_record(call.payload["id"], Path(folder))
+            return
         if config.TREATMENT:
             shutil.copy2(src / SUMMARY, Path(folder) / SUMMARY)
             (Path(folder) / SUMMARY).chmod(0o444)
             if config.RECORD:
-                files = record_files(record_dir(call.payload["id"]))  # checked before anything is copied
-                dest = Path(folder) / RECORD
-                dest.mkdir()
-                dest.chmod(0o755)  # readable by the container user on Vertex (died-2yr-ehr 2026-10-21)
-                for f in files:
-                    shutil.copy2(f, dest / f.name)
-                    (dest / f.name).chmod(0o444)
-                shutil.copy2(GUIDE_SRC, Path(folder) / GUIDE)
-                (Path(folder) / GUIDE).chmod(0o444)
+                _stage_record(call.payload["id"], Path(folder))
             return
         for scan in SCANS:
             dest = Path(folder) / "ct" / scan
@@ -161,7 +184,13 @@ def program_spec(forbidden):
         # every version asks the same thing; how to answer them lives in instructions.md.
         keys = call.payload["asked"]
         questions = "\n\n".join(f'[{key}]\n{QUESTION[key].text}' for key in keys)
-        if config.TREATMENT:
+        if config.BOARDS:
+            rec = f"{paths.call}/{RECORD}"
+            given = (f"{config.BOARDS_OPENING}\n\nThe record is the folder {rec}/ (read-only). "
+                     + record_description(rec, f"{paths.call}/{GUIDE}", "the cutoff day, one week before this "
+                                          "tumor board encounter"))
+            reason = ('{"fact": "<one fact from the record>", "where": "<the record file and note type it is in>"}')
+        elif config.TREATMENT:
             summary = (patient_dir(call.payload["id"]) / SUMMARY).read_text(encoding="utf-8").strip()
             given = (f"{config.SUMMARY_OPENING}\n\nPATIENT SUMMARY:\n{summary}\n\n"
                      f"The summary is also the file {paths.call}/{SUMMARY}.")
@@ -170,18 +199,8 @@ def program_spec(forbidden):
                 rec = f"{paths.call}/{RECORD}"
                 given += (
                     f"\n\nYou also have this patient's full electronic health record, the folder {rec}/ (read-only). "
-                    f"It stops at the same day as the summary, one week before their first thoracic tumor board "
-                    f"encounter: nothing dated after that day is in it.\n"
-                    f"- notes.txt: every clinical note in date order, each starting with a header line that begins "
-                    f"'===== NOTE'. Search it with grep.\n"
-                    f"- one parquet file per table of the OMOP common data model: {', '.join(OMOP_TABLES)}. A table "
-                    f"with no rows for this patient may be absent.\n"
-                    f"- {', '.join(f'registry_{t}.parquet' for t in REGISTRY_TABLES)}: the cancer registry's record "
-                    f"of this cancer, limited to the fields allowed at that day (absent if the registry has none).\n"
-                    f"- meta.json: the patient's opaque id and the cutoff date.\n"
-                    f"python3 has pandas, pyarrow and duckdb for the parquet files. Read {paths.call}/{GUIDE} before "
-                    f"the record: it says what each file holds, where each kind of fact lives, and which sources "
-                    f"mislead.")
+                    + record_description(rec, f"{paths.call}/{GUIDE}", "the same day as the summary, one week before "
+                                         "their first thoracic tumor board encounter"))
                 reason = ('{"fact": "<one fact from the summary or the record>", "where": "<the summary, or the '
                           'record file and note type it is in>"}')
         else:

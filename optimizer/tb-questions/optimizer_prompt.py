@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF, TREATMENT  # run.py sets ITERATIONS
+from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF, TREATMENT, BOARDS  # run.py sets ITERATIONS
 
 HERE = Path(__file__).resolve().parent
 INSTRUCTIONS = OPTIMIZER_INSTRUCTIONS
@@ -52,6 +52,25 @@ STUDY_TREATMENT = (
     "  does giving every patient the same spread. Only mistakes come with their summary and transcript.\n"
     "- Never copy summary text, or anything particular to one patient, into the program or your notes.\n"
 )
+STUDY_BOARDS = (
+    "You cannot run the sessions in here: each tumor board encounter is read by its own session, outside this\n"
+    "container, from the patient's record cut one week before that tumor board. You can read what each session did and the\n"
+    "record it read. Every file a mistake lists is a flat file in `<files>/`, named `<id>-<file>`.\n"
+    "- The record the session read: `<files>/<id>-notes.txt`, `<files>/<id>-<table>.parquet`, `<files>/<id>-meta.json`\n"
+    "  (notes are left out when they are over 2 MB). Run `python3 -B {program}/tools/digest.py` on a folder holding\n"
+    "  them under their own names to see what the notes reader shows.\n"
+    "- The session's findings note first: `<files>/<id>-trace-findings.md`. Then its session turn by turn:\n"
+    "  `python3 -c \"import json,sys; [print(b['type'], str(b.get('input') or b.get('content') or b.get('text'))[:400].replace(chr(10), ' ')) for l in open(sys.argv[1]) for e in [json.loads(l)] if e.get('type') in ('assistant','user') and isinstance(e['message']['content'], list) for b in e['message']['content'] if b.get('type') != 'thinking']\" <files>/<id>-trace-events.jsonl`\n"
+    "- Every TRAIN encounter of the pass is in the mistakes file: the questions asked (`asked`; every encounter gets\n"
+    "  decision_type and intent, some also one treatment question), the tumor board's answer as a letter\n"
+    "  (`tumor_board_answer`), the probabilities the session gave each letter (`answer`) and its stated reasons. A\n"
+    "  mistake is a question whose top letter was not the tumor board's (`wrong_at`), or a failed session. The score is\n"
+    "  per-letter AUROC averaged over decision_type, intent and early_stage_plan: for each letter, encounters whose answer\n"
+    "  was that letter should get a higher probability on it than encounters whose answer was another. So a confident wrong\n"
+    "  letter costs most, and so does giving every encounter the same spread. Only mistakes come with their record and\n"
+    "  transcript.\n"
+    "- Never copy note text, or anything particular to one patient, into the program or your notes.\n"
+)
 STUDY_IMAGING = (
     "You cannot run the patients' sessions in here: each pair of scans is read by its own session, outside this\n"
     "container. You can read what each session did, look at the same two CTs, and run your tools on them. Every file\n"
@@ -74,7 +93,7 @@ STUDY_IMAGING = (
 def build_prompt(iter_n: int, paths) -> str:
     editable = ", ".join(f"`{paths.program}/{f}`" for f in EDITABLE_FILES)
     start = os.environ.get("START", "")  # the launcher's START: a fresh run from an earlier climb's version
-    what = "patients" if TREATMENT else "pairs of scans"
+    what = "tumor board encounters" if BOARDS else "patients" if TREATMENT else "pairs of scans"
     if iter_n > 1:
         first = "Start with step 1 of your standing instructions: check last iteration's prediction."
     elif start and start != "seed":
@@ -82,6 +101,12 @@ def build_prompt(iter_n: int, paths) -> str:
                  f"climb on these same VAL {what}, not from the seed. Read your notebook and the earlier change notes "
                  "(notes folder) first: they say what was tried and what each version scored. Then improve on this "
                  "version.")
+    elif BOARDS:
+        first = ("This is the first iteration. The program is the seed: how to find the record, the notes reader and the "
+                 "tumor board questions word for word, so its score is what a plain zero-shot prompt gets. Read the task "
+                 "brief, read the mistakes and some of their records, and write a real first version of "
+                 "instructions.md: how to read a record for these decisions and how these tumor boards decided (see "
+                 "step 4 of your standing instructions).")
     elif TREATMENT:
         first = ("This is the first iteration. The program is the seed: the tumor board question(s) word for word and "
                  "nothing else, so its score is what a plain zero-shot prompt gets. Read the task brief, read the "
@@ -94,7 +119,7 @@ def build_prompt(iter_n: int, paths) -> str:
                  "read the mistakes, look at some of those pairs yourself, and write a real first version of "
                  "instructions.md: how to compare the two scans and what these tumor boards called progression (see "
                  "step 4 of your standing instructions).")
-    test = ((STUDY_TREATMENT if TREATMENT else STUDY_IMAGING)
+    test = ((STUDY_BOARDS if BOARDS else STUDY_TREATMENT if TREATMENT else STUDY_IMAGING)
             .replace("{program}", paths.program).replace("<files>", f"{paths.feedback}/iter/{iter_n}/files"))
     return f"""Iteration {iter_n} of {ITERATIONS}. {first}
 
