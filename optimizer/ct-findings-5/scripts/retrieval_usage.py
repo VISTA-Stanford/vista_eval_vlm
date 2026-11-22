@@ -77,26 +77,75 @@ def tool_inputs(events: Path):
 
 #: Only these tools read; Write and Edit are the session's own notes and answers, never counted as using the folder.
 READING_TOOLS = ("Read", "Bash", "Grep", "Glob")
-#: A neighbour named in a command: neighbours/n3, or n3/ after a cd into neighbours/.
-NAMED = re.compile(r"(?:neighbours/|\bn)n?([1-5])\b")
+#: A render or load of a CT: the viewer (not --help or --info, which draw nothing) or Python loading a ct.npz.
+VIEWER = re.compile(r"view_ct(?:\.py)?\b")
+PIECES = re.compile(r"&&|\|\||;|\n|\|")
+#: Neighbour ranks a shell loop or glob covers: "for k in 1 2 3", "n{1..5}", "n*".
+LOOP_LIST = re.compile(r"for\s+\w+\s+in\s+([1-5](?:\s+[1-5])*)\b")
+
+
+def _loop_ranks(command: str, piece: str) -> list[str]:
+    m = LOOP_LIST.search(command)
+    if m:
+        return m.group(1).split()
+    if re.search(r"n\{1\.\.5\}|neighbours/n\*|(?<![\w/])n\*", piece):
+        return ["1", "2", "3", "4", "5"]
+    return []
+
+
+def neighbour_views(command: str) -> list[str]:
+    """The neighbour ranks one Bash command renders or loads, one entry per view. Fixes the 11-17 counter, which
+    counted any command naming both view_ct and neighbours (e.g. `view_ct.py --help; cat neighbours/README.md`):
+    each shell piece is judged alone, a `cd` into neighbours/ or neighbours/n<k> is followed, and --help, --info and
+    the session's own ct/ never count. A loop or glob over the neighbours counts each rank it covers once."""
+    views, cwd = [], None  # cwd: None outside neighbours/, "0" in neighbours/, "<k>" in neighbours/n<k>
+    for piece in (p.strip() for p in PIECES.split(command)):
+        cd = re.match(r"cd\s+(\S+)", piece)
+        if cd:
+            t = cd.group(1).rstrip("/")
+            k = re.search(r"neighbours/n([1-5])$", t)
+            if k:
+                cwd = k.group(1)
+            elif t.endswith("neighbours"):
+                cwd = "0"
+            elif cwd == "0" and re.fullmatch(r"n[1-5]", t):
+                cwd = t[1]
+            else:
+                cwd = None
+            continue
+        viewer = VIEWER.search(piece) and "--help" not in piece and "--info" not in piece
+        loader = "ct.npz" in piece and ("load" in piece or "python" in piece)
+        if not (viewer or loader):
+            continue
+        ranks = re.findall(r"neighbours/n([1-5])\b", piece)
+        if not ranks and cwd == "0":
+            ranks = re.findall(r"(?<![\w/])n([1-5])/", piece)
+        if not ranks and cwd not in (None, "0") and re.search(r"(?<![\w/])(?:\./)?ct\b", piece):
+            ranks = [cwd]
+        if not ranks and ("neighbours/" in piece or cwd == "0"):
+            ranks = _loop_ranks(command, piece)
+        views += ranks
+    return views
 
 
 def count_one(events: Path) -> dict:
-    """One session's use of neighbours/, from its reading tool calls. A view: a Bash call that runs view_ct.py or
-    loads a ct.npz with neighbours/ in it. A report read: a call naming report.txt, or any grep (Bash or the Grep
-    tool) over neighbours/ (the reports are the folder's only free text). An answers read: answers.json,
-    neighbours.json or README.md under neighbours/. Wildcards (n*) count as one read and name no neighbour."""
+    """One session's use of neighbours/, from its reading tool calls. A view: a rank neighbour_views finds in a Bash
+    call. A report read: a call naming report.txt, or any grep (Bash or the Grep tool) over neighbours/ (the reports
+    are the folder's only free text). An answers read: answers.json, neighbours.json or README.md under
+    neighbours/."""
     out = {"touched": False, "neighbour_views": 0, "neighbours_viewed": 0, "report_reads": 0, "answer_reads": 0,
            "tool_calls": 0}
     viewed = set()
     for name, text in tool_inputs(events):
         out["tool_calls"] += 1
-        if name not in READING_TOOLS or "neighbours" not in text:
+        if name not in READING_TOOLS or "neighbours" not in text and not (name == "Bash" and "cd n" in text):
             continue
         out["touched"] = True
-        if name == "Bash" and ("view_ct" in text or "ct.npz" in text):
-            out["neighbour_views"] += 1
-            viewed.update(NAMED.findall(text))
+        if name == "Bash":
+            cmd = json.loads(text).get("command", "")
+            v = neighbour_views(cmd)
+            out["neighbour_views"] += len(v)
+            viewed.update(v)
         if "report.txt" in text or name == "Grep" or (name == "Bash" and "grep" in text):
             out["report_reads"] += 1
         if any(n in text for n in ("answers.json", "neighbours.json", "README.md")):

@@ -72,6 +72,21 @@ NEIGHBOUR_SCANS_DIR = DATA_DIR / "neighbour_scans"  # per neighbour id: ct.npz, 
 NEIGHBOUR_PICKS = ID_MAP_DIR / "neighbour_picks.json"  # private: which neighbour id fills which folder
 if NEIGHBOURS:
     SEED_PROGRAM_DIR = HERE / "program_agentic_neighbours"
+#: The example-CT arms (spec planning/vista_eval_vlm/2026-11-22-ct-findings-example-ct-arms.md, Approved 2026-11-22):
+#: EXAMPLE_ARM=A|B|C uses the same 5 neighbours as the retrieval arm. A: must view at least one slice of each
+#: neighbour's CT; B: the same folders without the CTs (the image control); C: A plus TotalSegmentator organ ranges
+#: for the scan and each neighbour (scripts/build_organ_ranges.py), scored only on the VAL scans that have them.
+EXAMPLE_ARM = os.environ.get("EXAMPLE_ARM", "").upper()  # DECIDE: spec, the three arms
+if EXAMPLE_ARM not in ("", "A", "B", "C"):
+    raise SystemExit(f"EXAMPLE_ARM must be A, B or C, not {EXAMPLE_ARM!r}")
+if EXAMPLE_ARM:
+    NEIGHBOURS = True
+    SEED_PROGRAM_DIR = HERE / f"program_agentic_examples_{EXAMPLE_ARM.lower()}"
+ORGAN_DIR = DATA_DIR / "organ_ranges"  # per VAL id: target.json, n1.json .. n5.json
+#: Each neighbour CT is copied here once and hard-linked into every call folder that uses it, so a pass holds one
+#: copy per distinct neighbour (~48 GB) instead of five per call (the 11-17 pass used ~300 MB a call). Must be on the
+#: same filesystem as WORKDIR.
+NEIGHBOUR_CT_CACHE = Path(os.environ.get("NEIGHBOUR_CT_CACHE", Path.home() / ".cache" / "alo-tasks" / "neighbour-ct-cache"))
 EDITABLE_FILES = ("instructions.md", "tools")
 CONTRACT_FILES: tuple[str, ...] = ()
 #: The optimizer's task brief and its standing instructions (its system prompt).
@@ -129,7 +144,7 @@ if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: the cost 
 # Where everything a run writes goes. Outside the repo, so nothing a run writes is ever committed.
 # --------------------------------------------------------------------------------------------------
 WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" /
-                              (f"{TASK_NAME}-neighbours" if NEIGHBOURS else TASK_NAME))).resolve()
+                              (f"{TASK_NAME}-examples-{EXAMPLE_ARM.lower()}" if EXAMPLE_ARM else f"{TASK_NAME}-neighbours" if NEIGHBOURS else TASK_NAME))).resolve()
 
 # --------------------------------------------------------------------------------------------------
 # Sealing: which model route and which images. docs/guide/decisions.md, "Which models it can use".

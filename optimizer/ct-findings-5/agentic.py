@@ -16,7 +16,9 @@ the mistake builder and ``run.py test`` read.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import threading
 from pathlib import Path
 
 import config
@@ -25,7 +27,8 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever you change ``prompt`` below.
-PROMPT_TAG = "ct-findings-5-v1-prob-neighbours" if config.NEIGHBOURS else "ct-findings-5-v1-prob"
+PROMPT_TAG = (f"ct-findings-5-v1-prob-examples-{config.EXAMPLE_ARM.lower()}" if config.EXAMPLE_ARM
+              else "ct-findings-5-v1-prob-neighbours" if config.NEIGHBOURS else "ct-findings-5-v1-prob")
 MAX_REASONS = 5
 #: The session's reasoning is not kept in its transcript, so it writes what it saw; the optimizer reads it.
 FINDINGS = "findings.md"
@@ -55,30 +58,82 @@ NEIGHBOUR_FILES = ("answers.json", "report.txt")
 _scan_map: dict | None = None
 
 
+def cached_ct(nid: str, name: str) -> Path:
+    """The neighbour's CT file in the local cache (config.NEIGHBOUR_CT_CACHE), copied from the mount the first time.
+    The copy goes to a temporary name and is renamed, so a crash never leaves a half file under the real name."""
+    dest = config.NEIGHBOUR_CT_CACHE / nid / name
+    if not dest.is_file():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.part")  # sessions stage in parallel
+        shutil.copy2(config.NEIGHBOUR_SCANS_DIR / nid / name, tmp)
+        tmp.chmod(0o444)
+        tmp.replace(dest)
+    return dest
+
+
+def warm_cache() -> int:
+    """Copy every VAL pool scan's neighbour CTs into the cache before a pass (run_example_arms.sh); returns how many
+    distinct neighbours are cached."""
+    smap = json.loads((config.DATA_DIR / "neighbours_scan_map.json").read_text(encoding="utf-8"))
+    nids = sorted({n for ns in smap.values() for n in ns})
+    for nid in nids:
+        for name in ("ct.npz", "meta.json"):
+            cached_ct(nid, name)
+    return len(nids)
+
+
+def readme_without_ct(text: str) -> str:
+    """Arm B's README: the same text with the line about each folder's ct/ removed and one sentence saying so."""
+    lines = [ln for ln in text.splitlines() if not ln.startswith("- `ct/`")]
+    if len(lines) == len(text.splitlines()):
+        raise SystemExit("neighbours README has no ct/ line to remove: the README changed, update arm B")
+    return "\n".join(lines) + "\n\nThe neighbours' CT scans are not included here; only their answers and reports.\n"
+
+
 def stage_neighbours(scan_id: str, dest: Path) -> None:
     """The retrieval arm (config.NEIGHBOURS): copy the scan's neighbour folder (scripts/build_neighbours.py) to
     ``dest`` (the call folder's neighbours/), each neighbour's CT into n<rank>/ct/, and make every copied file
     read-only. Raises when any piece is missing: a scan without its neighbours is a broken build, not a session to
-    run without them. Only VAL pool scans have folders."""
+    run without them. Only VAL pool scans have folders.
+
+    Example-CT arms (config.EXAMPLE_ARM): the CTs are hard links to the local cache (one copy per neighbour, not per
+    call; a link that fails raises, since the cache and the call folders are on one disk by construction). Arm B
+    stages no CTs and a README that says so. Arm C also stages each neighbour's organs.json."""
     global _scan_map
     if _scan_map is None:
         _scan_map = json.loads((config.DATA_DIR / "neighbours_scan_map.json").read_text(encoding="utf-8"))
     src = config.NEIGHBOURS_DIR / scan_id
     nids = _scan_map[scan_id]
+    arm = config.EXAMPLE_ARM
     dest.mkdir(parents=True, exist_ok=True)
     copied = []
-    for name in ("README.md", "neighbours.json"):
-        shutil.copy2(src / name, dest / name)
-        copied.append(dest / name)
+    if arm == "B":
+        (dest / "README.md").write_text(readme_without_ct((src / "README.md").read_text(encoding="utf-8")),
+                                        encoding="utf-8")
+        shutil.copy2(src / "neighbours.json", dest / "neighbours.json")
+        copied += [dest / "README.md", dest / "neighbours.json"]
+    else:
+        for name in ("README.md", "neighbours.json"):
+            shutil.copy2(src / name, dest / name)
+            copied.append(dest / name)
     for rank, nid in enumerate(nids, 1):
         nd = dest / f"n{rank}"
-        (nd / "ct").mkdir(parents=True, exist_ok=True)
+        nd.mkdir(parents=True, exist_ok=True)
         for name in NEIGHBOUR_FILES:
             shutil.copy2(src / f"n{rank}" / name, nd / name)
             copied.append(nd / name)
+        if arm == "C":
+            shutil.copy2(config.ORGAN_DIR / scan_id / f"n{rank}.json", nd / "organs.json")
+            copied.append(nd / "organs.json")
+        if arm == "B":
+            continue
+        (nd / "ct").mkdir(parents=True, exist_ok=True)
         for name in ("ct.npz", "meta.json"):
-            shutil.copy2(config.NEIGHBOUR_SCANS_DIR / nid / name, nd / "ct" / name)
-            copied.append(nd / "ct" / name)
+            if arm:
+                os.link(cached_ct(nid, name), nd / "ct" / name)  # already read-only in the cache
+            else:
+                shutil.copy2(config.NEIGHBOUR_SCANS_DIR / nid / name, nd / "ct" / name)
+                copied.append(nd / "ct" / name)
     for f in copied:
         f.chmod(0o444)
 
@@ -97,6 +152,9 @@ def program_spec(forbidden):
             shutil.copy2(patient_dir(call.payload["id"]) / name, dest / name)
         if config.NEIGHBOURS:
             stage_neighbours(call.payload["id"], Path(folder) / "neighbours")
+        if config.EXAMPLE_ARM == "C":
+            shutil.copy2(config.ORGAN_DIR / call.payload["id"] / "target.json", Path(folder) / "organs.json")
+            (Path(folder) / "organs.json").chmod(0o444)
 
     def prompt(call, stage_name, paths, pass_id):
         # The per-call wrapper: not optimized. Container paths only. It lists the five questions because the answer

@@ -637,6 +637,10 @@ def cmd_val_pass(args) -> int:
     earlier = ([e for e in map(json.loads, ledger_path.read_text().splitlines()) if e["tag"] == args.tag]
                if ledger_path.exists() else [])
     ids = sorted(ad.pools()["val"])
+    if config.EXAMPLE_ARM == "C":  # spec 2026-11-22: arm C is scored only on the scans with organ ranges
+        ids = [i for i in ids if (config.ORGAN_DIR / i / "target.json").is_file()]
+        if not ids:
+            raise SystemExit("arm C: no VAL scan has organ ranges; run scripts/build_organ_ranges.py build first")
     if args.limit:
         ids = ids[: args.limit]
     if config.PROGRAM_CALL_BUDGET_USD * len(ids) > VAL_PASS_STOP_USD:
@@ -657,7 +661,7 @@ def cmd_val_pass(args) -> int:
         return 1
     score = ad.TaskScorer().score(artifacts, "val", {})
     entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha,
-             "neighbours": config.NEIGHBOURS, config.METRIC_NAME: score.primary_metric.value,
+             "neighbours": config.NEIGHBOURS, "example_arm": config.EXAMPLE_ARM or None, config.METRIC_NAME: score.primary_metric.value,
              "n": score.breakdown["n"], "program_errors": score.breakdown["program_errors"], "look": look,
              "answers": artifacts.artifact_refs[0].path, "questions": per_question(score)}
     with ledger_path.open("a") as f:
