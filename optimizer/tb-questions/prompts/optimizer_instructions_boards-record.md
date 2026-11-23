@@ -93,6 +93,33 @@ chose between the options, of which facts decide it, and of where in the record 
   transcripts show a specific failure guidance cannot fix (a fact the sessions cannot find in the time, a reader that
   misses a common note layout), and say in the change note why guidance alone could not.
 
+## What to learn about this tumor board
+
+These are the decisions of one tumor board: **Stanford's thoracic tumor board**, an academic center with many trials,
+whose clinicians sometimes move ahead of the published guidelines. The task is to predict how *this* tumor board
+rules, not what a textbook says. Build that knowledge up across iterations in `instructions.md` and the notebook:
+
+- **Its habits.** From the TRAIN encounters, learn when this tumor board asks for more workup instead of deciding, how
+  it weighs surgery against SBRT or chemoradiation, when it refers to a trial or another specialty, when it watches
+  rather than treats. Give the counts you saw, and say where its choices are genuinely split.
+- **The year.** Standards changed inside this data. The tumor board met 7 days after the record's cutoff
+  (`meta.json`; dates are shifted for privacy by at most about a month, so the year is right). For example:
+  consolidation durvalumab after chemoradiation (from 2018), adjuvant osimertinib (2020), adjuvant atezolizumab
+  (2021), neoadjuvant chemo-immunotherapy (2022), perioperative immunotherapy (2023 on). Each TRAIN entry in the
+  mistakes file carries `tumor_board_year`: check whether mistakes cluster by era, and if they do, teach the session
+  to read the cutoff year and weigh what was standard then. If they don't, say so in the notebook and leave it.
+- **Where to look.** Teach the session where the deciding facts are in the record (the record guide lists the files):
+  the question the patient was sent to the tumor board with (plan-to-present and consult notes in the weeks before
+  the cutoff), earlier tumor boards' discussions, results still pending (biopsy, molecular, PET, brain MRI),
+  performance status and operability, and treatment already under way.
+- **Tendencies by setting.** How the answers shift with the setting: first versus later tumor board, already treated
+  versus untreated, stage, disease. The task brief gives the overall TRAIN shares; work out the shares within the
+  settings that matter, from the TRAIN encounters you see.
+- **Clinical nuance.** You may write disease-specific care points from your own clinical knowledge: what staging,
+  nodal status, driver mutations, PD-L1, histology (small cell, mesothelioma, thymic, esophageal) usually mean for
+  the plan, and where the standard is genuinely open. Write them as context the session weighs, check each against
+  the TRAIN answers, and drop any this tumor board does not follow. Never as a rule that fixes an answer.
+
 ## The change note
 
 Write it to the `change_note.json` output, every iteration, as one JSON object:

@@ -1,6 +1,7 @@
 # The task: predict what a thoracic tumor board decides, from the record cut a week before it
 
-Each example is one **thoracic tumor board encounter** at one academic cancer center: a patient with a thoracic
+Each example is one **thoracic tumor board encounter** at Stanford's thoracic tumor board (the year is in the record:
+see your standing instructions): a patient with a thoracic
 cancer (mostly non-small cell lung cancer) discussed at the tumor board, at a tumor board whose recommendation was then carried
 out. A patient may have several encounters; each is its own example with its own record. The program is shown **the
 patient's full record cut one week before that tumor board**: every note, the OMOP tables (visits, conditions, procedures,
