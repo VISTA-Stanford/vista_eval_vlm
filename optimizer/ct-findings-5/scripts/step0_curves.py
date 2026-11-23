@@ -56,7 +56,7 @@ AGENT_PASSES = {"retrieval arm": RUNS / "retrieval-arm" / "retrieval.json",
 # each scored only on the scans it answers (arm C: the 190 with organ ranges), written beside the arms' answers; the
 # report-citation count is step 0's alone and is skipped.
 EXAMPLE_ARMS = {"retrieval arm": RUNS / "retrieval-arm" / "retrieval.json",
-                **{f"arm {a}": RUNS / "example-ct-arms" / f"arm-{a.lower()}.json" for a in "ABC"}}
+                **{f"arm {a}": RUNS / "example-ct-arms" / f"arm-{a.lower()}.json" for a in "ABCD"}}
 EXAMPLE_OUT = RUNS / "example-ct-arms" / "fusion.json"
 
 
