@@ -13,7 +13,7 @@ One round k:
                earlier round. Its library must pass tools/kb.py check with every entry from a source scan, or the round
                stops. The edit is committed as program-v<k>.
   2. tester    one sealed session per scan (the program runner, as run.py val-pass) reads round k's TRAIN scans with
-               program-v<k>; scored per question (AUROC) on the kb_train split.
+               program-v<k>; scored per question (AUROC) on TRAIN, which with KB_ARM=1 is the tester set.
   3. feedback  for the next builder: per scan its answer key, probabilities, reasons, findings note, the entries it
                opened and whether it went back to its own scan after; per entry how often it was opened on scans the
                tester got right vs wrong. Written to <work>/kb-tester/round-<k>/ (a read-only input next round).
@@ -208,7 +208,7 @@ def library_stats(tree: Path) -> dict:
 
 
 def rates() -> dict[str, float]:
-    rows = ad.read_split("kb_train")
+    rows = ad.read_split("train")
     out = {}
     for key, _t, _q in config.QUESTIONS:
         s = [r[key] for r in rows if r.get(key) is not None]
@@ -222,7 +222,7 @@ def word(v) -> str:
 
 def write_feedback(lay, k: int, artifacts, score) -> dict:
     """The tester's round k as the builder will read it; returns the round's usage summary."""
-    gold = {r["id"]: r for r in ad.read_split("kb_train")}
+    gold = {r["id"]: r for r in ad.read_split("train")}
     answers = ad._answers(artifacts)
     rate = rates()
     out = tester_dir(lay) / f"round-{k}"
@@ -422,7 +422,7 @@ def cmd_loop(args) -> int:
             tree = lay.versions / f"kb-{args.run_id}-round{k}-{tag}"
             if not tree.exists():
                 materialize(ad.TaskStore().manifest(), rec["version_sha"], repo_root=lay.repo, dest=tree)
-            inputs = ad.TaskSource(lay.private / "kb-batches").stage(ids, "kb_train", f"kb-{args.run_id}-round{k}-n{len(ids)}")
+            inputs = ad.TaskSource(lay.private / "kb-batches").stage(ids, "train", f"kb-{args.run_id}-round{k}-n{len(ids)}")
             pass_run = f"kb-{args.run_id}-round{k}"
             print(f"round {k}: tester on {len(ids)} TRAIN scans with {tag} ...", flush=True)
             runner = run.program_runner(lay, image=run.images()[1], pin=pins["program"])
@@ -433,7 +433,7 @@ def cmd_loop(args) -> int:
             if artifacts.status != "ok":
                 print(f"STOPPED: round {k}'s tester pass failed: {artifacts.status} {artifacts.error}")
                 return 1
-            score = ad.TaskScorer().score(artifacts, "kb_train", {})
+            score = ad.TaskScorer().score(artifacts, "train", {})
             summary = write_feedback(lay, k, artifacts, score)
             rec.update({"answers": artifacts.artifact_refs[0].path, "scores": summary["auroc"],
                         "target_mean_auroc": summary["target_mean_auroc"],

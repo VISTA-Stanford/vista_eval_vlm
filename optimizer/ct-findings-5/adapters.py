@@ -44,7 +44,7 @@ import worker as worker_module
 from config import CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, METRIC_NAME, QUESTIONS, TASK_NAME
 
 #: TEST: built only on Phil's go (2026-11-16) by build_data.py test; until then reading it fails. Never scheduled.
-SPLITS = ("train", "val", "test", "kb_train")
+SPLITS = ("train", "val", "test")
 
 
 # ==================================================================================================
@@ -58,9 +58,10 @@ def read_split(split: str) -> list[dict]:
     opaque hash of one scan (one per patient); the scan is the folder ``patient_dir(id)``. Cached; do not mutate."""
     if split not in SPLITS:
         raise ValueError(f"unknown split {split!r}")
-    # kb_train: the knowledge-base pilot's 500 TRAIN tester scans (scripts/build_kb_data.py), its own split so the
-    # climbs' TRAIN pool and its rates are untouched.
-    path = config.KB_DIR / "splits" / "kb_train.jsonl" if split == "kb_train" else DATA_DIR / "splits" / f"{split}.jsonl"
+    # With config.KB_ARM, TRAIN is the knowledge-base pilot's 500 tester scans (scripts/build_kb_data.py): the engine
+    # accepts only train/val/test as split names, and nothing in a KB run reads the climbs' TRAIN pool. VAL is unchanged.
+    path = (config.KB_DIR / "splits" / "kb_train.jsonl" if split == "train" and config.KB_ARM
+            else DATA_DIR / "splits" / f"{split}.jsonl")
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
