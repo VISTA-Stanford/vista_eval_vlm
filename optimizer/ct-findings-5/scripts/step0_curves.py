@@ -12,6 +12,9 @@ on ct-findings-5 has to clear, on the same VAL-200 pool as every agent pass.
              retrieval-arm agent and the untuned agent passes with the MerlinOnc full-TRAIN probe (published
              per-example scores), with the 5-NN vote and with the n=50 probe; paired bootstrap of fused minus probe.
              Phil 2026-11-21: the late fusion of k-NN/probe + agent is the bar to beat.
+    --kb-arms  fusion for the knowledge-base pilot (spec 2026-11-23): its library and empty-library VAL arms beside arm D,
+             with paired intervals over the two target questions (lymph nodes, pneumonitis) alone too; written to
+             ct-findings-5-v1_7-runs/knowledge-base/fusion.json.
     cite     how many TRAIN candidate reports cite a series and/or image number (counted inside BigQuery; no report
              text leaves it). Bounds a slice-level library built from report citations.
 
@@ -58,6 +61,13 @@ AGENT_PASSES = {"retrieval arm": RUNS / "retrieval-arm" / "retrieval.json",
 EXAMPLE_ARMS = {"retrieval arm": RUNS / "retrieval-arm" / "retrieval.json",
                 **{f"arm {a}": RUNS / "example-ct-arms" / f"arm-{a.lower()}.json" for a in "ABCD"}}
 EXAMPLE_OUT = RUNS / "example-ct-arms" / "fusion.json"
+# --kb-arms (spec 2026-11-23-ct-knowledge-base-pilot.md): the knowledge-base library arm and its empty-library arm, with
+# arm D (the best image arm so far) beside them, each on the scans it answers (the 190). The win is judged on the two
+# target questions, so the paired intervals are also given over those two alone.
+KB_ARMS = {"kb library": RUNS / "knowledge-base" / "val-library.json", "kb empty library": RUNS / "knowledge-base" / "val-empty.json",
+           "arm D": RUNS / "example-ct-arms" / "arm-d.json"}
+KB_OUT = RUNS / "knowledge-base" / "fusion.json"
+KB_TARGETS = ("lesion_lymph_nodes", "pneumonitis")
 
 
 def auroc(y, s):
@@ -80,8 +90,11 @@ def main() -> int:
 
     global AGENT_PASSES, OUT
     example_arms = "--example-arms" in sys.argv[1:]
+    kb_arms = "--kb-arms" in sys.argv[1:]
     if example_arms:
         AGENT_PASSES, OUT = EXAMPLE_ARMS, EXAMPLE_OUT
+    if kb_arms:
+        AGENT_PASSES, OUT, example_arms = KB_ARMS, KB_OUT, True  # the same per-arm scoring; citations skipped
 
     client = bigquery.Client(project=bd.PROJECT)
     train, _val_patients, _ = bn.the_split(client)
@@ -231,13 +244,13 @@ def main() -> int:
             table[rname] = {"mean": round(float(np.mean(list(pq_.values()))), 4),
                             "per_question": {q: round(a, 4) for q, a in pq_.items()}}
 
-        def boot(a_name, b_name, nboot=BOOT):
+        def boot(a_name, b_name, nboot=BOOT, keys=KEYS):
             diffs = []
             n = len(pv)
             while len(diffs) < nboot:
                 i = rng.integers(0, n, n)
                 ds = []
-                for q in KEYS:
+                for q in keys:
                     keep = np.isin(sel[q], i)
                     # resample scans: map each drawn VAL index to its row in this question
                     pos = {int(x): j for j, x in enumerate(sel[q])}
@@ -255,6 +268,14 @@ def main() -> int:
         table["paired: agent+probe(full) minus probe(full)"] = boot("agent + probe (full)", "MerlinOnc probe (full TRAIN)")
         table[f"paired: agent+probe(n={FUSION_N}) minus probe(n={FUSION_N})"] = boot(
             f"agent + probe (n={FUSION_N}/class)", f"MerlinOnc probe (n={FUSION_N}/class)", nboot=500)
+        if kb_arms:
+            for rname in ("agent", "MerlinOnc probe (full TRAIN)", "MerlinOnc 5-NN vote", "agent + probe (full)",
+                          "agent + 5-NN vote"):
+                table[rname]["targets_mean"] = round(float(np.mean([table[rname]["per_question"][q] for q in KB_TARGETS])), 4)
+            table["paired targets: agent minus probe(full)"] = boot("agent", "MerlinOnc probe (full TRAIN)", keys=KB_TARGETS)
+            table["paired targets: agent minus 5-NN vote"] = boot("agent", "MerlinOnc 5-NN vote", keys=KB_TARGETS)
+            table["paired targets: agent+probe(full) minus probe(full)"] = boot("agent + probe (full)",
+                                                                                "MerlinOnc probe (full TRAIN)", keys=KB_TARGETS)
         table["failed_answers"] = failed
         table["scans"] = len(pv)
         out["fusion"][pname] = table
