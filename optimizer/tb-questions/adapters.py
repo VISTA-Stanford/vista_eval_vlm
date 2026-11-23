@@ -467,6 +467,18 @@ def patient_files(pid: str) -> list[tuple[Path, str]]:
     return [(f, "-".join(f.relative_to(root).parts)) for f in files]
 
 
+def tumor_board_year(pid: str) -> int | None:
+    """Boards: the year of the tumor board (record cutoff + 7 days, from the record's meta.json; dates are shifted by at
+    most about a month, so the year is right), for the optimizer to study mistakes by era (Phil 2026-11-23). Year only."""
+    from datetime import date, timedelta
+
+    try:
+        cut = json.loads((record_dir(pid) / "meta.json").read_text(encoding="utf-8"))["cutoff"]
+        return (date.fromisoformat(cut[:10]) + timedelta(days=7)).year
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult], MistakeCorpus]:
     """The loop calls this after each TRAIN pass. It writes every TRAIN patient of the pass (the tumor board's answer
     per question asked, None when not asked; the session's probabilities and reasons), marking as a mistake each one
@@ -508,7 +520,8 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
             for key in keys:
                 q = QUESTION[key]
                 gold[key] = next(letter for letter, c, _t in q.options if c == rows[i][key]) if q.options else rows[i][key]
-            entries.append({"id": i, "asked": keys, "tumor_board_answer": gold,
+            extra = {"tumor_board_year": tumor_board_year(i)} if BOARDS else {}
+            entries.append({"id": i, **extra, "asked": keys, "tumor_board_answer": gold,
                             "answer": {key: show(a, key) for key in keys},
                             "error": a["error"], "reason": a.get("reason"), "reasons": a.get("reasons") or [],
                             "mistake": mistake, "wrong_at": wrong_at, "input_files": files, "trace_files": traces})
