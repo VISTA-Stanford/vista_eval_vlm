@@ -76,7 +76,7 @@ if [ -f "$OUT/costcheck.ok" ]; then
     echo "cost check already passed: $(cat "$OUT/costcheck.ok")"
 else
     status running "cost check: one builder session + 10 tester scans"
-    kb loop --run-id kb-costcheck --rounds 1 --tester-scans 10 --cap "$CAP_USD" > "$OUT/costcheck.log" 2>&1 \
+    kb loop --run-id kb-costcheck --rounds 1 --tester-scans 10 --cap "$CAP_USD" --already-spent "$(cat "$OUT/prior_spent_usd.txt" 2>/dev/null || echo 0)" > "$OUT/costcheck.log" 2>&1 \
         || fail "cost check stopped (costcheck.log)"
     kb report --run-id kb-costcheck --out "$OUT/costcheck.json" > /dev/null
     S=$(state kb-costcheck)
@@ -95,7 +95,9 @@ else
     check "$proj <= $CAP_USD" || fail "projected pilot \$$proj passes the \$$CAP_USD cap"
     echo "builder $b tester_per_scan $per projected $proj" > "$OUT/costcheck.ok"
 fi
-cc_spent=$(json_get "$(state kb-costcheck)" "sum(float(r.get('builder_usd') or 0) + float(r.get('tester_usd') or 0) for r in d['rounds'].values())")
+# Spend before this work folder (an earlier attempt's cost check, prior_spent_usd.txt on the mount) counts toward the cap.
+prior=$(cat "$OUT/prior_spent_usd.txt" 2>/dev/null || echo 0)
+cc_spent=$(json_get "$(state kb-costcheck)" "$prior + sum(float(r.get('builder_usd') or 0) + float(r.get('tester_usd') or 0) for r in d['rounds'].values())")
 
 # 4. the loop
 status running "the loop: 5 rounds (cost check spent \$$cc_spent)"
@@ -113,7 +115,7 @@ rm -rf "$OUT/library-best" && git -C "$WORK/repo" archive "$best" library | tar 
 echo "best $best; loop spent \$$loop_spent"
 
 # 5. VAL: empty library and best library, one pass each
-builders=$(python3 -c "import json,sys; print(round(sum(float(r.get('builder_usd') or 0) for f in sys.argv[1:] for r in json.load(open(f))['rounds'].values()), 4))" "$(state kb-costcheck)" "$(state kb-r1)")
+builders=$(python3 -c "import json,sys; print(round(float(sys.argv[1]) + sum(float(r.get('builder_usd') or 0) for f in sys.argv[2:] for r in json.load(open(f))['rounds'].values()), 4))" "$(cat "$OUT/prior_spent_usd.txt" 2>/dev/null || echo 0)" "$(state kb-costcheck)" "$(state kb-r1)")
 total_spent() {  # builder sessions + every tester session this work folder paid for (its receipts)
     py scripts/cost_report.py "$WORK" "$OUT/cost-work-folder.json" > /dev/null || true
     python3 -c "import json,sys; print(round(float(sys.argv[1]) + json.load(open(sys.argv[2]))['patient_sessions_usd'], 2))" "$builders" "$OUT/cost-work-folder.json"
