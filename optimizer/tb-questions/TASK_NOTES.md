@@ -54,6 +54,24 @@ asked directly?
 | Zero-shot gate | stop and come back if VAL < 0.78 (summary-only zero-shot 0.814; Phil 11-21) |
 | Images | sessions need pandas, pyarrow, duckdb<2: added to `docker/requirements.in` (all agents' images get them) |
 
+### The board questions agent (`TB_AGENT=boards-record`, spec planning/vista_eval_vlm/2026-11-22-tb-board-questions-agent.md, Approved 2026-11-22)
+
+| Decision | Answer |
+|---|---|
+| Unit | one tumor board encounter (not a patient): every followed, exact-date, confirmed thoracic tumor board of run label-v1, from vista_bench `tb_classification.py board-questions` (mount tb-relabel-v1-private/board_questions_v1.parquet). TRAIN 2,916 boards / 1,591 patients, VAL 637 / 342, TEST 689 / 345 (sealed); 41 unsplit dropped (Phil 11-22) |
+| Questions | `decision_type` (T1, 9 options) and `intent` (T2, 5) for every board; routed on pre-board facts only (NSCLC + stage + setting): `early_stage_plan` (T3, A-E + F systemic first + G other + H more workup first), `after_surgery_plan` (T3b, 6), `first_line_regimen` (T4, A-E + F + G + H). Option tables in board_options.py; wording drafted at build 2026-11-22, approved by Phil 11-23 |
+| Off-option boards | a routed board whose decision fits no option (refer, surveillance ...) is dropped from that question and keeps T1/T2 (Phil 11-22) |
+| Climb score | mean AUROC over T1, T2, T3 (`CLIMB_KEYS`); T3b (VAL 19) and T4 (VAL 36) scored with intervals, flagged too small to read alone (Phil 11-22) |
+| A-E-only score | T3 / T4: boards answered A-E, probabilities renormalised over A-E (`auroc_a_to_e`; Phil 11-22) |
+| Intervals | bootstrap over patients, each bringing all its boards (`run.bootstrap_ids`); subgroups first vs later board, already treated vs untreated (`strata.jsonl`, never staged) |
+| Input | the record only (no summary), cut 7 days before each board (exporter per-row cutoffs, one cohort row per board), the record arm's registry list without the treatments table; `record_guide_boards.md`; seed = the record seed's paragraph + the five questions word for word + the notes reader |
+| Models | `TB_MODEL=sonnet` (default) or `haiku`: same data, own work folder, images and results (`RUN_LABEL`, e.g. boards-record-haiku) |
+| Caps, stops | $0.50 a session, 15 min; $100 a round, $600 a run; stop after 2 rounds without a new best or 8 rounds (Phil 11-22). Schedule: VAL 637 every round, TRAIN 300 -> 600 by round 4 (build: keeps a round near $90 at the spec's ~$0.07 a session) |
+| Zero-shot gate | stop and come back if untuned Sonnet is at or below the most-common answer on T1 (AUROC or top-pick balanced accuracy), or over 10% of boards fail |
+| TEST | rows in the private folder (test_split.jsonl); `build_data.py test` copies them to splits/ only on Phil's go after the key check |
+| Mistake feedback | a mistake's record is copied for the optimizer whole, without the notes files when notes.txt is over 2 MB (build) |
+| Summary-embedding row | `scripts/summary_probe.py`: logistic regression on gemini_emb_001 summary embeddings, TRAIN -> VAL first tumor boards within 3 days of the old first-board date, scored with run.score_pass ($0, CPU) |
+
 ## Data (built 2026-11-20)
 
 - Treatment TRAIN 492 patients (18 asked both questions): early-stage A/B/C/D/E 79/22/84/61/109; metastatic 66/29/11/37/12.
@@ -72,6 +90,10 @@ asked directly?
     TB_AGENT=treatment-record uv run -q --no-project --with google-cloud-bigquery --with pandas --with pyarrow --with db-dtypes python -B scripts/build_data.py record-cohort
     TB_AGENT=treatment-record uv run ... python -B scripts/build_data.py record-export --dry-run | --go   (--go: first PHI write, approved 11-21)
     TB_AGENT=treatment-record uv run --project $AGENTIC_LABEL_OPT --with pandas python -B scripts/count_plan_notes.py --split val
+    TB_AGENT=boards-record uv run -q --no-project --with pandas --with pyarrow python -B scripts/build_data.py boards-select   $0
+    TB_AGENT=boards-record uv run -q --no-project --with google-cloud-bigquery --with pandas --with pyarrow --with db-dtypes python -B scripts/build_data.py record-cohort
+    TB_AGENT=boards-record uv run ... python -B scripts/build_data.py record-export --dry-run | --go   (--go: PHI write, approved 11-23)
+    TB_AGENT=boards-record [TB_MODEL=haiku] bash scripts/cost_check.sh                              PAID 10+10, needs Phil's go
 
 ## Reference points (in the task briefs)
 
