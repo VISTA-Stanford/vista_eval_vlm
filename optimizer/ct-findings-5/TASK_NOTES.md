@@ -93,3 +93,26 @@ Vote gate on VAL-200, built 2026-11-17 (AUROC; shared = the 5 the agent sees; TR
 
 MerlinOnc similarities are bunched: the closest neighbour is 0.93-0.97 (10th-90th percentile), the 5th 0.92-0.96.
 Converting the 966 neighbour scans is ~12 s each (~50 min on 4 workers), so it runs on phil-hcpu (heavy-job rule).
+
+## Knowledge-base pilot (spec `planning/vista_eval_vlm/2026-11-23-ct-knowledge-base-pilot.md`, Approved 2026-11-23)
+
+Branch `feat/ct-knowledge-base` off `feat/ct-example-arms`. `KB_ARM=1` runs the tester program `program_agentic_kb/`
+(the untuned seed's words plus one paragraph, the same viewer with its grid factored out, the knowledge-base tool
+`tools/kb.py`, and `library/`). A Sonnet builder (the engine's contained editing session, `kb_builder/` holds its
+standing instructions and brief) may edit `library/` only; the tester's instructions and tools are contract files.
+`program-v0` has an empty library, so it is also the paired empty-library arm. Not driven by the climb loop: the
+engine's loop scores VAL twice a round and builds on the VAL best, and this spec keeps VAL out of the loop.
+
+| Piece | Where |
+|---|---|
+| Tester rounds (5 x 100 TRAIN, half positive for nodes or pneumonitis) and the builder's 300 source scans, patients disjoint; volumes, reports, organ ranges, similarity, the local source copy, checks | `scripts/build_kb_data.py select / volumes / reports / organs / similarity / stage / check` |
+| Data | `ct-findings-5-v1_7/kb/` (`rounds.json`, `source.json`, `splits/kb_train.jsonl`, `organs/`, `similarity/`, `source_reports/`); id map `ct-findings-5-v1_7-private/kb_id_map.jsonl` |
+| The loop (builder, tester pass, feedback, cap), library use, report | `scripts/run_kb_loop.py init / pins / loop / usage / report`; usage counter `scripts/kb_usage.py` |
+| Everything in order on sllm-02 | `scripts/run_kb_pilot.sh` (cost check, 5 rounds, both VAL arms, paired comparison, fusion `step0_curves.py --kb-arms`) |
+| Results | `ct-findings-5-v1_7-runs/knowledge-base/` |
+
+Selection (2026-11-23): a patient's pneumonitis-positive scan is preferred, then a lymph-node positive, then any: TRAIN
+patients have about six scans each, so a random scan per patient left the source with 27 pneumonitis positives instead
+of 80. Tester 500 = 386 TRAIN-pool scans (those with organ ranges) + 114 new; each round 15 pneumonitis positives, 35
+lymph-node positives, 50 others. Source 300 = 80 pneumonitis / 110 lymph-node positives / 110 others, 231 of them
+neighbour scans.
