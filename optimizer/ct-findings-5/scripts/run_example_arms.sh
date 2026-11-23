@@ -54,7 +54,7 @@ if [ "$ALO_ROUTE" = vertex ]; then
     [ -e /home/optimizer/.config/gcloud/application_default_credentials.json ] || fail "no optimizer login for Vertex"
 fi
 free_gb=$(df -BG --output=avail "$HOME/.cache" | tail -1 | tr -dc 0-9)
-[ "$free_gb" -ge 60 ] || fail "only ${free_gb} GB free under ~/.cache; need 60 (cache ~48 GB + call folders)"
+[ "$free_gb" -ge "${MIN_FREE_GB:-60}" ] || fail "only ${free_gb} GB free under ~/.cache; need ${MIN_FREE_GB:-60} (cache ~48 GB + call folders)"
 python3 -B "$TASK_DIR/scripts/build_organ_ranges.py" check > "$OUT/organ_check.txt" || fail "organ ranges check failed (organ_check.txt)"
 status running "copying neighbour CTs into the local cache (one copy each)"
 n=$(cd "$TASK_DIR" && EXAMPLE_ARM=A uv run -q --project "$ENGINE_WT" python -B -c "import agentic; print(agentic.warm_cache())")
@@ -66,10 +66,14 @@ for arm in $ARMS; do
     export EXAMPLE_ARM=$arm
     nscans=200; [ "$arm" = C ] && nscans=190
 
+    if [ -f "$OUT/costcheck-$a.ok" ]; then  # resume: this arm's cost check already passed its gates
+    per=$(cat "$OUT/costcheck-$a.ok"); echo "arm $arm cost check already passed: \$$per per scan"
+    else
     status running "arm $arm: 10-scan cost check"
     (cd "$TASK_DIR" && bash scripts/cost_check.sh) > "$OUT/costcheck-$a.log" 2>&1 || fail "arm $arm cost check failed (costcheck-$a.log)"
-    cc=$(ls -td "$RUNS/$(hostname)"/costcheck-* | head -1)
     ccwd=$(ls -td "$HOME"/.cache/alo-tasks/ct-findings-5-costcheck-* | head -1)
+    cc="$RUNS/$(hostname)/$(basename "$ccwd" | sed 's/^ct-findings-5-//')"  # by name: mount folder times are unreliable
+    [ -f "$cc/cost_report.json" ] || fail "arm $arm: no cost report at $cc"
     per=$(json_get "$cc/cost_report.json" "d['passes'][-1]['mean_usd']")
     add_spent "$(json_get "$cc/cost_report.json" "d['patient_sessions_usd']")"
     echo "arm $arm cost check: \$$per per scan; spent so far \$$(cat "$spent_file")"
@@ -83,11 +87,13 @@ for arm in $ARMS; do
     fi
     python3 -c "import sys; s,p,n,c=map(float,sys.argv[1:]); sys.exit(0 if s + 1.1*p*n <= c else 1)" \
         "$(cat "$spent_file")" "$per" "$nscans" "$CAP_USD" || fail "arm $arm would cross the \$$CAP_USD cap"
+    echo "$per" > "$OUT/costcheck-$a.ok"
+    fi
 
     status running "arm $arm: VAL pass on $nscans scans"
     export TASK_WORKDIR=$HOME/.cache/alo-tasks/ct-findings-5-examples-$a
     [ -d "$TASK_WORKDIR/repo" ] || alo init
-    alo pins --write | tail -1
+    git -C "$TASK_WORKDIR/repo" log --format=%s | grep -q '^setup pins for' || alo pins --write | tail -1  # resume: already committed
     ok=0
     for attempt in 1 2 3 4 5; do  # a network stop kills a pass; the same command re-runs only unfinished calls
         if alo val-pass --tag program-v0; then ok=1; break; fi
