@@ -72,6 +72,18 @@ asked directly?
 | Mistake feedback | a mistake's record is copied for the optimizer whole, without the notes files when notes.txt is over 2 MB (build) |
 | Summary-embedding row | `scripts/summary_probe.py`: logistic regression on gemini_emb_001 summary embeddings, TRAIN -> VAL first tumor boards within 3 days of the old first-board date, scored with run.score_pass ($0, CPU) |
 
+### The treatment climb (`TB_AGENT=boards-record TB_QUESTIONS=treatment`, spec planning/vista_eval_vlm/2026-11-23-tb-board-treatment-climb.md, Approved 2026-11-23)
+
+| Decision | Answer |
+|---|---|
+| Why | decision type and intent follow the case frame (pre-board facts alone: VAL T1 0.811, T2 0.902); the treatment is the target (Phil 11-23) |
+| Questions | the board questions plus six yes/no `plan_` questions asked of every board: surgery, radiation, systemic, chemo, immunotherapy, targeted (board_options.MODALITY_QUESTIONS; rows from vista_bench `board-questions --modalities`); a conditional surgery or radiation plan leaves the board out of that question |
+| Labels | Sonnet vs Opus on 303 followed TRAIN boards: agreement 94-100%, kappa 0.83-1.00 (no paid key check) |
+| Score | mean AUROC over the six `plan_` questions + `early_stage_plan`; T1/T2/T3b/T4 reported only; mistakes and retirement on the score's questions only (`MISTAKE_KEYS`) |
+| Seed | Sonnet board climb r1's program-v1 (VAL 0.788 there) + the six questions and all questions word for word (`program_boards_tx/`; bare "board" -> "tumor board") (Phil 11-23) |
+| Folders | data tb-questions-v1_7/boards-tx (same ids and records as boards-record), run label boards-record-tx, run checkout ~/code/vista_eval_vlm-tb-tx-run |
+| Caps | as the board climbs; TRAIN 300 -> 500 by round 4 (cost check $0.073 a session from v1; a 600 round was $93 of the $100 cap) |
+
 ## Data (built 2026-11-20)
 
 - Treatment TRAIN 492 patients (18 asked both questions): early-stage A/B/C/D/E 79/22/84/61/109; metastatic 66/29/11/37/12.
