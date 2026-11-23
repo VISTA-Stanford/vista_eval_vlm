@@ -111,7 +111,10 @@ for d in "$WORK"/kb-tester/round-*; do
     mkdir -p "$OUT/tester-rounds/$(basename "$d")"
     cp "$d/summary.json" "$d/entry_use.json" "$OUT/tester-rounds/$(basename "$d")/"
 done
-rm -rf "$OUT/library-best" && git -C "$WORK/repo" archive "$best" library | tar -x -C "$OUT" && mv "$OUT/library" "$OUT/library-best"
+# Straight into its own folder: the mount (gcsfuse) cannot rename a folder, which killed the first run here (2026-11-23).
+rm -rf "$OUT/library-best" "$OUT/library" && mkdir -p "$OUT/library-best" \
+    && git -C "$WORK/repo" archive "$best" library | tar -x -C "$OUT/library-best" --strip-components=1 \
+    || fail "copying the best library to the mount failed"
 echo "best $best; loop spent \$$loop_spent"
 
 # 5. VAL: empty library and best library, one pass each
