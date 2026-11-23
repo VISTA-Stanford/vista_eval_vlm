@@ -56,9 +56,15 @@ if [ "$ALO_ROUTE" = vertex ]; then
     [ -e /home/optimizer/.config/gcloud/application_default_credentials.json ] || fail "no optimizer login for Vertex"
 fi
 free_gb=$(df -BG --output=avail "$HOME/.cache" | tail -1 | tr -dc 0-9)
-[ "$free_gb" -ge "${MIN_FREE_GB:-50}" ] || fail "only ${free_gb} GB free under ~/.cache; need ${MIN_FREE_GB:-50} (source copy ~15 GB + call folders)"
+[ "$free_gb" -ge "${MIN_FREE_GB:-40}" ] || fail "only ${free_gb} GB free under ~/.cache; need ${MIN_FREE_GB:-40} (source copy 11 GB + pruned call folders)"
 (cd "$TASK_DIR" && uv run -q --no-project --with pandas --with pyarrow python -B scripts/build_kb_data.py check) > "$OUT/data_check.txt" 2>&1 \
     || fail "KB data check failed (data_check.txt)"
+
+# Delete each finished session's staged CT copy as the run goes (shared disk; spec 2026-11-23 build note). Peak with it:
+# the 11 GB source copy plus the few sessions in flight; without it ~45 GB by the end.
+bash "$TASK_DIR/scripts/prune_kb_copies.sh" > "$OUT/prune.log" 2>&1 &
+PRUNER=$!
+trap 'kill $PRUNER 2>/dev/null' EXIT
 
 status running "work folder, source copy and pins"
 kb init > "$OUT/init.log" 2>&1 || fail "init failed (init.log)"
