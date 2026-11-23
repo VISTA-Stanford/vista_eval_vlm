@@ -123,6 +123,12 @@ def builder_prompt(iter_n: int, paths) -> str:
 - `{paths.outputs['change_note.json']}`: write this round's change note here.
 - `{paths.versions}/`: earlier versions of the program, as plain folders.
 
+Images: every image you open stays in this session's memory, and the session fails once they add up past about 30 MB,
+losing everything you built. So explore source scans at `--size 768` or less (view_ct.py and kb.py render both take
+--size), check each entry image right after you render it with a preview at `--size 640` written to /tmp (then write
+the entry's own image at the default size without opening it again), open each image once, and add at most 25 new
+entries this round.
+
 Before you finish, run `python3 -B tools/kb.py check` from your working folder and fix every problem it prints.
 """
 
@@ -375,12 +381,18 @@ def cmd_loop(args) -> int:
             if not tree.exists():
                 materialize(ad.TaskStore().manifest(), sha, repo_root=lay.repo, dest=tree)
             agent = build_builder(lay, run_id=args.run_id, pin=bpin)
-            print(f"round {k}: builder on {base} ...", flush=True)
-            outcome = agent.run(iter_n=k, materialized_path=tree)
-            rec["builder_usd"] = round(float(rec.get("builder_usd") or 0.0) + float(outcome.cost_usd or 0.0), 4)
-            rec["builder_attempts"] = int(rec.get("builder_attempts") or 0) + 1
-            rec["builder_detail"] = str(outcome.detail)[:300]
-            save_state(lay, state)
+            for attempt in (1, 2):  # a failed session keeps nothing; one retry before the round stops
+                if attempt == 2 and total() + BUILDER_BUDGET_USD + reserve()[1] > args.cap:
+                    break
+                print(f"round {k}: builder on {base} (attempt {attempt}) ...", flush=True)
+                outcome = agent.run(iter_n=k, materialized_path=tree)
+                rec["builder_usd"] = round(float(rec.get("builder_usd") or 0.0) + float(outcome.cost_usd or 0.0), 4)
+                rec["builder_attempts"] = int(rec.get("builder_attempts") or 0) + 1
+                rec["builder_detail"] = str(outcome.detail)[:300]
+                save_state(lay, state)
+                if outcome.exit_code == 0:
+                    break
+                print(f"round {k}: builder attempt {attempt} failed: {str(outcome.detail)[:200]}", flush=True)
             if outcome.exit_code != 0:
                 print(f"STOPPED: round {k}'s builder failed: {outcome.detail}")
                 return 1
