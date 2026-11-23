@@ -16,11 +16,16 @@ sessions used their neighbour folders, and the retrieval pass against every untu
              with the mean gap between the stated probability and the neighbours' yes share. With --baselines (the
              JSON of score_baselines.py score --out), the probe and vote rows join the table. Writes
              compare.json and table.md to --out.
+    arms     the example-CT arms (spec 2026-11-22): each --pass scored on the VAL pool scans it answers, all passes on
+             the scans every pass answers, and each --pair X:Y as X minus Y paired over the scans both answer. Writes
+             arms.json and arms.md to --out.
 
     cd optimizer/ct-findings-5
     uv run -q --project $AGENTIC_LABEL_OPT python -B scripts/retrieval_usage.py usage ANSWERS_JSON --out DIR
     uv run -q --project $AGENTIC_LABEL_OPT python -B scripts/retrieval_usage.py compare --retrieval ANSWERS_JSON \
         --untuned prob-r1=A.json --untuned prob-r2=B.json --untuned prob-r4=C.json --baselines BASE.json --out DIR
+    uv run -q --project $AGENTIC_LABEL_OPT python -B scripts/retrieval_usage.py arms --pass A=a.json --pass B=b.json \
+        --pair A:B --out DIR
 
 Counts and AUROCs only: never a report line, a finding note or an identifier other than the opaque scan id.
 """
@@ -339,6 +344,53 @@ def cmd_compare(args) -> int:
     return 0
 
 
+def cmd_arms(args) -> int:
+    """The example-CT arms (spec 2026-11-22-ct-findings-example-ct-arms.md): each pass scored on the VAL pool scans it
+    answers (arm C answers only the 190 with organ ranges), every pass also on the scans all passes share, and each
+    --pair X:Y as X minus Y paired over the scans both answer."""
+    gold = {r["id"]: r for r in ad.read_split("val")}
+    pool = set(ad.pools()["val"])
+    passes = {}
+    for item in args.passes:
+        name, _, path = item.partition("=")
+        passes[name] = load_answers(path)
+        extra = set(passes[name]) - pool
+        if extra:
+            raise SystemExit(f"{name}: {len(extra)} answers outside the VAL pool")
+    cover = {n: sorted(set(a) & pool) for n, a in passes.items()}
+    shared = sorted(set.intersection(*(set(c) for c in cover.values())))
+    scores = {n: aurocs(gold, a, cover[n]) for n, a in passes.items()}
+    scores_shared = {n: aurocs(gold, a, shared) for n, a in passes.items()}
+    errors = {n: sum(1 for i in cover[n] if a[i].get("error")) for n, a in passes.items()}
+    pairs = {}
+    for item in args.pair:
+        x, _, y = item.partition(":")
+        ids = sorted(set(cover[x]) & set(cover[y]))
+        pairs[f"{x} - {y}"] = {"n": len(ids), **paired(gold, passes[x], passes[y], ids)}
+    result = {"scans": {n: len(c) for n, c in cover.items()}, "shared_scans": len(shared), "scores": scores,
+              "scores_on_shared": scores_shared, "program_errors": errors, "pairs": pairs, "bootstrap": BOOTSTRAP}
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "arms.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
+
+    cols = (*KEYS, "mean")
+    head = "| row | scans | " + " | ".join(c.replace("lesion_", "") for c in cols) + " |"
+    rule = "|" + "---|" * (len(cols) + 2)
+    lines = [head, rule]
+    lines += [f"| {n} | {len(cover[n])} | " + " | ".join(f"{scores[n][c]:.3f}" for c in cols) + " |" for n in passes]
+    lines += ["", f"Every pass on the {len(shared)} scans all of them answer:", "", head, rule]
+    lines += [f"| {n} | {len(shared)} | " + " | ".join(f"{scores_shared[n][c]:.3f}" for c in cols) + " |"
+              for n in passes]
+    lines += ["", "Paired differences over the scans both passes answer (95% interval):", "", head, rule]
+    for name, d in pairs.items():
+        lines.append(f"| {name} | {d['n']} | " + " | ".join(
+            f"{d[c]['diff']:+.3f} [{d[c]['lower']:+.3f}, {d[c]['upper']:+.3f}]" for c in cols) + " |")
+    (out / "arms.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines))
+    print(f"program errors {errors}; written arms.json and arms.md to {out}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -350,8 +402,12 @@ def main() -> int:
     c.add_argument("--untuned", action="append", default=[], help="name=answers.json, once per untuned pass")
     c.add_argument("--baselines", default="")
     c.add_argument("--out", required=True)
+    m = sub.add_parser("arms")
+    m.add_argument("--pass", dest="passes", action="append", required=True, help="name=answers.json, once per pass")
+    m.add_argument("--pair", action="append", default=[], help="X:Y, scored as X minus Y")
+    m.add_argument("--out", required=True)
     args = ap.parse_args()
-    return {"usage": cmd_usage, "compare": cmd_compare}[args.cmd](args)
+    return {"usage": cmd_usage, "compare": cmd_compare, "arms": cmd_arms}[args.cmd](args)
 
 
 if __name__ == "__main__":
