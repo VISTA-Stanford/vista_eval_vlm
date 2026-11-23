@@ -42,7 +42,7 @@ from engine.schemas import (
 )
 
 import worker as worker_module
-from config import (BOARDS, CLIMB_KEYS, CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, METRIC_NAME, QUESTIONS, RECORD,
+from config import (BOARDS, CLIMB_KEYS, MISTAKE_KEYS, CONTRACT_FILES, DATA_DIR, EDITABLE_FILES, METRIC_NAME, QUESTIONS, RECORD,
                     RECORD_PATIENTS, SUMMARY_PATIENTS, TASK_NAME)
 
 #: TEST: built only on Phil's go (2026-11-16) by build_data.py test; until then reading it fails. Never scheduled.
@@ -419,7 +419,7 @@ class TaskScorer:
         """Right or wrong per patient on a TRAIN pass (the data schedule retires patients answered right N times in
         a row): right only when every question asked is right. ``None`` for a patient whose call failed."""
         gold = {r["id"]: r for r in read_split(split)}
-        return {i: (None if a["error"] else all(right(a, key, gold[i][key]) for key in asked(gold[i])))
+        return {i: (None if a["error"] else all(right(a, key, gold[i][key]) for key in asked(gold[i]) if key in MISTAKE_KEYS))
                 for i, a in _answers(artifacts).items()}
 
 
@@ -503,7 +503,7 @@ def mistake_corpus(feedback_root: Path) -> Callable[[RunArtifacts, ScoreResult],
         entries = []
         for i, a in sorted(answers.items()):
             keys = asked(rows[i])
-            wrong_at = [key for key in keys if not right(a, key, rows[i][key])]
+            wrong_at = [key for key in keys if key in MISTAKE_KEYS and not right(a, key, rows[i][key])]
             mistake = bool(a["error"]) or bool(wrong_at)
             files, traces = [], []
             if mistake:

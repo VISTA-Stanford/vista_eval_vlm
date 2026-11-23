@@ -17,7 +17,8 @@ set -euo pipefail
 : "${TB_AGENT:?set TB_AGENT=treatment, imaging, treatment-record or boards-record}"
 export TB_AGENT
 export TB_MODEL=${TB_MODEL:-sonnet}
-LABEL=$TB_AGENT$([ "$TB_MODEL" = haiku ] && echo -haiku || true)  # config.RUN_LABEL
+export TB_QUESTIONS=${TB_QUESTIONS:-board}
+LABEL=$TB_AGENT$([ "$TB_QUESTIONS" = treatment ] && echo -tx || true)$([ "$TB_MODEL" = haiku ] && echo -haiku || true)  # config.RUN_LABEL
 export ALO_ROUTE=${ALO_ROUTE:-vertex}
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ENGINE=${AGENTIC_LABEL_OPT:-$HOME/code/agentic-label-opt/.claude/worktrees/mortality-engine}

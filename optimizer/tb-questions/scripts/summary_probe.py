@@ -12,12 +12,17 @@ cross-validation on TRAIN (log loss), fit on the options with at least MIN_PER_O
 probability 0 (a single-board option would otherwise leave no stratified folds). Counts only on screen.
 
     cd optimizer/tb-questions && TB_AGENT=boards-record uv run -q --project $AGENTIC_LABEL_OPT --with scikit-learn \\
-        --with pandas --with pyarrow --with google-cloud-bigquery --with db-dtypes python -B scripts/summary_probe.py
+        --with pandas --with pyarrow --with google-cloud-bigquery --with db-dtypes python -B scripts/summary_probe.py \
+        [--pair <an agent pass's answers.json> ...]
+
+--pair also scores each given agent pass on the same first tumor boards, with the same patient bootstrap draws, and
+the paired difference agent - classifier per question and for the climb score (2,000 draws).
 """
 
 from __future__ import annotations
 
 import json
+import random
 import socket
 import sys
 from datetime import date
@@ -37,7 +42,35 @@ MATCH_DAYS = 3  # DECIDE: build 2026-11-22 (the finder's recall check used the s
 C_GRID = (1e-5, 1e-4, 0.001, 0.01, 0.1, 1.0)  # the first run picked 0.001, the old edge, everywhere
 
 
+def paired(agent: dict, probe: dict, draws: int = 2000, seed: int = 0) -> dict:
+    """Agent - classifier on the classifier's boards: point values and a 95% interval from shared patient draws."""
+    ids = sorted(probe)
+    rows = {r["id"]: r for r in ad.read_split("val")}
+    rng = random.Random(seed)
+    boots = [run.bootstrap_ids(ids, rng) for _ in range(draws)]
+
+    def score(ans, sel):
+        m = run._metrics(rows, ans, sel)
+        out = {k: m[k]["auroc"] for k in m}
+        live = [out[k] for k in config.CLIMB_KEYS if k in out]
+        out["climb_score"] = sum(live) / len(live)
+        return out
+
+    a, p = score(agent, ids), score(probe, ids)
+    diffs = [(lambda x, y: {k: x[k] - y[k] for k in x if k in y})(score(agent, b), score(probe, b)) for b in boots]
+    res = {}
+    for k in a:
+        if k not in p:
+            continue
+        v = sorted(d[k] for d in diffs if k in d)
+        res[k] = {"agent": round(a[k], 4), "classifier": round(p[k], 4), "difference": round(a[k] - p[k], 4),
+                  "difference_ci": [round(v[int(0.025 * len(v))], 4), round(v[min(int(0.975 * len(v)), len(v) - 1)], 4)]}
+    return {"boards": len(ids), "draws": draws, "questions": res}
+
+
 def main() -> int:
+    import argparse
+
     import pandas as pd
     from google.cloud import bigquery
     from sklearn.linear_model import LogisticRegression
@@ -45,6 +78,9 @@ def main() -> int:
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
 
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pair", type=Path, nargs="*", default=[])
+    args = ap.parse_args()
     if not config.BOARDS:
         raise SystemExit("set TB_AGENT=boards-record")
     id_map = {m["id"]: m for m in map(json.loads, (config.ID_MAP_DIR / "id_map.jsonl").read_text().splitlines()) if m}
@@ -103,6 +139,20 @@ def main() -> int:
     out = run.RESULTS_ROOT / socket.gethostname() / config.AGENT / "summary-probe"
     out.mkdir(parents=True, exist_ok=True)
     (out / "summary_probe_val.json").write_text(json.dumps(res, indent=1) + "\n", encoding="utf-8")
+    (out / "summary_probe_val_answers.json").write_text(json.dumps({"answers": answers}) + "\n", encoding="utf-8")
+    from engine.schemas import ArtifactRef, RunArtifacts
+
+    for path in args.pair:
+        ag = ad._answers(RunArtifacts(batch_id="p", status="ok", artifact_refs=(ArtifactRef(path=str(path), sha256="0" * 64),)))
+        missing = set(answers) - set(ag)
+        if missing:
+            raise SystemExit(f"STOP: {len(missing)} classifier boards have no answer in {path}")
+        pr = paired({i: ag[i] for i in answers}, answers)
+        pr["agent_answers"] = str(path)
+        name = path.parent.name.replace("/", "_")
+        (out / f"paired_{name}.json").write_text(json.dumps(pr, indent=1) + "\n", encoding="utf-8")
+        print(f"paired vs {path}:")
+        print(json.dumps(pr["questions"], indent=1))
     print(json.dumps({"climb_score": res["climb_score"], "boards": res["boards"], "fits": fits,
                       "questions": {k: {m: v.get(m) for m in ("n", "auroc", "auroc_ci", "auroc_a_to_e",
                                                                "top_pick_balanced_accuracy", "always_most_common")}

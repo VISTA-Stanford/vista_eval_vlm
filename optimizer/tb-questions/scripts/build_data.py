@@ -47,6 +47,7 @@ AGENT = os.environ.get("TB_AGENT", "")
 if AGENT not in ("treatment", "imaging", "treatment-record", "boards-record"):
     raise SystemExit("set TB_AGENT=treatment, imaging, treatment-record or boards-record")
 BOARDS = AGENT == "boards-record"
+TX = BOARDS and os.environ.get("TB_QUESTIONS", "board") == "treatment"  # config.TX
 PROJECT = "som-nero-plevriti-deidbdf"
 TABLE = f"{PROJECT}.vista_bench_v1_7.tb_classification_tasks"
 #: (answer key, vista_bench task), in config.QUESTIONS order.
@@ -56,7 +57,7 @@ PROGRESSION = ("progression", "progression_assessment_answer")
 SAMPLES = Path("/mnt/su-vista-uscentral1/vistabench/vlm/evalset_v1/samples")
 NIFTI_ROOT = Path("/mnt/su-vista-uscentral1/chaudhari_lab/ct_data/ct_scans/vista/feb26")  # context.nifti's snapshot
 MOUNT = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil")
-DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", MOUNT / "tb-questions-v1_7" / AGENT))
+DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", MOUNT / "tb-questions-v1_7" / ("boards-tx" if TX else AGENT)))
 PRIVATE_DIR = Path(os.environ.get("TASK_PRIVATE_DIR", MOUNT / "tb-questions-v1_7-private" / AGENT))
 SALT = f"tb-questions-v1:{AGENT}"
 #: Imaging: the picking pool's size out of the 288 (the rest is feedback), and the draw's seed (spec: ~188 / ~100).
@@ -477,6 +478,8 @@ def record_export(args) -> int:
 #: vista_bench tb_classification.py board-questions output: one row per (followed exact-date board, question asked),
 #: with person_id, board date, cutoff (7 days before), split, answer and the subgroup facts. Private (person level).
 BOARD_ROWS = MOUNT / "tb-relabel-v1-private" / "board_questions_v1.parquet"
+#: The treatment climb's modality rows (vista_bench tb_classification.py board-questions --modalities): same boards.
+MODALITY_ROWS = MOUNT / "tb-relabel-v1-private" / "board_modalities_v1.parquet"
 #: The spec's counts (Done when): followed exact-date boards per split, unsplit ones already dropped by the builder.
 BOARD_COUNTS = {"train": 2916, "val": 637, "test": 689}
 
@@ -502,6 +505,12 @@ def boards_select(rows_path: Path, *, data_dir: Path | None = None, private_dir:
     data_dir = data_dir or DATA_DIR
     private_dir = private_dir or PRIVATE_DIR
     d = pd.read_parquet(rows_path)
+    if TX:  # the treatment climb: the board questions plus the modality questions, one row per board
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from board_options import MODALITY_ANSWER_CODES
+
+        codes = {**codes, **MODALITY_ANSWER_CODES}
+        d = pd.concat([d, pd.read_parquet(MODALITY_ROWS)], ignore_index=True)
     bad = sorted({f"{q}:{a}" for q, a in zip(d["question"], d["answer"]) if a not in codes.get(q, {})})
     if bad:
         raise SystemExit(f"STOP: answers with no option: {bad[:5]}")
@@ -649,6 +658,22 @@ def main() -> int:
     b.add_argument("--rows", type=Path, default=BOARD_ROWS)
     args = ap.parse_args()
     if BOARDS:
+        if args.cmd == "boards-select" and TX:
+            # Same boards and ids as boards-record: its private id map is the one in use, so write this build's to a
+            # scratch folder and require it to match (never rewrite the live one).
+            import tempfile
+
+            with tempfile.TemporaryDirectory() as tmp:
+                code = boards_select(args.rows, private_dir=Path(tmp))
+                for n in ("id_map.jsonl", "id_map_test.jsonl"):
+                    if (Path(tmp) / n).read_bytes() != (PRIVATE_DIR / n).read_bytes():
+                        raise SystemExit(f"STOP: the treatment build's {n} differs from boards-record's")
+                print("id maps identical to boards-record's (same boards, same ids)")
+                (DATA_DIR / "test_split.jsonl").unlink(missing_ok=True)
+                tx_priv = MOUNT / "tb-questions-v1_7-private" / "boards-tx"
+                tx_priv.mkdir(parents=True, exist_ok=True)
+                (tx_priv / "test_split.jsonl").write_bytes((Path(tmp) / "test_split.jsonl").read_bytes())
+            return code
         if args.cmd == "boards-select":
             return boards_select(args.rows)
         if args.cmd == "test":

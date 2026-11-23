@@ -4,7 +4,7 @@
 # $OUT/progress.log on the mount. Order: record checks -> pruner -> cost checks (Sonnet, Haiku) -> Sonnet untuned VAL
 # + stop rule + climb (detached) -> Haiku untuned VAL + climb (detached).
 #
-#   setsid nohup bash optimizer/tb-questions/scripts/overnight_boards.sh > /dev/null 2>&1 < /dev/null &
+#   [FROM=launch] setsid nohup bash optimizer/tb-questions/scripts/overnight_boards.sh > /dev/null 2>&1 < /dev/null &
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 OUT=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7-runs/$(hostname)/boards-record/overnight
@@ -15,6 +15,7 @@ fail() { say "STOPPED: $*"; exit 1; }
 cd "$HERE"
 
 say "start (host $(hostname), free disk $(df -BG --output=avail "$HOME" | tail -1 | tr -d ' '))"
+if [ "${FROM:-}" != launch ]; then  # FROM=launch: checks and cost checks already passed, start at the launches
 while pgrep -f "[c]heck_task.py check" > /dev/null; do sleep 30; done  # [c]: never match this line's own shell
 grep -q "^ALL PASS" "$CHECK_LOG" || { grep -E "FAIL" "$CHECK_LOG" | head -5 | tee -a "$OUT/progress.log"; fail "record checks did not all pass"; }
 cp "$CHECK_LOG" "$OUT/check_task.txt"
@@ -28,6 +29,8 @@ for m in sonnet haiku; do
         || { tail -15 "$OUT/costcheck-$m.log" >> "$OUT/progress.log"; fail "cost check $m failed (log $OUT/costcheck-$m.log)"; }
     say "cost check $m: $(grep -E '^extrapolated|^rounds that fit|^PASS' "$OUT/costcheck-$m.log" | tr '\n' ' ')"
 done
+
+fi
 
 for m in sonnet haiku; do
     say "launch $m: setup, dry run, untuned VAL pass, then the climb (detached)"

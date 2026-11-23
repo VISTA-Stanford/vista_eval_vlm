@@ -21,7 +21,8 @@ set -euo pipefail
 : "${TB_AGENT:?set TB_AGENT=treatment, imaging, treatment-record or boards-record}"
 export TB_AGENT
 export TB_MODEL=${TB_MODEL:-sonnet}  # boards only: sonnet or haiku (config.TB_MODEL)
-LABEL=$TB_AGENT$([ "$TB_MODEL" = haiku ] && echo -haiku || true)  # config.RUN_LABEL: work folder, images, results
+export TB_QUESTIONS=${TB_QUESTIONS:-board}  # boards only: board or treatment (config.TB_QUESTIONS)
+LABEL=$TB_AGENT$([ "$TB_QUESTIONS" = treatment ] && echo -tx || true)$([ "$TB_MODEL" = haiku ] && echo -haiku || true)  # config.RUN_LABEL: work folder, images, results
 export ALO_ROUTE=${ALO_ROUTE:-vertex}  # the spec's route
 BRANCH=feat/tb-agent-questions
 [ "$TB_AGENT" != treatment-record ] || BRANCH=feat/tb-treatment-record  # the full-record arm's branch (spec 2026-11-21)
@@ -30,10 +31,11 @@ VLM=${VLM_REPO:-$HOME/code/vista_eval_vlm}
 TASK_WT=${TASK_WT:-$HOME/code/vista_eval_vlm-tb-questions-run}
 [ "$TB_AGENT" != treatment-record ] || TASK_WT=${TASK_WT_RECORD:-$HOME/code/vista_eval_vlm-tb-record-run}  # its own checkout: the summary runs keep theirs
 [ "$TB_AGENT" != boards-record ] || TASK_WT=${TASK_WT_BOARDS:-$HOME/code/vista_eval_vlm-tb-boards-run}
+[ "$TB_QUESTIONS" != treatment ] || TASK_WT=${TASK_WT_TX:-$HOME/code/vista_eval_vlm-tb-tx-run}  # its own checkout: never move a live climb's code
 TASK_DIR=$TASK_WT/optimizer/tb-questions
 ENGINE=$HOME/code/agentic-label-opt
 ENGINE_WT=$ENGINE/.claude/worktrees/mortality-engine
-DATA=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7/$TB_AGENT
+DATA=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7/$([ "$TB_QUESTIONS" = treatment ] && echo boards-tx || echo "$TB_AGENT")
 RESULTS_ROOT=/mnt/su-vista-uscentral1/chaudhari_lab/phil/tb-questions-v1_7-runs
 RUN_ID=${RUN_ID:-r1}
 ITERATIONS=${ITERATIONS:-$([ "$TB_AGENT" = boards-record ] && echo 8 || echo 10)}  # specs; the stop rule usually ends it sooner
@@ -123,6 +125,8 @@ for pid in $(pgrep -f "run.py run --run-id" || true); do
     [ "$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^TB_AGENT=//p')" = "$TB_AGENT" ] || continue
     pm=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^TB_MODEL=//p')
     [ "${pm:-sonnet}" = "$TB_MODEL" ] || continue  # the Sonnet and Haiku arms have their own images
+    pq=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^TB_QUESTIONS=//p')
+    [ "${pq:-board}" = "$TB_QUESTIONS" ] || continue  # the treatment climb has its own images too
     case "$(readlink "/proc/$pid/cwd" 2>/dev/null)" in */optimizer/tb-questions) fail "a tb-questions $TB_AGENT run is live here (pid $pid); setup would rebuild its image";; esac
 done
 alo build-images >/dev/null || fail "build-images"
@@ -153,5 +157,5 @@ else
 fi
 mkdir -p "$TASK_WORKDIR"
 cp "$TASK_DIR/scripts/run_on_vm.sh" "$TASK_WORKDIR/run_on_vm.sh"
-setsid nohup env TB_AGENT="$TB_AGENT" TB_MODEL="$TB_MODEL" ALO_ROUTE="$ALO_ROUTE" RUN_ID="$RUN_ID" ITERATIONS="$ITERATIONS" MAX_RESUMES="$MAX_RESUMES" START="${START:-}" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
+setsid nohup env TB_AGENT="$TB_AGENT" TB_MODEL="$TB_MODEL" TB_QUESTIONS="$TB_QUESTIONS" ALO_ROUTE="$ALO_ROUTE" RUN_ID="$RUN_ID" ITERATIONS="$ITERATIONS" MAX_RESUMES="$MAX_RESUMES" START="${START:-}" bash "$TASK_WORKDIR/run_on_vm.sh" --loop > "$LOG" 2>&1 < /dev/null &
 echo "SETUP PASS: run $RUN_ID started detached ($PROGRAM_MAX_CONCURRENT at a time); log $LOG; results to $RESULTS"

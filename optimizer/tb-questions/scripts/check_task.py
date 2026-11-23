@@ -41,6 +41,7 @@ CARDS_SRC = Path.home() / "code" / "vista_eval_vlm-tb-cards" / "src"
 #: What the build printed (2026-11-20): pool sizes per agent.
 SIZES = {"treatment": {"train": 492, "val": 111}, "imaging": {"train": 188, "val": 100},
          "treatment-record": {"train": 492, "val": 111}, "boards-record": {"train": 2916, "val": 637}}
+SIZES["boards-record-tx"] = SIZES["boards-record"]
 
 
 def cmd_check() -> int:
@@ -376,7 +377,7 @@ def check_scorer(report) -> None:
         g = trows[i][q.key]
         return g != q.options[0][1] if q.options else g == 0
     good = all(set(e["wrong_at"]) == {q.key for q in config.QUESTIONS if trows[e["id"]].get(q.key) is not None
-                                      and wrong(e["id"], q)}
+                                      and q.key in config.MISTAKE_KEYS and wrong(e["id"], q)}
                and e["mistake"] == bool(e["wrong_at"]) and e["asked"] == ad.asked(trows[e["id"]])
                and all((e["tumor_board_answer"][k] in [x for x, _c, _t in ad.QUESTION[k].options]) if ad.QUESTION[k].options else
                        e["tumor_board_answer"][k] == trows[e["id"]][k] for k in e["asked"])
@@ -397,8 +398,10 @@ def check_output(report, spec) -> None:
 
     rows = ad.read_split("val")
     if config.BOARDS:
-        two = next(r for r in rows if ad.asked(r) == ["decision_type", "intent"])
-        three = next(r for r in rows if "early_stage_plan" in ad.asked(r))
+        two = next(r for r in rows if [k for k in ad.asked(r) if not k.startswith("plan_")] == ["decision_type", "intent"]
+                   and all(r.get(q.key) is not None for q in config.QUESTIONS if q.key.startswith("plan_")))
+        three = next(r for r in rows if "early_stage_plan" in ad.asked(r)
+                     and all(r.get(q.key) is not None for q in config.QUESTIONS if q.key.startswith("plan_")))
         L9, L5, L8 = "ABCDEFGHI", "ABCDE", "ABCDEFGH"
         D = {k: 10 for k in L9}
         D["A"] = 20
@@ -420,6 +423,13 @@ def check_output(report, spec) -> None:
              "not_a_probability"),  # only the old five letters: F-H missing
             (three, {"decision_type": D, "intent": Iu}, None, "not_a_probability"),
         ]
+        if config.TX:  # every board is also asked the six yes/no plan_ questions: give them all, read as 0.40
+            mods = [q.key for q in config.QUESTIONS if q.key.startswith("plan_")]
+            cases = [(r, {**body, **{k: 40 for k in mods}}, None if want is None else {**want, **{k: 0.4 for k in mods}}, err)
+                     for r, body, want, err in cases]
+            cases.append((two, {"decision_type": D, "intent": Iu, **{k: 40 for k in mods[:-1]}}, None, "not_a_probability"))
+            cases.append((two, {"decision_type": D, "intent": Iu, **{k: 40 for k in mods}, mods[0]: 140}, None,
+                          "not_a_probability"))
     elif config.TREATMENT:
         one = next(r for r in rows if ad.asked(r) == ["early_stage_plan"])
         both = next((r for r in rows if len(ad.asked(r)) == 2), None)
@@ -495,7 +505,7 @@ def check_pools(report) -> None:
     import pandas as pd
 
     pools = ad.pools()
-    want = SIZES[config.AGENT]
+    want = SIZES[config.AGENT + ("-tx" if config.TX else "")]
     split_ids = {s: [r["id"] for r in ad.read_split(s)] for s in ("train", "val")}
     report(f"pools: TRAIN {want['train']} and VAL {want['val']}, each split file == its pool",
            all(len(pools[s]) == want[s] and set(split_ids[s]) == pools[s] and len(split_ids[s]) == want[s]

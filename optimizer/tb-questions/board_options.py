@@ -72,3 +72,25 @@ BOARD_OPTION_TABLES = {"decision_type": DECISION_OPTIONS, "intent": INTENT_OPTIO
                        "after_surgery_plan": AFTER_SURGERY_OPTIONS, "first_line_regimen": BOARD_FIRST_LINE_OPTIONS}
 #: label-v1 value -> code, per board question (build_data.py boards-select).
 BOARD_ANSWER_CODES = {k: {v: code for _l, code, _t, v in opts} for k, opts in BOARD_OPTION_TABLES.items()}
+
+
+# Treatment climb (spec planning/vista_eval_vlm/2026-11-23-tb-board-treatment-climb.md): yes/no, asked of every
+# board: does the tumor board's plan include it. (key, label-v1 question in board_modalities_v1.parquet, text).
+MODALITY_QUESTIONS = (
+    ("plan_surgery", "Will the tumor board's plan for this patient include surgery?",
+     "Yes: the plan includes an operation on the cancer (any resection).", "No: it does not."),
+    ("plan_radiation", "Will the tumor board's plan for this patient include radiation?",
+     "Yes: the plan includes radiation of any kind (SBRT, definitive, consolidative, postoperative, palliative, brain).",
+     "No: it does not."),
+    ("plan_systemic", "Will the tumor board's plan for this patient include systemic therapy?",
+     "Yes: the plan includes systemic therapy of any kind, new or continued.", "No: it does not."),
+    ("plan_chemo", "Will the tumor board's plan for this patient include chemotherapy?",
+     "Yes: the plan includes chemotherapy (platinum-based or other), new or continued.", "No: it does not."),
+    ("plan_immunotherapy", "Will the tumor board's plan for this patient include immunotherapy?",
+     "Yes: the plan includes a PD-1, PD-L1 or CTLA-4 drug, new or continued.", "No: it does not."),
+    ("plan_targeted", "Will the tumor board's plan for this patient include targeted therapy?",
+     "Yes: the plan includes a drug aimed at a driver alteration (EGFR, ALK, ROS1, KRAS, MET, RET and others), new or "
+     "continued.", "No: it does not."),
+)
+#: board_modalities_v1.parquet answer -> code (yes/no questions: 1 yes, 0 no).
+MODALITY_ANSWER_CODES = {k: {"yes": 1, "no": 0} for k, *_ in MODALITY_QUESTIONS}

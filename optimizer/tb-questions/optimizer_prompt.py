@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF, TREATMENT, BOARDS  # run.py sets ITERATIONS
+from config import AGENTIC, EDITABLE_FILES, ITERATIONS, OPTIMIZER_INSTRUCTIONS, SEARCH_PROXY, SEARCH_REQUESTS_PER_ROUND, TASK_BRIEF, TREATMENT, BOARDS, TX  # run.py sets ITERATIONS
 
 HERE = Path(__file__).resolve().parent
 INSTRUCTIONS = OPTIMIZER_INSTRUCTIONS
@@ -65,7 +65,7 @@ STUDY_BOARDS = (
     "  decision_type and intent, some also one treatment question), the tumor board's answer as a letter\n"
     "  (`tumor_board_answer`), the probabilities the session gave each letter (`answer`) and its stated reasons. A\n"
     "  mistake is a question whose top letter was not the tumor board's (`wrong_at`), or a failed session. The score is\n"
-    "  per-letter AUROC averaged over decision_type, intent and early_stage_plan: for each letter, encounters whose answer\n"
+    "  SCORE_LINE: for each letter, encounters whose answer\n"
     "  was that letter should get a higher probability on it than encounters whose answer was another. So a confident wrong\n"
     "  letter costs most, and so does giving every encounter the same spread. Only mistakes come with their record and\n"
     "  transcript.\n"
@@ -101,6 +101,12 @@ def build_prompt(iter_n: int, paths) -> str:
                  f"climb on these same VAL {what}, not from the seed. Read your notebook and the earlier change notes "
                  "(notes folder) first: they say what was tried and what each version scored. Then improve on this "
                  "version.")
+    elif TX:
+        first = ("This is the first iteration. The program is the best version of the earlier climb on this tumor board "
+                 "(it scored decision_type, intent and early_stage_plan), with the six plan_ questions added. Its "
+                 "treatment guidance has not been tested on them. Read the task brief, read the mistakes on the plan_ "
+                 "questions and early_stage_plan and some of their records, and rewrite instructions.md for the "
+                 "treatment questions (see 'The focus: which treatment' in your standing instructions).")
     elif BOARDS:
         first = ("This is the first iteration. The program is the seed: how to find the record, the notes reader and the "
                  "tumor board questions word for word, so its score is what a plain zero-shot prompt gets. Read the task "
@@ -119,7 +125,11 @@ def build_prompt(iter_n: int, paths) -> str:
                  "read the mistakes, look at some of those pairs yourself, and write a real first version of "
                  "instructions.md: how to compare the two scans and what these tumor boards called progression (see "
                  "step 4 of your standing instructions).")
-    test = ((STUDY_BOARDS if BOARDS else STUDY_TREATMENT if TREATMENT else STUDY_IMAGING)
+    study_boards = STUDY_BOARDS.replace("SCORE_LINE", (
+        "AUROC averaged over the six plan_ questions and early_stage_plan (per letter for early_stage_plan; for a plan_\n"
+        "  question a mistake is a probability on the wrong side of its TRAIN yes share)") if TX else
+        "per-letter AUROC averaged over decision_type, intent and early_stage_plan")
+    test = ((study_boards if BOARDS else STUDY_TREATMENT if TREATMENT else STUDY_IMAGING)
             .replace("{program}", paths.program).replace("<files>", f"{paths.feedback}/iter/{iter_n}/files"))
     return f"""Iteration {iter_n} of {ITERATIONS}. {first}
 

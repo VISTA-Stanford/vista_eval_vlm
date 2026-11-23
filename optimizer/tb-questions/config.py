@@ -42,7 +42,13 @@ HAS_RECORD = RECORD or BOARDS
 TB_MODEL = os.environ.get("TB_MODEL", "sonnet")
 if TB_MODEL not in ("sonnet", "haiku") or (TB_MODEL != "sonnet" and not BOARDS):
     raise SystemExit("TB_MODEL=haiku is for TB_AGENT=boards-record only")
-RUN_LABEL = AGENT + ("-haiku" if TB_MODEL == "haiku" else "")
+#: Boards only: which question set the climb scores. "board" (spec 2026-11-22: T1/T2/T3) or "treatment" (spec
+#: planning/vista_eval_vlm/2026-11-23-tb-board-treatment-climb.md: six yes/no modality questions + T3, every board).
+TB_QUESTIONS = os.environ.get("TB_QUESTIONS", "board")
+if TB_QUESTIONS not in ("board", "treatment") or (TB_QUESTIONS != "board" and not BOARDS):
+    raise SystemExit("TB_QUESTIONS=treatment is for TB_AGENT=boards-record only")
+TX = TB_QUESTIONS == "treatment"
+RUN_LABEL = AGENT + ("-tx" if TX else "") + ("-haiku" if TB_MODEL == "haiku" else "")
 # --------------------------------------------------------------------------------------------------
 # Where the engine is. The engine checks that it runs from a git checkout that contains ENGINE_PIN.
 # --------------------------------------------------------------------------------------------------
@@ -142,7 +148,17 @@ CLIMB_KEYS = ("decision_type", "intent", "early_stage_plan")
 A_TO_E_KEYS = ("early_stage_plan", "first_line_regimen")
 SMALL_KEYS = ("after_surgery_plan", "first_line_regimen")
 
-QUESTIONS = BOARD_QUESTIONS if BOARDS else TREATMENT_QUESTIONS if TREATMENT else IMAGING_QUESTIONS
+from board_options import MODALITY_QUESTIONS as _MODALITIES  # noqa: E402
+
+#: The treatment climb's yes/no questions, in the step-4 progression question's form (two bullets + ANSWER_PROB).
+MODALITY_QUESTION_LIST = tuple(Question(k, k, f"Question: {t}\n- {y}\n- {n}\n" + ANSWER_PROB) for k, t, y, n in _MODALITIES)
+if TX:
+    CLIMB_KEYS = tuple(q.key for q in MODALITY_QUESTION_LIST) + ("early_stage_plan",)
+QUESTIONS = (BOARD_QUESTIONS + MODALITY_QUESTION_LIST if TX else BOARD_QUESTIONS) if BOARDS else \
+    TREATMENT_QUESTIONS if TREATMENT else IMAGING_QUESTIONS
+#: The questions a TRAIN answer must get right to count as right (mistakes file, retirement). Treatment climb: only the
+#: score's questions (spec 2026-11-23); otherwise every question asked.
+MISTAKE_KEYS = CLIMB_KEYS if TX else tuple(q.key for q in QUESTIONS)
 if not BOARDS:
     CLIMB_KEYS = tuple(q.key for q in QUESTIONS)
     A_TO_E_KEYS = SMALL_KEYS = ()
@@ -155,7 +171,7 @@ LABELS = tuple(sorted({c for q in QUESTIONS for _k, c, _t in q.options} or {0, 1
 #: (build_data.py test); run.py test is its only reader. On the shared mount (secure environment).
 #: The optimizer never sees this folder. It sees TRAIN only through its mistakes, and VAL only as a score.
 MOUNT = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil")
-DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", MOUNT / "tb-questions-v1_7" / AGENT))
+DATA_DIR = Path(os.environ.get("TASK_DATA_DIR", MOUNT / "tb-questions-v1_7" / ("boards-tx" if TX else AGENT)))
 #: The id -> person_id (and scans) map: never mounted, listed in the forbidden set.
 #: The record agent shares the treatment agent's patients and so its id map (its own private folder holds only the
 #: exporter's cohort file, build_data.py record-cohort).
@@ -175,12 +191,13 @@ PROBABILITY = True
 #: The labeling program the optimizer starts from (program-v0), and the files it may edit. Zero-shot (spec): the
 #: card's opening and question(s) verbatim, the folder layout, and (imaging) the CT pair viewer.
 SEED_PROGRAM_DIR = HERE / {"treatment": "program_treatment", "imaging": "program_imaging",
-                           "treatment-record": "program_treatment_record", "boards-record": "program_boards_record"}[AGENT]
+                           "treatment-record": "program_treatment_record",
+                           "boards-record": "program_boards_tx" if TX else "program_boards_record"}[AGENT]
 EDITABLE_FILES = ("instructions.md", "tools")
 CONTRACT_FILES: tuple[str, ...] = ()
 #: The optimizer's task brief and its standing instructions (its system prompt).
-TASK_BRIEF = HERE / "context" / f"task_{AGENT}.md"
-OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / f"optimizer_instructions_{AGENT}.md"
+TASK_BRIEF = HERE / "context" / f"task_{AGENT}{'-tx' if TX else ''}.md"
+OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / f"optimizer_instructions_{AGENT}{'-tx' if TX else ''}.md"
 
 #: The model each patient's session runs on, how many run at once, and each one's cap (spec, Decided).
 PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-haiku-5-5" if TB_MODEL == "haiku" else "claude-sonnet-5-5")  # DECIDE: Phil 2026-11-20
@@ -232,11 +249,14 @@ TOKEN_BUDGET: int | None = None
 #: patients), VAL = the official valid split (111). Imaging: the 288 train + valid CT pairs redrawn into 188 feedback
 #: (TRAIN) and 100 picking (VAL). VAL is scored whole every round; TRAIN grows to the whole feedback set by round 5
 #: (spec: "feedback grows to the whole feedback set"; round 5 because past climbs stopped by rounds 4-7).
-CLIMB_SCHEDULE: dict = ({"train_size": "linear(300, 600, over=4)", "val_size": "constant(637)"} if BOARDS else
+CLIMB_SCHEDULE: dict = ({"train_size": "linear(300, 500, over=4)", "val_size": "constant(637)"} if TX else
+                        {"train_size": "linear(300, 600, over=4)", "val_size": "constant(637)"} if BOARDS else
                         {"train_size": "linear(200, 492, over=5)", "val_size": "constant(111)"} if TREATMENT else
                         {"train_size": "linear(90, 188, over=5)", "val_size": "constant(100)"})  # DECIDE: build 2026-11-20
 # Boards (build 2026-11-22): all 637 VAL boards each round; TRAIN 300 growing to 600 of the 2,916 by round 4, so a
 # round (about 1,240 sessions at the spec's ~$0.07) stays under the $100 round cap; the cost check measures it.
+# Treatment climb (build 2026-11-23): TRAIN to 500, because its cost check measured $0.073 a session from v1 (a
+# 600-board round $93, too close to the $100 cap); about $86 a round.
 #: Patients answered right several rounds in a row are retired from TRAIN by the engine, so later batches are smaller.
 SCHEDULE: dict | None = CLIMB_SCHEDULE
 if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: the cost check uses it
