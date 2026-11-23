@@ -109,6 +109,9 @@ if KB_ARM:
     SEED_PROGRAM_DIR = HERE / "program_agentic_kb"
     EDITABLE_FILES = ("library",)
     CONTRACT_FILES = ("instructions.md", "tools")
+    import kb_materialize  # the library holds PNGs; the pinned engine writes versions out as text (2026-11-23)
+
+    kb_materialize.install()
 #: The optimizer's task brief and its standing instructions (its system prompt).
 TASK_BRIEF = HERE / "context" / "task.md"
 OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / "optimizer_instructions.md"
