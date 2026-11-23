@@ -98,7 +98,8 @@ def stage_neighbours(scan_id: str, dest: Path) -> None:
 
     Example-CT arms (config.EXAMPLE_ARM): the CTs are hard links to the local cache (one copy per neighbour, not per
     call; a link that fails raises, since the cache and the call folders are on one disk by construction). Arm B
-    stages no CTs and a README that says so. Arm C also stages each neighbour's organs.json."""
+    stages no CTs and a README that says so. Arms C and D also stage each neighbour's organs.json; D also links its
+    pre-rendered grids (scripts/build_views.py) into n<rank>/views/."""
     global _scan_map
     if _scan_map is None:
         _scan_map = json.loads((config.DATA_DIR / "neighbours_scan_map.json").read_text(encoding="utf-8"))
@@ -122,9 +123,13 @@ def stage_neighbours(scan_id: str, dest: Path) -> None:
         for name in NEIGHBOUR_FILES:
             shutil.copy2(src / f"n{rank}" / name, nd / name)
             copied.append(nd / name)
-        if arm == "C":
+        if arm in config.ORGAN_ARMS:
             shutil.copy2(config.ORGAN_DIR / scan_id / f"n{rank}.json", nd / "organs.json")
             copied.append(nd / "organs.json")
+        if arm == "D":
+            (nd / "views").mkdir(parents=True, exist_ok=True)
+            for name in config.VIEW_GRIDS:
+                os.link(config.EXAMPLE_VIEWS / scan_id / f"n{rank}" / name, nd / "views" / name)  # read-only already
         if arm == "B":
             continue
         (nd / "ct").mkdir(parents=True, exist_ok=True)
@@ -152,9 +157,14 @@ def program_spec(forbidden):
             shutil.copy2(patient_dir(call.payload["id"]) / name, dest / name)
         if config.NEIGHBOURS:
             stage_neighbours(call.payload["id"], Path(folder) / "neighbours")
-        if config.EXAMPLE_ARM == "C":
+        if config.EXAMPLE_ARM in config.ORGAN_ARMS:
             shutil.copy2(config.ORGAN_DIR / call.payload["id"] / "target.json", Path(folder) / "organs.json")
             (Path(folder) / "organs.json").chmod(0o444)
+        if config.EXAMPLE_ARM == "D":
+            views = Path(folder) / "ct_views"
+            views.mkdir(parents=True, exist_ok=True)
+            for name in config.VIEW_GRIDS:
+                os.link(config.EXAMPLE_VIEWS / call.payload["id"] / "target" / name, views / name)
 
     def prompt(call, stage_name, paths, pass_id):
         # The per-call wrapper: not optimized. Container paths only. It lists the five questions because the answer

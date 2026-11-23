@@ -6,7 +6,7 @@
 #
 #   git -C ~/code/vista_eval_vlm fetch -q origin && git -C ~/code/vista_eval_vlm show origin/feat/ct-example-arms:optimizer/ct-findings-5/scripts/run_example_arms.sh > ~/run_example_arms.sh && tmux new -d -s example-arms 'bash ~/run_example_arms.sh 2>&1 | tee ~/example-arms.log'
 #
-# Settings, optional, on the same line: ARMS ("A B C"), CAP_USD (75: total across cost checks and passes; a pass is
+# Settings, optional, on the same line: ARMS ("A B C"; "D" for arm D, 2026-11-23), CAP_USD (75: total across cost checks and passes, spent_usd.txt included; a pass is
 # not started if the cost check's cost per scan says it would cross the cap), MAX_PER_SCAN (0.30: the spec's stop),
 # PROGRAM_MAX_CONCURRENT (2, as 11-17). Re-running resumes: a finished arm (its answers on the mount) is skipped, and
 # an unfinished pass re-runs only its unfinished calls.
@@ -59,12 +59,17 @@ python3 -B "$TASK_DIR/scripts/build_organ_ranges.py" check > "$OUT/organ_check.t
 status running "copying neighbour CTs into the local cache (one copy each)"
 n=$(cd "$TASK_DIR" && EXAMPLE_ARM=A uv run -q --project "$ENGINE_WT" python -B -c "import agentic; print(agentic.warm_cache())")
 echo "cached $n neighbours"
+if [[ " $ARMS " == *" D "* ]]; then  # arm D's pre-rendered grids (scripts/build_views.py), once; resumes
+    status running "rendering arm D's organ-targeted grids"
+    (cd "$TASK_DIR" && uv run -q --project "$ENGINE_WT" --with pillow python -B scripts/build_views.py build) \
+        > "$OUT/views_check.txt" 2>&1 || fail "arm D grids failed (views_check.txt)"  # the viewer needs Pillow
+fi
 
 for arm in $ARMS; do
     a=$(echo "$arm" | tr 'A-Z' 'a-z')
     if [ -f "$OUT/arm-$a.json" ]; then echo "arm $arm already finished; skipping"; continue; fi
     export EXAMPLE_ARM=$arm
-    nscans=200; [ "$arm" = C ] && nscans=190
+    nscans=200; { [ "$arm" = C ] || [ "$arm" = D ]; } && nscans=190
 
     if [ -f "$OUT/costcheck-$a.ok" ]; then  # resume: this arm's cost check already passed its gates
     per=$(cat "$OUT/costcheck-$a.ok"); echo "arm $arm cost check already passed: \$$per per scan"
@@ -84,6 +89,11 @@ for arm in $ARMS; do
         share=$(json_get "$OUT/usage-costcheck-$a/usage_summary.json" "d['share_viewed_a_neighbour_ct']")
         python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) >= 0.5 else 1)" "$share" \
             || fail "arm $arm: only $share of cost-check sessions opened a neighbour CT (spec stop)"
+    fi
+    if [ "$arm" = D ]; then  # D must look at every neighbour in full: half the cost check opening all 15 grids
+        all15=$(json_get "$OUT/usage-costcheck-$a/usage_summary.json" "d['share_opened_all_15_grids']")
+        python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) >= 0.5 else 1)" "$all15" \
+            || fail "arm D: only $all15 of cost-check sessions opened all 15 neighbour grids"
     fi
     python3 -c "import sys; s,p,n,c=map(float,sys.argv[1:]); sys.exit(0 if s + 1.1*p*n <= c else 1)" \
         "$(cat "$spent_file")" "$per" "$nscans" "$CAP_USD" || fail "arm $arm would cross the \$$CAP_USD cap"

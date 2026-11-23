@@ -637,10 +637,10 @@ def cmd_val_pass(args) -> int:
     earlier = ([e for e in map(json.loads, ledger_path.read_text().splitlines()) if e["tag"] == args.tag]
                if ledger_path.exists() else [])
     ids = sorted(ad.pools()["val"])
-    if config.EXAMPLE_ARM == "C":  # spec 2026-11-22: arm C is scored only on the scans with organ ranges
+    if config.EXAMPLE_ARM in config.ORGAN_ARMS:  # spec 2026-11-22: arms C and D are scored only on the scans with organ ranges
         ids = [i for i in ids if (config.ORGAN_DIR / i / "target.json").is_file()]
         if not ids:
-            raise SystemExit("arm C: no VAL scan has organ ranges; run scripts/build_organ_ranges.py build first")
+            raise SystemExit(f"arm {config.EXAMPLE_ARM}: no VAL scan has organ ranges; run scripts/build_organ_ranges.py build first")
     if args.limit:
         ids = ids[: args.limit]
     if config.PROGRAM_CALL_BUDGET_USD * len(ids) > VAL_PASS_STOP_USD:

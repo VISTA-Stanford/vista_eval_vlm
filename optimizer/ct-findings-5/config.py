@@ -76,9 +76,12 @@ if NEIGHBOURS:
 #: EXAMPLE_ARM=A|B|C uses the same 5 neighbours as the retrieval arm. A: must view at least one slice of each
 #: neighbour's CT; B: the same folders without the CTs (the image control); C: A plus TotalSegmentator organ ranges
 #: for the scan and each neighbour (scripts/build_organ_ranges.py), scored only on the VAL scans that have them.
-EXAMPLE_ARM = os.environ.get("EXAMPLE_ARM", "").upper()  # DECIDE: spec, the three arms
-if EXAMPLE_ARM not in ("", "A", "B", "C"):
-    raise SystemExit(f"EXAMPLE_ARM must be A, B or C, not {EXAMPLE_ARM!r}")
+#: D (Phil 2026-11-23): C plus pre-rendered organ-targeted grids (lungs, liver, chest soft tissue) of the scan and of
+#: every neighbour (scripts/build_views.py); must open all of them and learn from the neighbours' images and reports.
+EXAMPLE_ARM = os.environ.get("EXAMPLE_ARM", "").upper()  # DECIDE: spec, the arms
+if EXAMPLE_ARM not in ("", "A", "B", "C", "D"):
+    raise SystemExit(f"EXAMPLE_ARM must be A, B, C or D, not {EXAMPLE_ARM!r}")
+ORGAN_ARMS = ("C", "D")  # stage organs.json and score only the VAL scans with organ ranges
 if EXAMPLE_ARM:
     NEIGHBOURS = True
     SEED_PROGRAM_DIR = HERE / f"program_agentic_examples_{EXAMPLE_ARM.lower()}"
@@ -87,6 +90,9 @@ ORGAN_DIR = DATA_DIR / "organ_ranges"  # per VAL id: target.json, n1.json .. n5.
 #: copy per distinct neighbour (~48 GB) instead of five per call (the 11-17 pass used ~300 MB a call). Must be on the
 #: same filesystem as WORKDIR.
 NEIGHBOUR_CT_CACHE = Path(os.environ.get("NEIGHBOUR_CT_CACHE", Path.home() / ".cache" / "alo-tasks" / "neighbour-ct-cache"))
+#: Arm D's grids (scripts/build_views.py), hard-linked into call folders like the CT cache, so the same disk.
+EXAMPLE_VIEWS = Path(os.environ.get("EXAMPLE_VIEWS", NEIGHBOUR_CT_CACHE.parent / "example-views"))
+VIEW_GRIDS = ("lungs.png", "liver.png", "chest_soft.png", "views.json")
 EDITABLE_FILES = ("instructions.md", "tools")
 CONTRACT_FILES: tuple[str, ...] = ()
 #: The optimizer's task brief and its standing instructions (its system prompt).
