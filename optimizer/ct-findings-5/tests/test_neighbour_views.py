@@ -43,3 +43,29 @@ CASES = [
 @pytest.mark.parametrize("command,expected", CASES)
 def test_neighbour_views(command, expected):
     assert sorted(neighbour_views(command)) == sorted(expected)
+
+
+def test_count_one_arm_d_grid_reads(tmp_path):
+    """Arm D: opening a pre-rendered neighbour grid with Read is a view of that neighbour; the all-15 count takes
+    distinct (neighbour, grid) pairs, so re-opening one grid does not add to it."""
+    import json
+
+    from retrieval_usage import count_one
+
+    def read(path):
+        return {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": path}}]}}
+
+    events = [read(f"/workspace/call/neighbours/n1/views/{g}.png") for g in ("lungs", "liver", "chest_soft")]
+    events += [read("/workspace/call/neighbours/n1/views/lungs.png"),   # the same grid again
+               read("/workspace/call/neighbours/n2/views/liver.png"),
+               read("/workspace/call/ct_views/lungs.png"),              # its own scan: not a neighbour view
+               read("/workspace/call/neighbours/n3/report.txt")]
+    f = tmp_path / "events.jsonl"
+    f.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+    out = count_one(f)
+    assert out["neighbour_views"] == 5
+    assert out["neighbours_viewed"] == 2
+    assert out["neighbour_grids_opened"] == 4
+    assert out["report_reads"] == 1
+    assert out["tool_calls"] == 7

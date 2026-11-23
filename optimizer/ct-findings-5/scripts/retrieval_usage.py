@@ -85,6 +85,8 @@ READING_TOOLS = ("Read", "Bash", "Grep", "Glob")
 #: A render or load of a CT: the viewer (not --help or --info, which draw nothing) or Python loading a ct.npz.
 VIEWER = re.compile(r"view_ct(?:\.py)?\b")
 PIECES = re.compile(r"&&|\|\||;|\n|\|")
+#: Arm D's pre-rendered neighbour grids (scripts/build_views.py), opened with the Read tool.
+GRID_READ = re.compile(r"neighbours/n([1-5])/views/(\w+)\.png")
 #: Neighbour ranks a shell loop or glob covers: "for k in 1 2 3", "n{1..5}", "n*".
 LOOP_LIST = re.compile(r"for\s+\w+\s+in\s+([1-5](?:\s+[1-5])*)\b")
 
@@ -139,13 +141,19 @@ def count_one(events: Path) -> dict:
     are the folder's only free text). An answers read: answers.json, neighbours.json or README.md under
     neighbours/."""
     out = {"touched": False, "neighbour_views": 0, "neighbours_viewed": 0, "report_reads": 0, "answer_reads": 0,
-           "tool_calls": 0}
-    viewed = set()
+           "tool_calls": 0, "neighbour_grids_opened": 0}
+    viewed, grids = set(), set()
     for name, text in tool_inputs(events):
         out["tool_calls"] += 1
         if name not in READING_TOOLS or "neighbours" not in text and not (name == "Bash" and "cd n" in text):
             continue
         out["touched"] = True
+        if name == "Read":
+            g = GRID_READ.search(json.loads(text).get("file_path", ""))
+            if g:  # a view of that neighbour, like a render; distinct (rank, grid) pairs for the all-15 count
+                out["neighbour_views"] += 1
+                viewed.add(g.group(1))
+                grids.add(g.groups())
         if name == "Bash":
             cmd = json.loads(text).get("command", "")
             v = neighbour_views(cmd)
@@ -156,6 +164,7 @@ def count_one(events: Path) -> dict:
         if any(n in text for n in ("answers.json", "neighbours.json", "README.md")):
             out["answer_reads"] += 1
     out["neighbours_viewed"] = len(viewed)
+    out["neighbour_grids_opened"] = len(grids)
     return out
 
 
@@ -183,10 +192,13 @@ def cmd_usage(args) -> int:
         "share_viewed_a_neighbour_ct": round(share("neighbour_views"), 3),
         "share_read_a_report": round(share("report_reads"), 3),
         "share_read_answers": round(share("answer_reads"), 3),
+        "share_opened_all_15_grids": round(sum(1 for v in per.values() if v["neighbour_grids_opened"] >= 15) / n, 3),
         **{f"median_{k}": statistics.median(v[k] for v in per.values())
-           for k in ("neighbour_views", "neighbours_viewed", "report_reads", "answer_reads", "tool_calls")},
+           for k in ("neighbour_views", "neighbours_viewed", "report_reads", "answer_reads", "tool_calls",
+                     "neighbour_grids_opened")},
         **{f"mean_{k}": round(statistics.mean(v[k] for v in per.values()), 2)
-           for k in ("neighbour_views", "neighbours_viewed", "report_reads", "answer_reads", "tool_calls")},
+           for k in ("neighbour_views", "neighbours_viewed", "report_reads", "answer_reads", "tool_calls",
+                     "neighbour_grids_opened")},
     }
     summary["ignored_on_most_scans"] = summary["share_touched_folder"] < 0.5
     out = Path(args.out)
