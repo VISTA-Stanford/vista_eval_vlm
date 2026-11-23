@@ -27,7 +27,8 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever you change ``prompt`` below.
-PROMPT_TAG = (f"ct-findings-5-v1-prob-examples-{config.EXAMPLE_ARM.lower()}" if config.EXAMPLE_ARM
+PROMPT_TAG = ("ct-findings-5-v1-prob-kb" if config.KB_ARM
+              else f"ct-findings-5-v1-prob-examples-{config.EXAMPLE_ARM.lower()}" if config.EXAMPLE_ARM
               else "ct-findings-5-v1-prob-neighbours" if config.NEIGHBOURS else "ct-findings-5-v1-prob")
 MAX_REASONS = 5
 #: The session's reasoning is not kept in its transcript, so it writes what it saw; the optimizer reads it.
@@ -143,6 +144,21 @@ def stage_neighbours(scan_id: str, dest: Path) -> None:
         f.chmod(0o444)
 
 
+def kb_organs(scan_id: str) -> Path:
+    """A scan's organ ranges: the VAL pool's in organ_ranges/<id>/target.json, the KB tester scans' in kb/organs/."""
+    val = config.ORGAN_DIR / scan_id / "target.json"
+    return val if val.is_file() else config.KB_DIR / "organs" / f"{scan_id}.json"
+
+
+def stage_kb(scan_id: str, folder: Path) -> None:
+    """The knowledge-base pilot (config.KB_ARM): organs.json and kb_similarity.json beside ct/, read-only. Raises when
+    either is missing: a scan without them is a broken build (scripts/build_kb_data.py), not a session to run."""
+    for src, name in ((kb_organs(scan_id), "organs.json"), (config.KB_DIR / "similarity" / f"{scan_id}.json",
+                                                          "kb_similarity.json")):
+        shutil.copy2(src, folder / name)
+        (folder / name).chmod(0o444)
+
+
 def program_spec(forbidden):
     from isolation.pass_outputs import Call
     from isolation.program_runner import ProgramSpec
@@ -160,6 +176,8 @@ def program_spec(forbidden):
         if config.EXAMPLE_ARM in config.ORGAN_ARMS:
             shutil.copy2(config.ORGAN_DIR / call.payload["id"] / "target.json", Path(folder) / "organs.json")
             (Path(folder) / "organs.json").chmod(0o444)
+        if config.KB_ARM:
+            stage_kb(call.payload["id"], Path(folder))
         if config.EXAMPLE_ARM == "D":
             views = Path(folder) / "ct_views"
             views.mkdir(parents=True, exist_ok=True)

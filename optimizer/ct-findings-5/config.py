@@ -95,6 +95,20 @@ EXAMPLE_VIEWS = Path(os.environ.get("EXAMPLE_VIEWS", NEIGHBOUR_CT_CACHE.parent /
 VIEW_GRIDS = ("lungs.png", "liver.png", "chest_soft.png", "views.json")
 EDITABLE_FILES = ("instructions.md", "tools")
 CONTRACT_FILES: tuple[str, ...] = ()
+#: The knowledge-base pilot (spec planning/vista_eval_vlm/2026-11-23-ct-knowledge-base-pilot.md, Approved 2026-11-23).
+#: KB_ARM=1 runs the tester program program_agentic_kb/ (the untuned seed's words, the same viewer, the knowledge-base
+#: tool tools/kb.py and library/). Its builder (scripts/run_kb_loop.py, a Sonnet session) may edit library/ only: the
+#: tester's instructions and tools are contract files, fixed for every version. Its program-v0 has an empty library, so
+#: it is also the paired empty-library arm (spec, Decided: same tester, same tools, no entries). Each scan is staged with
+#: organs.json and kb_similarity.json (scripts/build_kb_data.py); scored only on VAL scans with organ ranges (the 190).
+KB_ARM = os.environ.get("KB_ARM", "0") == "1"  # DECIDE: spec, an on/off switch
+KB_DIR = DATA_DIR / "kb"  # rounds.json, source.json, splits/kb_train.jsonl, organs/, similarity/, source_reports/
+if KB_ARM:
+    if EXAMPLE_ARM or NEIGHBOURS:
+        raise SystemExit("KB_ARM runs alone: unset EXAMPLE_ARM and NEIGHBOURS")
+    SEED_PROGRAM_DIR = HERE / "program_agentic_kb"
+    EDITABLE_FILES = ("library",)
+    CONTRACT_FILES = ("instructions.md", "tools")
 #: The optimizer's task brief and its standing instructions (its system prompt).
 TASK_BRIEF = HERE / "context" / "task.md"
 OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / "optimizer_instructions.md"
@@ -150,7 +164,8 @@ if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: the cost 
 # Where everything a run writes goes. Outside the repo, so nothing a run writes is ever committed.
 # --------------------------------------------------------------------------------------------------
 WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" /
-                              (f"{TASK_NAME}-examples-{EXAMPLE_ARM.lower()}" if EXAMPLE_ARM else f"{TASK_NAME}-neighbours" if NEIGHBOURS else TASK_NAME))).resolve()
+                              (f"{TASK_NAME}-kb" if KB_ARM else f"{TASK_NAME}-examples-{EXAMPLE_ARM.lower()}" if EXAMPLE_ARM
+                               else f"{TASK_NAME}-neighbours" if NEIGHBOURS else TASK_NAME))).resolve()
 
 # --------------------------------------------------------------------------------------------------
 # Sealing: which model route and which images. docs/guide/decisions.md, "Which models it can use".
