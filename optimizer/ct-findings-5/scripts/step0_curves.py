@@ -52,6 +52,12 @@ RUNS = Path("/mnt/su-vista-uscentral1/chaudhari_lab/phil/ct-findings-5-v1_7-runs
 OUT = RUNS / "context-library-step0" / "step0.json"
 AGENT_PASSES = {"retrieval arm": RUNS / "retrieval-arm" / "retrieval.json",
                 **{f"untuned {p}": RUNS / "retrieval-arm" / "untuned" / f"{p}.json" for p in ("prob-r1", "prob-r2", "prob-r4")}}
+# --example-arms (spec 2026-11-22-ct-findings-example-ct-arms.md): fuse the three example-CT arms beside the 11-17 arm,
+# each scored only on the scans it answers (arm C: the 190 with organ ranges), written beside the arms' answers; the
+# report-citation count is step 0's alone and is skipped.
+EXAMPLE_ARMS = {"retrieval arm": RUNS / "retrieval-arm" / "retrieval.json",
+                **{f"arm {a}": RUNS / "example-ct-arms" / f"arm-{a.lower()}.json" for a in "ABC"}}
+EXAMPLE_OUT = RUNS / "example-ct-arms" / "fusion.json"
 
 
 def auroc(y, s):
@@ -71,6 +77,11 @@ def ranks(x):
 
 def main() -> int:
     from google.cloud import bigquery
+
+    global AGENT_PASSES, OUT
+    example_arms = "--example-arms" in sys.argv[1:]
+    if example_arms:
+        AGENT_PASSES, OUT = EXAMPLE_ARMS, EXAMPLE_OUT
 
     client = bigquery.Client(project=bd.PROJECT)
     train, _val_patients, _ = bn.the_split(client)
@@ -175,11 +186,18 @@ def main() -> int:
     out["fusion"] = {}
     for pname, path in AGENT_PASSES.items():
         ans = json.loads(path.read_text())["answers"]
+        # Every row is ranked, scored and resampled over the scans this pass answers (all of vids except for arm C,
+        # which answers the 190 with organ ranges; spec: no failed-answer fill for the scans it never got).
+        pv = [v for v in vids if v in ans]
+        idx = np.array([vids.index(v) for v in pv])
+        pf = {q: ranks(probe_full[q][idx]) for q in KEYS}
+        vr = {q: ranks(vote_r[q][idx]) for q in KEYS}
+        p50 = {q: [ranks(r[idx]) for r in probe50[q]] for q in KEYS}
         failed = 0
         agent_r = {}
         for q in KEYS:
             raw = []
-            for v in vids:
+            for v in pv:
                 a = ans.get(v, {})
                 x = a.get(q) if not a.get("error") else None
                 if not isinstance(x, (int, float)):
@@ -187,14 +205,15 @@ def main() -> int:
                     x = 0.5  # the task scorer's failed-answer rule
                 raw.append(float(x))
             agent_r[q] = ranks(raw)
-        rows = {"agent": agent_r, "MerlinOnc probe (full TRAIN)": probe_full, "MerlinOnc 5-NN vote": vote_r,
-                f"MerlinOnc probe (n={FUSION_N}/class)": probe50,
-                "agent + probe (full)": {q: (agent_r[q] + probe_full[q]) / 2 for q in KEYS},
-                "agent + 5-NN vote": {q: (agent_r[q] + vote_r[q]) / 2 for q in KEYS},
-                f"agent + probe (n={FUSION_N}/class)": {q: [(agent_r[q] + r) / 2 for r in probe50[q]] for q in KEYS},
-                "probe (full) + 5-NN vote": {q: (probe_full[q] + vote_r[q]) / 2 for q in KEYS}}
-        sel = {q: np.array([vids.index(v) for v in gold_k[q]]) for q in KEYS}
-        g = {q: np.array([gold[v][q] for v in gold_k[q]]) for q in KEYS}
+        rows = {"agent": agent_r, "MerlinOnc probe (full TRAIN)": pf, "MerlinOnc 5-NN vote": vr,
+                f"MerlinOnc probe (n={FUSION_N}/class)": p50,
+                "agent + probe (full)": {q: (agent_r[q] + pf[q]) / 2 for q in KEYS},
+                "agent + 5-NN vote": {q: (agent_r[q] + vr[q]) / 2 for q in KEYS},
+                f"agent + probe (n={FUSION_N}/class)": {q: [(agent_r[q] + r) / 2 for r in p50[q]] for q in KEYS},
+                "probe (full) + 5-NN vote": {q: (pf[q] + vr[q]) / 2 for q in KEYS}}
+        pos_of = {v: j for j, v in enumerate(pv)}
+        sel = {q: np.array([pos_of[v] for v in gold_k[q] if v in pos_of]) for q in KEYS}
+        g = {q: np.array([gold[v][q] for v in gold_k[q] if v in pos_of]) for q in KEYS}
         def sc_auc(scq, q, rows_i=None):
             arrs = scq if isinstance(scq, list) else [scq]
             vals = []
@@ -214,7 +233,7 @@ def main() -> int:
 
         def boot(a_name, b_name, nboot=BOOT):
             diffs = []
-            n = len(vids)
+            n = len(pv)
             while len(diffs) < nboot:
                 i = rng.integers(0, n, n)
                 ds = []
@@ -237,12 +256,18 @@ def main() -> int:
         table[f"paired: agent+probe(n={FUSION_N}) minus probe(n={FUSION_N})"] = boot(
             f"agent + probe (n={FUSION_N}/class)", f"MerlinOnc probe (n={FUSION_N}/class)", nboot=500)
         table["failed_answers"] = failed
+        table["scans"] = len(pv)
         out["fusion"][pname] = table
-        print(f"fusion, {pname} (failed answers {failed}):")
+        print(f"fusion, {pname} on {len(pv)} scans (failed answers {failed}):")
         for rname in rows:
             print(f"  {rname:<34}{table[rname]['mean']:.3f}")
         for k_ in [k for k in table if k.startswith("paired")]:
             print(f"  {k_}: 95% {table[k_]}")
+
+    if example_arms:
+        OUT.write_text(json.dumps(out, indent=1), encoding="utf-8")
+        print(f"written {OUT}")
+        return 0
 
     # ---- report citations ------------------------------------------------------------------------------------
     sql = f"""
