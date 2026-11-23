@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -129,6 +130,10 @@ losing everything you built. So explore source scans at `--size 768` or less (vi
 the entry's own image at the default size without opening it again), open each image once, and add at most 25 new
 entries this round.
 
+Removing entries: you cannot delete files here (a deleted file refuses your whole edit). To remove an entry, add its
+folder name to `library/retired.json`, a JSON list of folder names; the loop deletes those entries after your session.
+To change an entry, edit its files in place.
+
 Before you finish, run `python3 -B tools/kb.py check` from your working folder and fix every problem it prints.
 """
 
@@ -170,6 +175,30 @@ def build_builder(lay, *, run_id: str, pin: str):
         env=opt.ENV,
         patient_data=config.PATIENT_DATA,
     )
+
+
+RETIRED = "retired.json"
+
+
+def retire_entries(library: Path) -> list[str]:
+    """Delete the entries the builder listed in library/retired.json (its session may not delete files: the engine
+    refuses any edit that removes one), then the list itself. Returns the folder names removed. A name that is not an
+    entry folder is ignored; the list file is always removed so it never reaches the tester."""
+    f = library / RETIRED
+    if not f.is_file():
+        return []
+    try:
+        names = json.loads(f.read_text(encoding="utf-8"))
+    except ValueError:
+        names = []
+    f.unlink()
+    removed = []
+    for name in names if isinstance(names, list) else []:
+        d = library / "entries" / str(name)
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", str(name)) and (d / "entry.json").is_file():
+            shutil.rmtree(d)
+            removed.append(str(name))
+    return removed
 
 
 def stage_builder_brief(lay) -> None:
@@ -396,6 +425,7 @@ def cmd_loop(args) -> int:
             if outcome.exit_code != 0:
                 print(f"STOPPED: round {k}'s builder failed: {outcome.detail}")
                 return 1
+            rec["retired"] = retire_entries(lay.repo / "library")
             tag, new_sha = commit_new_version(ad.TaskStore().manifest(), f"kb {args.run_id} round {k}", repo_root=lay.repo,
                                               allow_empty=True)
             vtree = lay.versions / f"kb-{args.run_id}-round{k}-{tag}"

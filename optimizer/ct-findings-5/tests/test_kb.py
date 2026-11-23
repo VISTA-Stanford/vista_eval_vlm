@@ -193,3 +193,24 @@ def test_deal_gives_every_round_the_same_mix():
     assert bkd.klass({"pneumonitis": 1, "lesion_lymph_nodes": 0}) == "P"
     assert bkd.klass({"pneumonitis": None, "lesion_lymph_nodes": 1}) == "N"
     assert bkd.klass({"pneumonitis": 0, "lesion_lymph_nodes": None}) == "O"
+
+
+def test_retire_entries_removes_listed_entries_only(tmp_path, monkeypatch):
+    """The loop's retire step (scripts/run_kb_loop.retire_entries) is plain file handling; load just that function."""
+    import ast
+    import re as _re
+    import shutil as _sh
+    src = (HERE / "scripts" / "run_kb_loop.py").read_text()
+    mod = ast.parse(src)
+    fn = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "retire_entries")
+    ns = {"json": json, "re": _re, "shutil": _sh, "Path": Path, "RETIRED": "retired.json"}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "retire", "exec"), ns)
+    lib = tmp_path / "library"
+    for e in ("keep-me", "drop-me"):
+        (lib / "entries" / e).mkdir(parents=True)
+        (lib / "entries" / e / "entry.json").write_text("{}")
+    (lib / "retired.json").write_text(json.dumps(["drop-me", "../keep-me", "not-there"]))
+    assert ns["retire_entries"](lib) == ["drop-me"]
+    assert (lib / "entries" / "keep-me" / "entry.json").is_file() and not (lib / "entries" / "drop-me").exists()
+    assert not (lib / "retired.json").exists()
+    assert ns["retire_entries"](lib) == []
