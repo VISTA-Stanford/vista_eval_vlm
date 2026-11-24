@@ -93,7 +93,7 @@ for arm in $ARMS; do
         echo "arm $arm cost check: \$$per a scan; opened 3+ example images: $read3"
         check "$per <= $MAX_PER_SCAN" || fail "arm $arm costs \$$per a scan, above \$$MAX_PER_SCAN"
         check "$read3 >= 0.5" || fail "arm $arm: only $read3 of the cost-check sessions opened 3+ example images"
-        n_left=$(python3 -c "print(sum(190 for a in '$ARMS'.split() if a))")
+        n_left=0; for a in $ARMS; do [ -f "$OUT/val-$a.json" ] || n_left=$((n_left + 190)); done  # arms still to run
         check "$(spent_new) + 1.15 * $per * $n_left <= $CAP_A_USD" || fail "arm $arm: projection passes the \$$CAP_A_USD cap"
         echo "per_scan $per read3 $read3" > "$OUT/costcheck-$arm.ok"
     fi

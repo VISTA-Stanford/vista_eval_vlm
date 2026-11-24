@@ -263,14 +263,76 @@ def cmd_auroc(_args) -> int:
     return 0
 
 
+def cmd_layer3(_args) -> int:
+    """Oracle-examples Half B (spec planning/vista_eval_vlm/2026-11-24-oracle-matched-examples.md): per model, on the
+    zoom view and the items all three layers answered, AUROC per cell (track x bin) for layer 1 (no examples), layer 2
+    (three same-bin examples) and layer 3 (report-matched yes / no / decoy), the mean over cells, and the paired change
+    layer 3 - layer 2 and layer 3 - layer 1 with 95% intervals (items resampled within each cell, positives and
+    negatives separately); the same for net (sensitivity - false-positive rate). Writes OUT/oracle/layer3.json."""
+    it, items, latest = _load()
+    out = {"models": {}}
+    for m in sorted({k[1] for k in latest}):
+        cells = defaultdict(lambda: {"pos": [], "neg": []})
+        for (layer, mm, v, iid), r in latest.items():
+            if layer != 3 or mm != m or v != "zoom":
+                continue
+            r1, r2 = latest.get((1, m, "zoom", iid)), latest.get((2, m, "zoom", iid))
+            if not r1 or not r2:
+                continue
+            i = items[iid]
+            cells[(i["track"], i["bin"])]["pos" if i["role"] == "positive" else "neg"].append((r1, r2, r))
+        keys = sorted(k for k, c in cells.items() if c["pos"] and c["neg"])
+
+        def stats(sel):  # sel: {cell: (pos idx, neg idx)} -> per-layer mean AUROC and mean net over cells
+            au, net = [[], [], []], [[], [], []]
+            for k in keys:
+                P, N = cells[k]["pos"], cells[k]["neg"]
+                ip, iq = sel[k]
+                for L in range(3):
+                    pp, qq = [prob(P[i][L]) for i in ip], [prob(N[i][L]) for i in iq]
+                    au[L].append(auroc(pp, qq))
+                    net[L].append(sum(said(P[i][L]) for i in ip) / len(ip) - sum(said(N[i][L]) for i in iq) / len(iq))
+            return [sum(x) / len(x) for x in au], [sum(x) / len(x) for x in net]
+        full = {k: (range(len(cells[k]["pos"])), range(len(cells[k]["neg"]))) for k in keys}
+        au0, net0 = stats(full)
+        rng = random.Random(13)
+        boots = []
+        for _ in range(1000):
+            sel = {k: ([rng.randrange(len(cells[k]["pos"])) for _ in cells[k]["pos"]],
+                       [rng.randrange(len(cells[k]["neg"])) for _ in cells[k]["neg"]]) for k in keys}
+            a, n = stats(sel)
+            boots.append((a[2] - a[1], a[2] - a[0], n[2] - n[1], n[2] - n[0]))
+        def ci(j):
+            v = sorted(b[j] for b in boots)
+            return [round(v[25], 3), round(v[974], 3)]
+        per_cell = {}
+        for k in keys:
+            P, N = cells[k]["pos"], cells[k]["neg"]
+            per_cell[" ".join(k)] = {f"L{L + 1}": round(auroc([prob(x[L]) for x in P], [prob(x[L]) for x in N]), 3)
+                                     for L in range(3)} | {"n": f"{len(P)}/{len(N)}"}
+        out["models"][m] = {"cells": len(keys), "mean_auroc": {f"L{L + 1}": round(au0[L], 3) for L in range(3)},
+                            "mean_net": {f"L{L + 1}": round(net0[L], 3) for L in range(3)},
+                            "L3-L2 auroc": [round(au0[2] - au0[1], 3), ci(0)], "L3-L1 auroc": [round(au0[2] - au0[0], 3), ci(1)],
+                            "L3-L2 net": [round(net0[2] - net0[1], 3), ci(2)], "L3-L1 net": [round(net0[2] - net0[0], 3), ci(3)],
+                            "per_cell": per_cell}
+        o = out["models"][m]
+        print(f"{m}: cells {o['cells']}  mean AUROC L1 {o['mean_auroc']['L1']:.3f} L2 {o['mean_auroc']['L2']:.3f} "
+              f"L3 {o['mean_auroc']['L3']:.3f}; L3-L2 {o['L3-L2 auroc'][0]:+.3f} {o['L3-L2 auroc'][1]}; "
+              f"L3-L1 {o['L3-L1 auroc'][0]:+.3f} {o['L3-L1 auroc'][1]}; net L3-L2 {o['L3-L2 net'][0]:+.3f} {o['L3-L2 net'][1]}")
+    (it.OUT / "oracle").mkdir(parents=True, exist_ok=True)
+    (it.OUT / "oracle" / "layer3.json").write_text(json.dumps(out, indent=1))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("layer1")
     sub.add_parser("layer2")
     sub.add_parser("auroc")
+    sub.add_parser("layer3")
     args = ap.parse_args()
-    return {"layer1": cmd_layer1, "layer2": cmd_layer2, "auroc": cmd_auroc}[args.cmd](args)
+    return {"layer1": cmd_layer1, "layer2": cmd_layer2, "auroc": cmd_auroc, "layer3": cmd_layer3}[args.cmd](args)
 
 
 if __name__ == "__main__":
