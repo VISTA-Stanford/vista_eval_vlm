@@ -60,12 +60,22 @@ def read_split(split: str) -> list[dict]:
         raise ValueError(f"unknown split {split!r}")
     # With config.KB_ARM, TRAIN is the knowledge-base pilot's 500 tester scans (scripts/build_kb_data.py): the engine
     # accepts only train/val/test as split names, and nothing in a KB run reads the climbs' TRAIN pool. VAL is unchanged.
+    # With config.ZOOM_TRAIN_CHECK, TRAIN is the organ-zoom find-the-slice check's 50 scans (scripts/build_masks.py
+    # select-train), for the same reason; they have no answer key here (every question None: never scored).
     path = (config.KB_DIR / "splits" / "kb_train.jsonl" if split == "train" and config.KB_ARM
+            else config.ZOOM_DIR / "splits" / "train_check.jsonl" if split == "train" and config.ZOOM_TRAIN_CHECK
             else DATA_DIR / "splits" / f"{split}.jsonl")
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+@lru_cache(maxsize=None)
+def _train_check_dirs() -> dict[str, str]:
+    return json.loads((config.ZOOM_DIR / "train_check_dirs.json").read_text(encoding="utf-8"))
+
+
 def patient_dir(pid: str) -> Path:
+    if config.ZOOM_TRAIN_CHECK:  # the check's scans live in their own CT folders (small-finding study conversions)
+        return Path(_train_check_dirs()[pid])
     return DATA_DIR / "patients" / pid
 
 

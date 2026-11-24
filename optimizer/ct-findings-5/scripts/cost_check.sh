@@ -28,7 +28,7 @@ cd "$HERE"
 alo() { uv run -q --project "$ENGINE" python run.py "$@"; }
 alo init
 alo pins --write | tail -1
-if [ "${NEIGHBOURS:-0}" = 1 ] || [ -n "${EXAMPLE_ARM:-}" ]; then  # EXAMPLE_ARM=A|B|C: the example-CT arms (spec 2026-11-22), same check
+if [ "${NEIGHBOURS:-0}" = 1 ] || [ -n "${EXAMPLE_ARM:-}" ] || [ -n "${ZOOM_ARM:-}" ]; then  # ZOOM_ARM=tool|control: the organ-zoom arms (spec 2026-11-24)  # EXAMPLE_ARM=A|B|C: the example-CT arms (spec 2026-11-22), same check
     # The retrieval arm (spec 2026-11-17) has no climb: the check is its one untuned pass on the first 10 VAL pool
     # scans, each staged with its neighbour folder, no optimizer round.
     alo val-pass --tag program-v0 --limit 10 || true  # judged below, from the receipts and the val-pass ledger

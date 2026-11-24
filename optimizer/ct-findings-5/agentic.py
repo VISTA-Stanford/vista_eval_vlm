@@ -27,7 +27,8 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever you change ``prompt`` below.
-PROMPT_TAG = (f"ct-findings-5-v1-prob-kb-oracle-{config.KB_ORACLE}" if config.KB_ORACLE
+PROMPT_TAG = (f"ct-findings-5-v1-prob-zoom-{config.ZOOM_ARM}" if config.ZOOM_ARM
+              else f"ct-findings-5-v1-prob-kb-oracle-{config.KB_ORACLE}" if config.KB_ORACLE
               else "ct-findings-5-v1-prob-kb-forced" if config.KB_PRESTAGE
               else "ct-findings-5-v1-prob-kb" if config.KB_ARM
               else f"ct-findings-5-v1-prob-examples-{config.EXAMPLE_ARM.lower()}" if config.EXAMPLE_ARM
@@ -35,6 +36,9 @@ PROMPT_TAG = (f"ct-findings-5-v1-prob-kb-oracle-{config.KB_ORACLE}" if config.KB
 MAX_REASONS = 5
 #: The session's reasoning is not kept in its transcript, so it writes what it saw; the optimizer reads it.
 FINDINGS = "findings.md"
+#: The organ-zoom arms' view log: one line per image either viewer draws (tools/zoom_organ.py, tools/view_ct.py),
+#: written beside ct/ in the call folder and kept with the answers (scripts/zoom_usage.py reads it).
+VIEW_LOG = "views.jsonl"
 #: No Agent tool: a subagent would view the images again at full price.
 TOOLS = ("Read", "Write", "Edit", "Glob", "Grep", "Bash")
 
@@ -161,6 +165,17 @@ def stage_kb(scan_id: str, folder: Path) -> None:
         (folder / name).chmod(0o444)
 
 
+def stage_zoom(scan_id: str, folder: Path) -> None:
+    """The organ-zoom arms (config.ZOOM_ARM): organs.json beside ct/ in both arms, and organ_mask.npz in the tool arm,
+    both read-only (scripts/build_masks.py). Raises when either is missing: a scan without them is a broken build."""
+    files = [(config.ZOOM_DIR / "organs" / f"{scan_id}.json", "organs.json")]
+    if config.ZOOM_ARM == "tool":
+        files.append((config.ZOOM_DIR / "masks" / f"{scan_id}.npz", "organ_mask.npz"))
+    for src, name in files:
+        shutil.copy2(src, folder / name)
+        (folder / name).chmod(0o444)
+
+
 def program_spec(forbidden):
     from isolation.pass_outputs import Call
     from isolation.program_runner import ProgramSpec
@@ -180,6 +195,8 @@ def program_spec(forbidden):
             (Path(folder) / "organs.json").chmod(0o444)
         if config.KB_ARM:
             stage_kb(call.payload["id"], Path(folder))
+        if config.ZOOM_ARM:
+            stage_zoom(call.payload["id"], Path(folder))
         if config.KB_PRESTAGE:  # the examples drawn beside this scan (Phil 2026-11-24), from the scored version's library
             import kb_prestage
 
@@ -248,7 +265,8 @@ def program_spec(forbidden):
 
     return ProgramSpec(
         calls_for=calls_for, stage=stage, prompt=prompt, read_stamp=read_stamp, summarize=summarize,
-        stages=("label",), output_patterns=(OUTPUT, FINDINGS), prompt_tag=PROMPT_TAG,
+        stages=("label",), output_patterns=(OUTPUT, FINDINGS, *((VIEW_LOG,) if config.ZOOM_ARM else ())),
+        prompt_tag=PROMPT_TAG,
         max_concurrent=config.PROGRAM_MAX_CONCURRENT, timeout_seconds=config.PROGRAM_CALL_TIMEOUT_SECONDS,
         max_budget_usd=config.PROGRAM_CALL_BUDGET_USD, forbidden=forbidden,
         # On Vertex the sessions use the mounted optimizer login; the seat token is read only on the seat route.

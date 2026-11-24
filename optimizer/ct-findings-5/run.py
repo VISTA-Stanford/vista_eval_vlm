@@ -637,7 +637,7 @@ def cmd_val_pass(args) -> int:
     earlier = ([e for e in map(json.loads, ledger_path.read_text().splitlines()) if e["tag"] == args.tag]
                if ledger_path.exists() else [])
     ids = sorted(ad.pools()["val"])
-    if config.EXAMPLE_ARM in config.ORGAN_ARMS or config.KB_ARM:  # spec 2026-11-22 (C, D) and 2026-11-23 (KB): the 190 with organ ranges
+    if config.EXAMPLE_ARM in config.ORGAN_ARMS or config.KB_ARM or config.ZOOM_ARM:  # spec 2026-11-22 (C, D), 2026-11-23 (KB), 2026-11-24 (zoom): the 190 with organ ranges
         ids = [i for i in ids if (config.ORGAN_DIR / i / "target.json").is_file()]
         if not ids:
             raise SystemExit(f"arm {config.EXAMPLE_ARM}: no VAL scan has organ ranges; run scripts/build_organ_ranges.py build first")
@@ -661,9 +661,46 @@ def cmd_val_pass(args) -> int:
         return 1
     score = ad.TaskScorer().score(artifacts, "val", {})
     entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha,
-             "neighbours": config.NEIGHBOURS, "example_arm": config.EXAMPLE_ARM or None, config.METRIC_NAME: score.primary_metric.value,
+             "neighbours": config.NEIGHBOURS, "example_arm": config.EXAMPLE_ARM or None, "zoom_arm": config.ZOOM_ARM or None,
+             config.METRIC_NAME: score.primary_metric.value,
              "n": score.breakdown["n"], "program_errors": score.breakdown["program_errors"], "look": look,
              "answers": artifacts.artifact_refs[0].path, "questions": per_question(score)}
+    with ledger_path.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+    print(json.dumps(entry, indent=2))
+    return 0
+
+
+def cmd_train_check(args) -> int:
+    """The organ-zoom find-the-slice check (spec 2026-11-24-agent-organ-zoom.md; ZOOM_ARM=tool ZOOM_TRAIN_CHECK=1):
+    one version once on the 50 TRAIN check scans, not scored (they have no answer key here; scripts/zoom_usage.py
+    reads the view logs). Paid, so recorded in private/train_check_ledger.jsonl like a val-pass."""
+    if not config.ZOOM_TRAIN_CHECK:
+        raise SystemExit("train-check needs ZOOM_ARM=tool ZOOM_TRAIN_CHECK=1")
+    layout = opt.Layout()
+    ledger_path = layout.private / "train_check_ledger.jsonl"
+    earlier = len(ledger_path.read_text().splitlines()) if ledger_path.exists() else 0
+    ids = [r["id"] for r in ad.read_split("train")]
+    if args.limit:
+        ids = ids[: args.limit]
+    if config.PROGRAM_CALL_BUDGET_USD * len(ids) > VAL_PASS_STOP_USD:
+        print(f"STOPPED: {len(ids)} scans at the ${config.PROGRAM_CALL_BUDGET_USD:.2f} cap could pass the "
+              f"${VAL_PASS_STOP_USD:.0f} stop")
+        return 1
+    sha = git(layout.repo, "rev-parse", f"{args.tag}^{{commit}}").strip()
+    tree = layout.versions / f"train-check-{args.tag}"
+    materialize(ad.TaskStore().manifest(), sha, repo_root=layout.repo, dest=tree)
+    opt.stage_files(layout)
+    look = earlier + 1
+    inputs = ad.TaskSource(layout.private / "train-check-batches").stage(ids, "train", f"train-check-{args.tag}-n{len(ids)}-look{look}")
+    runner = program_runner(layout, image=images()[1], pin=committed_pins(layout)["program"])
+    with runner:
+        artifacts = runner.as_runner(run_id=f"train-check-{args.tag}-look{look}").run(tree, inputs)
+    if artifacts.status != "ok":
+        print(f"TRAIN check failed: {artifacts.status} {artifacts.error}")
+        return 1
+    entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha, "n": len(ids),
+             "look": look, "answers": artifacts.artifact_refs[0].path}
     with ledger_path.open("a") as f:
         f.write(json.dumps(entry) + "\n")
     print(json.dumps(entry, indent=2))
@@ -746,6 +783,9 @@ def main(argv=None) -> int:
     t.add_argument("--tag", required=True)
     t.add_argument("--again", action="store_true")
     t.add_argument("--local", action="store_true", help="run unsealed in this process (only for checking the template)")
+    tc = sub.add_parser("train-check", help="PAID: the organ-zoom tool arm once on the 50 TRAIN check scans, unscored")
+    tc.add_argument("--tag", default="program-v0")
+    tc.add_argument("--limit", type=int, default=0)
     vp = sub.add_parser("val-pass", help="PAID: score one version once on the VAL pool, no optimizer")
     vp.add_argument("--tag", default="program-v0")
     vp.add_argument("--limit", type=int, default=0, help="only the first N VAL pool scans (the cost check)")
@@ -759,7 +799,7 @@ def main(argv=None) -> int:
     return {
         "init": cmd_init, "dry-run": cmd_dry_run, "print-prompt": cmd_print_prompt, "build-images": cmd_build_images,
         "pins": cmd_pins, "check-token": cmd_check_token, "run": cmd_run, "report": cmd_report, "test": cmd_test,
-        "rescore": cmd_rescore, "val-pass": cmd_val_pass,
+        "rescore": cmd_rescore, "val-pass": cmd_val_pass, "train-check": cmd_train_check,
     }[args.cmd](args)
 
 

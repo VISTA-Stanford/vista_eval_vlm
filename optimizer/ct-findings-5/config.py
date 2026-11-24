@@ -123,6 +123,24 @@ if KB_PRESTAGE and not KB_PRESTAGE_TAG:
 KB_ORACLE = os.environ.get("KB_ORACLE", "") if KB_PRESTAGE else ""  # DECIDE: Phil 2026-11-24, two arms
 if KB_ORACLE not in ("", "grid", "zoom"):
     raise SystemExit(f"KB_ORACLE must be grid or zoom, not {KB_ORACLE!r}")
+#: The organ-zoom arms (spec planning/vista_eval_vlm/2026-11-24-agent-organ-zoom.md, Approved 2026-11-24).
+#: ZOOM_ARM=tool runs program_agentic_zoom/: the seed's words, the grid viewer, the mask-driven zoom viewer
+#: tools/zoom_organ.py, and a required look at the liver, lungs and lymph nodes through it. ZOOM_ARM=control runs
+#: program_agentic_zoom_control/: the same words and the same required look through the grid viewer's crop, no zoom
+#: tool. Both arms stage organs.json (organ slab ranges from the mask); the tool arm also organ_mask.npz
+#: (scripts/build_masks.py). Scored on the same 190 VAL scans as arms C and D. ZOOM_TRAIN_CHECK=1 (tool arm only) reads
+#: TRAIN as the 50 find-the-slice check scans (zoom/splits/train_check.jsonl), each staged from its own CT folder.
+ZOOM_ARM = os.environ.get("ZOOM_ARM", "").lower()  # DECIDE: spec, the two arms
+if ZOOM_ARM not in ("", "tool", "control"):
+    raise SystemExit(f"ZOOM_ARM must be tool or control, not {ZOOM_ARM!r}")
+ZOOM_TRAIN_CHECK = ZOOM_ARM == "tool" and os.environ.get("ZOOM_TRAIN_CHECK", "0") == "1"
+ZOOM_DIR = DATA_DIR / "zoom"  # masks/<id>.npz, organs/<id>.json, splits/train_check.jsonl, train_check_dirs.json
+#: Which cited lesion each TRAIN check scan carries (track, slab): private, never staged (the engine forbids ID_MAP_DIR).
+ZOOM_PRIVATE = ID_MAP_DIR / "zoom"
+if ZOOM_ARM:
+    if KB_ARM or EXAMPLE_ARM or NEIGHBOURS:
+        raise SystemExit("ZOOM_ARM runs alone: unset KB_ARM, EXAMPLE_ARM and NEIGHBOURS")
+    SEED_PROGRAM_DIR = HERE / ("program_agentic_zoom" if ZOOM_ARM == "tool" else "program_agentic_zoom_control")
 if KB_ARM:
     import kb_materialize  # the library holds PNGs; the pinned engine writes versions out as text (2026-11-23)
 
@@ -134,8 +152,9 @@ OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / "optimizer_instructions.md"
 #: The model each scan's session runs on, how many run at once, and each one's cap (spec: as the death climb).
 PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-sonnet-5-5")  # DECIDE: Phil 2026-11-10
 PROGRAM_MAX_CONCURRENT = int(os.environ.get("PROGRAM_MAX_CONCURRENT", "2"))  # DECIDE: spec, 2 at a time
-PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD", "0.50"))  # DECIDE: spec, $0.50 a scan
-PROGRAM_CALL_TIMEOUT_SECONDS = 900
+PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD", "1.00" if ZOOM_ARM else "0.50"))  # DECIDE: spec, $0.50 a scan; zoom arms $1.00 (Phil 2026-11-24)
+#: The zoom arms draw up to 40 zoomed images on top of the grids, so a session gets 30 minutes, not 15.
+PROGRAM_CALL_TIMEOUT_SECONDS = 1800 if ZOOM_ARM else 900
 
 # --------------------------------------------------------------------------------------------------
 # The metric: one number, higher is better. adapters.TaskScorer computes it.
@@ -182,7 +201,8 @@ if os.environ.get("TASK_SCHEDULE"):  # the same, as JSON, for one run: the cost 
 # Where everything a run writes goes. Outside the repo, so nothing a run writes is ever committed.
 # --------------------------------------------------------------------------------------------------
 WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" /
-                              (f"{TASK_NAME}-kb" if KB_ARM else f"{TASK_NAME}-examples-{EXAMPLE_ARM.lower()}" if EXAMPLE_ARM
+                              (f"{TASK_NAME}-zoom-traincheck" if ZOOM_TRAIN_CHECK else f"{TASK_NAME}-zoom-{ZOOM_ARM}" if ZOOM_ARM
+                               else f"{TASK_NAME}-kb" if KB_ARM else f"{TASK_NAME}-examples-{EXAMPLE_ARM.lower()}" if EXAMPLE_ARM
                                else f"{TASK_NAME}-neighbours" if NEIGHBOURS else TASK_NAME))).resolve()
 
 # --------------------------------------------------------------------------------------------------

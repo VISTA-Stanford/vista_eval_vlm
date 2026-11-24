@@ -47,6 +47,8 @@ import config  # noqa: E402  (also puts the engine on sys.path)
 import adapters as ad  # noqa: E402  (the scorer's own AUROC and failed-answer rule)
 
 KEYS = tuple(k for k, _t, _q in config.QUESTIONS)
+#: The organ-zoom arms' deciding mean (spec 2026-11-24): the three questions where small findings matter.
+SMALL_KEYS = ("lesion_liver", "lesion_lungs", "lesion_lymph_nodes")
 BOOTSTRAP = 2000
 SEED = 0
 NEIGHBOUR_PATH = re.compile(r"neighbours/n(\d)")
@@ -229,6 +231,7 @@ def aurocs(gold: dict, answers: dict, ids: list[str]) -> dict:
         pairs = [(gold[i][k], ad.prob(answers[i], k)) for i in ids if gold[i][k] is not None]
         out[k] = ad.auroc(pairs)
     out["mean"] = sum(out[k] for k in KEYS) / len(KEYS)
+    out["mean3"] = sum(out[k] for k in SMALL_KEYS) / len(SMALL_KEYS)
     return out
 
 
@@ -237,7 +240,7 @@ def paired(gold: dict, a: dict, b: dict, ids: list[str]) -> dict:
     both passes), per question and for the mean."""
     rng = random.Random(SEED)
     point_a, point_b = aurocs(gold, a, ids), aurocs(gold, b, ids)
-    draws = {k: [] for k in (*KEYS, "mean")}
+    draws = {k: [] for k in (*KEYS, "mean", "mean3")}
     for _ in range(BOOTSTRAP):
         sample = [ids[rng.randrange(len(ids))] for _ in ids]
         sa, sb = aurocs(gold, a, sample), aurocs(gold, b, sample)
@@ -385,7 +388,7 @@ def cmd_arms(args) -> int:
     out.mkdir(parents=True, exist_ok=True)
     (out / "arms.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
 
-    cols = (*KEYS, "mean")
+    cols = (*KEYS, "mean", "mean3")
     head = "| row | scans | " + " | ".join(c.replace("lesion_", "") for c in cols) + " |"
     rule = "|" + "---|" * (len(cols) + 2)
     lines = [head, rule]
