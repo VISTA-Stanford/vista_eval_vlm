@@ -34,7 +34,9 @@ mkdir -p "$OUT"
 
 status() { echo "Status: $1 — $2" > "$OUT/STATUS.txt"; echo "$(date -u +%FT%TZ) $1 — $2" | tee -a "$OUT/progress.log"; }
 fail() { status failed "$*"; exit 1; }
-py() { (cd "$TASK_DIR" && uv run -q --project "$ENGINE_WT" --with pillow --with numpy python -B "$@"); }
+# Helpers run with the switch off: config refuses KB_PRESTAGE=1 without KB_PRESTAGE_TAG, and only val() sets the tag
+# (it killed the first launch on 2026-11-24, after the cost-check pass had finished).
+py() { (cd "$TASK_DIR" && KB_PRESTAGE=0 uv run -q --project "$ENGINE_WT" --with pillow --with numpy python -B "$@"); }
 json_get() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {}, {'d': d}))" "$@"; }
 check() { python3 -c "import sys; sys.exit(0 if eval(sys.argv[1]) else 1)" "$1"; }
 ledger_answers() {  # the latest val-pass answers file for a tag and size
@@ -67,7 +69,7 @@ PRUNER=$!
 trap 'kill $PRUNER 2>/dev/null' EXIT
 
 status running "the two versions: pilot's empty library and round-4 library with the new tester words"
-KB_PRESTAGE=0 py scripts/run_kb_loop.py retag program-v0 program-v5 > "$OUT/retag.json" || fail "retag failed"
+py scripts/run_kb_loop.py retag program-v0 program-v5 > "$OUT/retag.json" || fail "retag failed"
 EMPTY=$(json_get "$OUT/retag.json" "d['program-v0']")
 LIB=$(json_get "$OUT/retag.json" "d['program-v5']")
 echo "empty library $EMPTY, library $LIB"
