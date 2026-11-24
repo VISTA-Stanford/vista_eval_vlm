@@ -109,6 +109,15 @@ if KB_ARM:
     SEED_PROGRAM_DIR = HERE / "program_agentic_kb"
     EDITABLE_FILES = ("library",)
     CONTRACT_FILES = ("instructions.md", "tools")
+#: Forced-image re-test (Phil 2026-11-24): KB_PRESTAGE=1 draws, before each session, the 2 most similar entries for each
+#: target beside the same region of the scan into examples/ (kb_prestage.py), from the library of the version being
+#: scored, KB_PRESTAGE_TAG (run.py val-pass writes it out to versions/val-pass-<tag>). The pilot's tester opened the
+#: saved image in only 61 of 381 opens.
+KB_PRESTAGE = KB_ARM and os.environ.get("KB_PRESTAGE", "0") == "1"  # DECIDE: Phil 2026-11-24
+KB_PRESTAGE_TAG = os.environ.get("KB_PRESTAGE_TAG", "")
+if KB_PRESTAGE and not KB_PRESTAGE_TAG:
+    raise SystemExit("KB_PRESTAGE=1 needs KB_PRESTAGE_TAG, the program version whose library is drawn")
+if KB_ARM:
     import kb_materialize  # the library holds PNGs; the pinned engine writes versions out as text (2026-11-23)
 
     kb_materialize.install()

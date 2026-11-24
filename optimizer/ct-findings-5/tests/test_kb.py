@@ -214,3 +214,56 @@ def test_retire_entries_removes_listed_entries_only(tmp_path, monkeypatch):
     assert (lib / "entries" / "keep-me" / "entry.json").is_file() and not (lib / "entries" / "drop-me").exists()
     assert not (lib / "retired.json").exists()
     assert ns["retire_entries"](lib) == []
+
+
+def test_prestage_picks_top_two_by_similarity_and_stages(library, tmp_path):
+    """kb_prestage: per target, the 2 entries of that finding with views whose source scans are most similar; drawn
+    beside the call's own scan into examples/; an empty library writes only an index that says so."""
+    sys.path.insert(0, str(HERE))
+    import kb_prestage
+
+    library("n-far", entry(finding="lesion_lymph_nodes", source="s1"))
+    library("n-near", entry(finding="lesion_lymph_nodes", source="s2"))
+    library("n-mid", entry(finding="lesion_lymph_nodes", source="s3"))
+    library("p-only", entry(source="s4"))
+    library("p-text", entry(source="s5", views=[], text_only=True), image=False)
+    sims = {"s1": 0.10, "s2": 0.95, "s3": 0.50, "s4": 0.20, "s5": 0.99}
+    assert kb_prestage.pick(kb.entries(), sims, "lesion_lymph_nodes", 2) == ["n-near", "n-mid"]
+    assert kb_prestage.pick(kb.entries(), sims, "pneumonitis", 2) == ["p-only"]  # text-only entries are never drawn
+    tree = tmp_path / "tree"
+    (tree / "tools").mkdir(parents=True)
+    for f in ("kb.py", "view_ct.py"):
+        (tree / "tools" / f).write_bytes((HERE / "program_agentic_kb" / "tools" / f).read_bytes())
+    import shutil as _sh
+    _sh.copytree(kb.LIBRARY, tree / "library")
+    call = tmp_path / "call"
+    make_ct(call / "ct")
+    (call / "organs.json").write_text(json.dumps(ORGANS))
+    (call / "kb_similarity.json").write_text(json.dumps(sims))
+    assert kb_prestage.stage(tree, call) == ["1-lesion_lymph_nodes-n-near.png", "2-lesion_lymph_nodes-n-mid.png",
+                                             "3-pneumonitis-p-only.png"]
+    assert "n-near" in (call / "examples" / "index.md").read_text()
+    empty = tmp_path / "empty"
+    (empty / "tools").mkdir(parents=True)
+    for f in ("kb.py", "view_ct.py"):
+        (empty / "tools" / f).write_bytes((HERE / "program_agentic_kb" / "tools" / f).read_bytes())
+    (empty / "library").mkdir()
+    call2 = tmp_path / "call2"
+    make_ct(call2 / "ct")
+    (call2 / "organs.json").write_text(json.dumps(ORGANS))
+    (call2 / "kb_similarity.json").write_text(json.dumps(sims))
+    assert kb_prestage.stage(empty, call2) == []
+    assert "no examples" in (call2 / "examples" / "index.md").read_text()
+
+
+def test_usage_counts_staged_example_reads(tmp_path):
+    import kb_usage
+
+    def read(p):
+        return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": p}}]}}
+    rows = [read("/workspace/call/examples/index.md"), read("/workspace/call/examples/1-a.png"),
+            read("/workspace/call/examples/1-a.png"), read("/workspace/call/examples/2-b.png"), read("/tmp/lung.png")]
+    ev = tmp_path / "events.jsonl"
+    ev.write_text("\n".join(json.dumps(r) for r in rows))
+    u = kb_usage.usage(ev)
+    assert u["staged_examples_read"] == 2 and u["read_examples_index"] is True  # distinct images, not reads

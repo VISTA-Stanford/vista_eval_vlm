@@ -27,7 +27,8 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever you change ``prompt`` below.
-PROMPT_TAG = ("ct-findings-5-v1-prob-kb" if config.KB_ARM
+PROMPT_TAG = ("ct-findings-5-v1-prob-kb-forced" if config.KB_PRESTAGE
+              else "ct-findings-5-v1-prob-kb" if config.KB_ARM
               else f"ct-findings-5-v1-prob-examples-{config.EXAMPLE_ARM.lower()}" if config.EXAMPLE_ARM
               else "ct-findings-5-v1-prob-neighbours" if config.NEIGHBOURS else "ct-findings-5-v1-prob")
 MAX_REASONS = 5
@@ -178,6 +179,10 @@ def program_spec(forbidden):
             (Path(folder) / "organs.json").chmod(0o444)
         if config.KB_ARM:
             stage_kb(call.payload["id"], Path(folder))
+        if config.KB_PRESTAGE:  # the examples drawn beside this scan (Phil 2026-11-24), from the scored version's library
+            import kb_prestage
+
+            kb_prestage.stage(config.WORKDIR / "versions" / f"val-pass-{config.KB_PRESTAGE_TAG}", Path(folder))
         if config.EXAMPLE_ARM == "D":
             views = Path(folder) / "ct_views"
             views.mkdir(parents=True, exist_ok=True)

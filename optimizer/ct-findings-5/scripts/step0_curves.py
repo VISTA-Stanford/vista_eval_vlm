@@ -67,6 +67,12 @@ EXAMPLE_OUT = RUNS / "example-ct-arms" / "fusion.json"
 KB_ARMS = {"kb library": RUNS / "knowledge-base" / "val-library.json", "kb empty library": RUNS / "knowledge-base" / "val-empty.json",
            "arm D": RUNS / "example-ct-arms" / "arm-d.json"}
 KB_OUT = RUNS / "knowledge-base" / "fusion.json"
+# --kb-forced (Phil 2026-11-24): the forced-image re-test's two arms beside the pilot's library arm and arm D.
+KB_FORCED_ARMS = {"forced library": RUNS / "knowledge-base" / "forced" / "val-library.json",
+                  "forced empty library": RUNS / "knowledge-base" / "forced" / "val-empty.json",
+                  "kb library (pilot)": RUNS / "knowledge-base" / "val-library.json",
+                  "arm D": RUNS / "example-ct-arms" / "arm-d.json"}
+KB_FORCED_OUT = RUNS / "knowledge-base" / "forced" / "fusion.json"
 KB_TARGETS = ("lesion_lymph_nodes", "pneumonitis")
 
 
@@ -90,11 +96,13 @@ def main() -> int:
 
     global AGENT_PASSES, OUT
     example_arms = "--example-arms" in sys.argv[1:]
-    kb_arms = "--kb-arms" in sys.argv[1:]
+    kb_arms = "--kb-arms" in sys.argv[1:] or "--kb-forced" in sys.argv[1:]
     if example_arms:
         AGENT_PASSES, OUT = EXAMPLE_ARMS, EXAMPLE_OUT
     if kb_arms:
         AGENT_PASSES, OUT, example_arms = KB_ARMS, KB_OUT, True  # the same per-arm scoring; citations skipped
+    if "--kb-forced" in sys.argv[1:]:
+        AGENT_PASSES, OUT = KB_FORCED_ARMS, KB_FORCED_OUT
 
     client = bigquery.Client(project=bd.PROJECT)
     train, _val_patients, _ = bn.the_split(client)

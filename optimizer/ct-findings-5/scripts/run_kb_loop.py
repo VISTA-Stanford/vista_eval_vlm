@@ -501,10 +501,42 @@ def cmd_usage(args) -> int:
                "mean_entries_opened": round(sum(len(r["entries_opened"]) for r in rows.values()) / max(len(rows), 1), 2),
                "mean_example_images_read": round(sum(r["example_images_read"] for r in rows.values()) / max(len(rows), 1), 2),
                "share_went_back_to_own_scan": round(sum(r["own_views_after_an_open"] > 0 for r in opened) / max(len(opened), 1), 3),
-               "entries_opened_at_least_once": len({e for r in rows.values() for e in r["entries_opened"]})}
+               "entries_opened_at_least_once": len({e for r in rows.values() for e in r["entries_opened"]}),
+               "mean_staged_examples_read": round(sum(r["staged_examples_read"] for r in rows.values()) / max(len(rows), 1), 2),
+               "share_read_3_or_more_staged": round(sum(r["staged_examples_read"] >= 3 for r in rows.values()) / max(len(rows), 1), 3),
+               "share_read_examples_index": round(sum(r["read_examples_index"] for r in rows.values()) / max(len(rows), 1), 3)}
     print(json.dumps(summary))
     if args.out:
         Path(args.out).write_text(json.dumps(summary, indent=1))
+    return 0
+
+
+def cmd_retag(args) -> int:
+    """New versions for the forced-image re-test (Phil 2026-11-24): each named version's library with the tester's
+    current instructions and tools (the seed program's), committed in the work repo. Idempotent: the mapping is kept in
+    private/kb-loop/forced.json and reused."""
+    lay = layout()
+    rec_path = lay.private / "kb-loop" / "forced.json"
+    done = json.loads(rec_path.read_text()) if rec_path.is_file() else {}
+    for src in args.from_tags:
+        if src in done:
+            continue
+        sha = run.git(lay.repo, "rev-parse", f"{src}^{{commit}}").strip()
+        shutil.rmtree(lay.repo / "library", ignore_errors=True)
+        run.git(lay.repo, "checkout", sha, "--", "library")
+        for name in ("instructions.md", "tools"):
+            dest = lay.repo / name
+            if dest.is_dir():
+                shutil.rmtree(dest)
+            src_path = config.SEED_PROGRAM_DIR / name
+            (shutil.copytree if src_path.is_dir() else shutil.copy2)(src_path, dest)
+        shutil.rmtree(lay.repo / "tools" / "__pycache__", ignore_errors=True)
+        tag, new_sha = commit_new_version(ad.TaskStore().manifest(), f"kb forced-image re-test: {src} library, new tester words",
+                                          repo_root=lay.repo, allow_empty=True)
+        done[src] = tag
+        rec_path.parent.mkdir(parents=True, exist_ok=True)
+        rec_path.write_text(json.dumps(done, indent=1))
+    print(json.dumps(done))
     return 0
 
 
@@ -534,6 +566,8 @@ def main(argv=None) -> int:
     lp.add_argument("--cap", type=float, default=200.0, help="the pilot's total, VAL arms included (spec)")
     lp.add_argument("--val-scans", type=int, default=380, help="VAL sessions to keep room for: 2 arms x 190")
     lp.add_argument("--already-spent", type=float, default=0.0, help="dollars spent before this run (the cost check)")
+    rt = sub.add_parser("retag")
+    rt.add_argument("from_tags", nargs="+")
     up = sub.add_parser("usage")
     up.add_argument("answers")
     up.add_argument("--out")
@@ -541,7 +575,7 @@ def main(argv=None) -> int:
     rp.add_argument("--run-id", default="kb-r1")
     rp.add_argument("--out")
     args = ap.parse_args(argv)
-    return {"init": cmd_init, "pins": cmd_pins, "loop": cmd_loop, "usage": cmd_usage, "report": cmd_report}[args.cmd](args)
+    return {"init": cmd_init, "pins": cmd_pins, "loop": cmd_loop, "usage": cmd_usage, "retag": cmd_retag, "report": cmd_report}[args.cmd](args)
 
 
 if __name__ == "__main__":

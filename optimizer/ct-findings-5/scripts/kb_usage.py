@@ -16,10 +16,10 @@ OWN_VIEW = re.compile(r"view_ct\.py\s+(\S*/)?ct/?(\s|$)")
 def usage(events: Path | None) -> dict:
     """From one tester session's events: which entries it opened (kb.py open), how many example images it read, and how
     many times it drew its own scan after opening an entry (back and forth)."""
-    opened, images_read, own_after, lists = [], 0, 0, 0
+    opened, images_read, own_after, lists, staged_read, index_read = [], 0, 0, 0, set(), False
     if events is None or not events.is_file():
         return {"entries_opened": [], "example_images_read": 0, "own_views_after_an_open": 0, "list_calls": 0,
-                "transcript": False}
+                "staged_examples_read": 0, "read_examples_index": False, "transcript": False}
     for line in events.read_text(encoding="utf-8").splitlines():
         try:
             e = json.loads(line)
@@ -38,7 +38,14 @@ def usage(events: Path | None) -> dict:
                 lists += len(re.findall(r"kb\.py\s+list", cmd))
                 if opened and not hits and OWN_VIEW.search(cmd):
                     own_after += 1
-            elif b.get("name") == "Read" and re.search(r"-view\d+\.png$", str(inp.get("file_path", ""))):
-                images_read += 1
+            elif b.get("name") == "Read":
+                path = str(inp.get("file_path", ""))
+                if re.search(r"-view\d+\.png$", path):
+                    images_read += 1
+                if re.search(r"/examples/[^/]+\.png$", path):  # the pre-drawn examples (KB_PRESTAGE), distinct files
+                    staged_read.add(path.rsplit("/", 1)[-1])
+                if path.endswith("/examples/index.md"):
+                    index_read = True
     return {"entries_opened": sorted(set(opened)), "example_images_read": images_read,
-            "own_views_after_an_open": own_after, "list_calls": lists, "transcript": True}
+            "own_views_after_an_open": own_after, "list_calls": lists, "staged_examples_read": len(staged_read),
+            "read_examples_index": index_read, "transcript": True}
