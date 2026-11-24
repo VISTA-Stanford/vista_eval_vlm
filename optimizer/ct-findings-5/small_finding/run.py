@@ -13,6 +13,7 @@ no fallback model, since a fallback would mix two models' answers into one score
     uv run -q --no-project --with "anthropic[vertex]" python -B small_finding/run.py cost-check     # 20 items
     uv run -q --no-project --with "anthropic[vertex]" python -B small_finding/run.py layer1
     uv run -q --no-project --with "anthropic[vertex]" python -B small_finding/run.py layer2
+    uv run -q --no-project --with "anthropic[vertex]" python -B small_finding/run.py zoom         # zoomed organ view
 
 Results: PRIVATE/results.jsonl, one line per call, keyed (layer, model, view, item); a rerun skips calls already
 answered. Spend is the sum of every line's cost; a run stops when spend plus the worst case of the calls in flight
@@ -89,7 +90,7 @@ def content_for(item: dict, view: str, examples: list[dict] | None) -> list[dict
                                              f"on that slice ({win}).")})
         for k, ex in enumerate(examples, 1):
             out.append({"type": "text", "text": f"Reference {k}: {ex['desc']}; location: {ex['location']}."})
-            out.append(_img(rd.path_of(ex["item"], "full")))
+            out.append(_img(rd.path_of(ex["item"], "zoom" if view == "zoom" else "full")))  # references match the target's view
         out.append({"type": "text", "text": "Now the image to read, from a different patient:"})
     out.append(_img(rd.path_of(item["item"], view)))
     out.append({"type": "text", "text": f"({win}) {QUESTION[QKEY[item['track']]]}"})
@@ -245,11 +246,24 @@ def cmd_layer1(_args) -> int:
     return run_jobs(layer1_jobs(test_items()), "layer 1")
 
 
-def layer2_jobs(all_items: list[dict], gate: dict) -> tuple[list[dict], set, set]:
+def cmd_zoom(_args) -> int:
+    """Layer 1 on the zoomed organ view (render.py zoom; Phil 2026-11-24): same items, both models, no examples.
+    Items whose organ is absent from the mask on that slice have no zoom image and are skipped (counted)."""
+    items = test_items()
+    have = [i for i in items if rd.path_of(i["item"], "zoom").is_file()]
+    print(f"zoom: {len(have)} of {len(items)} items have a zoom view")
+    jobs = [{"layer": 1, "model": m, "view": "zoom", "item": i} for i in have for m in MODELS]
+    random.Random(it.SEED + 3).shuffle(jobs)
+    return run_jobs(jobs, "zoom")
+
+
+def layer2_jobs(all_items: list[dict], gate: dict, view: str = "full", bins: tuple | None = None) -> tuple[list[dict], set, set]:
     """(jobs, bins passing for at least one model, bins skipped for want of 3 examples). A model runs layer 2 only
     on the bins where it passed its own gate; every positive and negative of such a bin gets three references drawn
     (seeded per item) from that bin's example pool, the same three for both models."""
-    ok = {(g["model"], g["track"], g["bin"]) for g in gate["bins"] if g["pass"]}
+    ok = {(g["model"], g["track"], g["bin"]) for g in gate["bins"] if g["pass"] or bins}  # bins given: run them all
+    if bins:
+        ok = {x for x in ok if x[2] in bins}
     passed = {(t, b) for _m, t, b in ok}
     pool = defaultdict(list)
     for i in all_items:
@@ -265,7 +279,7 @@ def layer2_jobs(all_items: list[dict], gate: dict) -> tuple[list[dict], set, set
             skipped.add(cell)
             continue
         k = random.Random(f"{it.SEED}:{i['item']}").sample(exs, 3)
-        jobs += [{"layer": 2, "model": m, "view": "full", "item": i, "examples": k} for m in MODELS if (m, *cell) in ok]
+        jobs += [{"layer": 2, "model": m, "view": view, "item": i, "examples": k} for m in MODELS if (m, *cell) in ok]
     random.Random(it.SEED + 2).shuffle(jobs)
     return jobs, passed, skipped
 
@@ -277,13 +291,21 @@ def cmd_layer2(_args) -> int:
     return run_jobs(jobs, "layer 2")
 
 
+def cmd_layer2_zoom(_args) -> int:
+    """Layer 2 on the zoom view (Phil 2026-11-24): zoomed target plus three zoomed references, both models, on the
+    5-9 and 10-19 mm bins of every track (where zoom moved layer 1), no gate. Same seeded references as layer 2."""
+    jobs, _passed, skipped = layer2_jobs(it.load_items(), json.loads(GATE.read_text()), view="zoom", bins=("5-9", "10-19"))
+    print(f"layer 2 zoom: {len(jobs)} calls; skipped for want of 3 examples: {sorted(' '.join(c) for c in skipped)}")
+    return run_jobs(jobs, "layer 2 zoom")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("cost-check", "layer1", "layer2"):
+    for name in ("cost-check", "layer1", "layer2", "zoom", "layer2-zoom"):
         sub.add_parser(name)
     args = ap.parse_args()
-    return {"cost-check": cmd_cost_check, "layer1": cmd_layer1, "layer2": cmd_layer2}[args.cmd](args)
+    return {"cost-check": cmd_cost_check, "layer1": cmd_layer1, "layer2": cmd_layer2, "zoom": cmd_zoom, "layer2-zoom": cmd_layer2_zoom}[args.cmd](args)
 
 
 if __name__ == "__main__":

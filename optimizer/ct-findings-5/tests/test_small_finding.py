@@ -186,3 +186,26 @@ def test_gate():
     assert r["lo"] == pytest.approx(0.0498, abs=1e-3) and r["pass"] is False
     # nothing answered: no gate
     assert sc.gate([], [])["pass"] is False
+
+
+def test_organ_box():
+    np = pytest.importorskip("numpy")
+    import render as rd
+    m = np.zeros((100, 200), bool)
+    m[20:60, 40:160] = True  # organ: x 40..160, y 20..60 (exclusive ends)
+    # 10% margin: x by 12 px, y by 4 px
+    assert rd.organ_box(m, "liver") == (28, 16, 172, 64)
+    # lymph node: middle half across (40+30 .. 160-30), margins 6 and 4
+    assert rd.organ_box(m, "lymph_node") == (64, 16, 136, 64)
+    assert rd.organ_box(np.zeros((10, 10), bool), "liver") is None
+    # the margin never runs off the image
+    edge = np.zeros((50, 50), bool); edge[0:50, 0:10] = True
+    assert rd.organ_box(edge, "liver") == (0, 0, 11, 50)
+
+
+def test_auroc_and_prob():
+    # 3 positives, 2 negatives: pairs (p > q) = 0.9>0.2, 0.9>0.4, 0.6>0.2, 0.6>0.4, 0.4=0.4 (half), 0.4>0.2 -> 5.5/6
+    assert sc.auroc([0.9, 0.6, 0.4], [0.2, 0.4]) == pytest.approx(5.5 / 6)
+    assert sc.prob({"status": "ok", "answer": "present", "confidence": 80}) == pytest.approx(0.8)
+    assert sc.prob({"status": "ok", "answer": "absent", "confidence": 80}) == pytest.approx(0.2)
+    assert sc.prob({"status": "refusal"}) == 0.0

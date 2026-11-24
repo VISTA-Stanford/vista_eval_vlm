@@ -192,13 +192,85 @@ def cmd_layer2(_args) -> int:
     return 0
 
 
+def prob(r: dict) -> float:
+    """The model's probability that the finding is there, from its answer and its 0-100 confidence (a refused or
+    unparsed call counts as 0: it did not report the finding)."""
+    if r["status"] != "ok" or r.get("confidence") is None:
+        return 0.0
+    c = max(0, min(100, int(r["confidence"]))) / 100
+    return c if r.get("answer") == "present" else 1 - c
+
+
+def auroc(pos: list[float], neg: list[float]) -> float:
+    """Probability a random positive outranks a random negative, ties counted half."""
+    if not pos or not neg:
+        return float("nan")
+    s = sum(1.0 if p > q else 0.5 if p == q else 0.0 for p in pos for q in neg)
+    return s / (len(pos) * len(neg))
+
+
+def auroc_boot(pos, neg, n: int = 2000, seed: int = 11) -> tuple[float, float]:
+    rng = random.Random(seed)
+    v = sorted(auroc([rng.choice(pos) for _ in pos], [rng.choice(neg) for _ in neg]) for _ in range(n))
+    return v[int(0.025 * n)], v[int(0.975 * n) - 1]
+
+
+def auroc_change_boot(p1, p2, q1, q2, n: int = 2000, seed: int = 12) -> tuple[float, float]:
+    """Paired: the same items scored two ways (e.g. full vs zoom, or layer 1 vs layer 2)."""
+    rng = random.Random(seed)
+    out = []
+    for _ in range(n):
+        ip = [rng.randrange(len(p1)) for _ in p1]
+        iq = [rng.randrange(len(q1)) for _ in q1]
+        out.append(auroc([p2[i] for i in ip], [q2[i] for i in iq]) - auroc([p1[i] for i in ip], [q1[i] for i in iq]))
+    out.sort()
+    return out[int(0.025 * n)], out[int(0.975 * n) - 1]
+
+
+def cmd_auroc(_args) -> int:
+    """AUROC per track x bin x model x view (layer 1: tile, full, zoom) with a bootstrap 95% interval, the paired
+    change zoom - full and layer 2 - layer 1 (full) on the same items. Writes OUT/auroc.json."""
+    it, items, latest = _load()
+    cells = defaultdict(lambda: {"pos": {}, "neg": {}})
+    for (layer, m, v, iid), r in latest.items():
+        i = items[iid]
+        cells[(layer, i["track"], i["bin"], m, v)]["pos" if i["role"] == "positive" else "neg"][iid] = prob(r)
+    rows = []
+    for (layer, t, b, m, v), c in sorted(cells.items()):
+        p, q = list(c["pos"].values()), list(c["neg"].values())
+        lo, hi = auroc_boot(p, q)
+        row = {"layer": layer, "track": t, "bin": b, "model": m, "view": v, "n_pos": len(p), "n_neg": len(q),
+               "auroc": round(auroc(p, q), 3), "lo": round(lo, 3), "hi": round(hi, 3)}
+        # paired change on the items both have: layer 1 zoom vs layer 1 full; layer 2 vs layer 1 in the same view
+        base = (cells.get((1, t, b, m, v)) if layer == 2 else
+                cells.get((1, t, b, m, "full")) if v == "zoom" else None)
+        if base:
+            ip = [k for k in c["pos"] if k in base["pos"]]
+            iq = [k for k in c["neg"] if k in base["neg"]]
+            p1, p2 = [base["pos"][k] for k in ip], [c["pos"][k] for k in ip]
+            q1, q2 = [base["neg"][k] for k in iq], [c["neg"][k] for k in iq]
+            if ip and iq:
+                dlo, dhi = auroc_change_boot(p1, p2, q1, q2)
+                row.update({"vs_base": f"layer 1 {v}" if layer == 2 else "layer 1 full", "vs_full_l1": round(auroc(p2, q2) - auroc(p1, q1), 3), "vs_lo": round(dlo, 3),
+                            "vs_hi": round(dhi, 3), "paired_n": f"{len(ip)}/{len(iq)}"})
+        rows.append(row)
+    (it.OUT / "auroc.json").write_text(json.dumps(rows, indent=1))
+    for r in rows:
+        extra = (f"  vs {r['vs_base']} {r['vs_full_l1']:+.2f} [{r['vs_lo']:+.2f},{r['vs_hi']:+.2f}] on {r['paired_n']}"
+                 if "vs_full_l1" in r else "")
+        print(f"L{r['layer']} {r['track']:<18} {r['bin']:<6} {r['model']:<18} {r['view']:<5} n {r['n_pos']}/{r['n_neg']}  "
+              f"AUROC {r['auroc']:.2f} [{r['lo']:.2f},{r['hi']:.2f}]{extra}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("layer1")
     sub.add_parser("layer2")
+    sub.add_parser("auroc")
     args = ap.parse_args()
-    return {"layer1": cmd_layer1, "layer2": cmd_layer2}[args.cmd](args)
+    return {"layer1": cmd_layer1, "layer2": cmd_layer2, "auroc": cmd_auroc}[args.cmd](args)
 
 
 if __name__ == "__main__":
