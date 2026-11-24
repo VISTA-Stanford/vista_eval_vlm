@@ -40,8 +40,8 @@ HAS_RECORD = RECORD or BOARDS
 #: Boards only: which model answers (spec: Sonnet and Haiku arms, same data). Names the work folder, images and
 #: results folder (``RUN_LABEL``), never the data folder.
 TB_MODEL = os.environ.get("TB_MODEL", "sonnet")
-if TB_MODEL not in ("sonnet", "haiku") or (TB_MODEL != "sonnet" and not BOARDS):
-    raise SystemExit("TB_MODEL=haiku is for TB_AGENT=boards-record only")
+if TB_MODEL not in ("sonnet", "haiku", "opus") or (TB_MODEL != "sonnet" and not BOARDS):
+    raise SystemExit("TB_MODEL=haiku or opus is for TB_AGENT=boards-record only")
 #: Boards only: which question set the climb scores. "board" (spec 2026-11-22: T1/T2/T3) or "treatment" (spec
 #: planning/vista_eval_vlm/2026-11-23-tb-board-treatment-climb.md: six yes/no modality questions + T3, every board).
 TB_QUESTIONS = os.environ.get("TB_QUESTIONS", "board")
@@ -54,7 +54,7 @@ TB_SEED = os.environ.get("TB_SEED", "v1")
 if TB_SEED not in ("v1", "untuned") or (TB_SEED != "v1" and not TX):
     raise SystemExit("TB_SEED=untuned is for TB_QUESTIONS=treatment only")
 RUN_LABEL = AGENT + ("-tx" if TX else "") + ("-untuned" if TB_SEED == "untuned" else "") + \
-    ("-haiku" if TB_MODEL == "haiku" else "")
+    {"sonnet": "", "haiku": "-haiku", "opus": "-opus"}[TB_MODEL]
 # --------------------------------------------------------------------------------------------------
 # Where the engine is. The engine checks that it runs from a git checkout that contains ENGINE_PIN.
 # --------------------------------------------------------------------------------------------------
@@ -207,11 +207,12 @@ TASK_BRIEF = HERE / "context" / f"task_{AGENT}{'-tx' if TX else ''}.md"
 OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / f"optimizer_instructions_{AGENT}{'-tx' if TX else ''}.md"
 
 #: The model each patient's session runs on, how many run at once, and each one's cap (spec, Decided).
-PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-haiku-5-5" if TB_MODEL == "haiku" else "claude-sonnet-5-5")  # DECIDE: Phil 2026-11-20
+PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", {"sonnet": "claude-sonnet-5-5", "haiku": "claude-haiku-5-5",
+                                                  "opus": "claude-opus-5-5"}[TB_MODEL])  # opus: one untuned VAL pass (Phil 2026-11-24)  # DECIDE: Phil 2026-11-20
 PROGRAM_MAX_CONCURRENT = int(os.environ.get("PROGRAM_MAX_CONCURRENT", "4" if TREATMENT else "2"))  # as died-2yr-ehr / ct-findings-5
 PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD",
                                                {"treatment": "0.25", "imaging": "0.75", "treatment-record": "0.50",
-                                                "boards-record": "0.50"}[AGENT]))  # DECIDE: specs (record: Phil 2026-11-21)
+                                                "boards-record": "1.00" if TB_MODEL == "opus" else "0.50"}[AGENT]))  # DECIDE: specs (record: Phil 2026-11-21; opus: Opus 5.5 is 2x Sonnet per token, build 2026-11-24)
 PROGRAM_CALL_TIMEOUT_SECONDS = {"treatment": 600, "imaging": 1200, "treatment-record": 900, "boards-record": 900}[AGENT]  # two CTs or a record take longer
 
 # --------------------------------------------------------------------------------------------------

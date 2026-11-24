@@ -23,7 +23,7 @@ export TB_AGENT
 export TB_MODEL=${TB_MODEL:-sonnet}  # boards only: sonnet or haiku (config.TB_MODEL)
 export TB_QUESTIONS=${TB_QUESTIONS:-board}  # boards only: board or treatment (config.TB_QUESTIONS)
 export TB_SEED=${TB_SEED:-v1}  # treatment only: v1 or untuned (config.TB_SEED)
-LABEL=$TB_AGENT$([ "$TB_QUESTIONS" = treatment ] && echo -tx || true)$([ "$TB_SEED" = untuned ] && echo -untuned || true)$([ "$TB_MODEL" = haiku ] && echo -haiku || true)  # config.RUN_LABEL: work folder, images, results
+LABEL=$TB_AGENT$([ "$TB_QUESTIONS" = treatment ] && echo -tx || true)$([ "$TB_SEED" = untuned ] && echo -untuned || true)$([ "$TB_MODEL" = sonnet ] || echo "-$TB_MODEL")  # config.RUN_LABEL: work folder, images, results
 export ALO_ROUTE=${ALO_ROUTE:-vertex}  # the spec's route
 BRANCH=feat/tb-agent-questions
 [ "$TB_AGENT" != treatment-record ] || BRANCH=feat/tb-treatment-record  # the full-record arm's branch (spec 2026-11-21)
