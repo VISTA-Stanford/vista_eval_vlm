@@ -48,7 +48,13 @@ TB_QUESTIONS = os.environ.get("TB_QUESTIONS", "board")
 if TB_QUESTIONS not in ("board", "treatment") or (TB_QUESTIONS != "board" and not BOARDS):
     raise SystemExit("TB_QUESTIONS=treatment is for TB_AGENT=boards-record only")
 TX = TB_QUESTIONS == "treatment"
-RUN_LABEL = AGENT + ("-tx" if TX else "") + ("-haiku" if TB_MODEL == "haiku" else "")
+#: Treatment only: which seed. "v1" (default; Sonnet board climb r1's program-v1 + the six questions) or "untuned" (the
+#: plain board seed + the six questions; Phil 2026-11-24: untuned Sonnet first, then Opus).
+TB_SEED = os.environ.get("TB_SEED", "v1")
+if TB_SEED not in ("v1", "untuned") or (TB_SEED != "v1" and not TX):
+    raise SystemExit("TB_SEED=untuned is for TB_QUESTIONS=treatment only")
+RUN_LABEL = AGENT + ("-tx" if TX else "") + ("-untuned" if TB_SEED == "untuned" else "") + \
+    ("-haiku" if TB_MODEL == "haiku" else "")
 # --------------------------------------------------------------------------------------------------
 # Where the engine is. The engine checks that it runs from a git checkout that contains ENGINE_PIN.
 # --------------------------------------------------------------------------------------------------
@@ -192,7 +198,8 @@ PROBABILITY = True
 #: card's opening and question(s) verbatim, the folder layout, and (imaging) the CT pair viewer.
 SEED_PROGRAM_DIR = HERE / {"treatment": "program_treatment", "imaging": "program_imaging",
                            "treatment-record": "program_treatment_record",
-                           "boards-record": "program_boards_tx" if TX else "program_boards_record"}[AGENT]
+                           "boards-record": ("program_boards_tx_untuned" if TB_SEED == "untuned" else "program_boards_tx")
+                           if TX else "program_boards_record"}[AGENT]
 EDITABLE_FILES = ("instructions.md", "tools")
 CONTRACT_FILES: tuple[str, ...] = ()
 #: The optimizer's task brief and its standing instructions (its system prompt).
