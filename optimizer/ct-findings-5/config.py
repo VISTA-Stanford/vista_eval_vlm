@@ -117,6 +117,12 @@ KB_PRESTAGE = KB_ARM and os.environ.get("KB_PRESTAGE", "0") == "1"  # DECIDE: Ph
 KB_PRESTAGE_TAG = os.environ.get("KB_PRESTAGE_TAG", "")
 if KB_PRESTAGE and not KB_PRESTAGE_TAG:
     raise SystemExit("KB_PRESTAGE=1 needs KB_PRESTAGE_TAG, the program version whose library is drawn")
+#: Oracle-examples Half A (spec planning/vista_eval_vlm/2026-11-24-oracle-matched-examples.md, Approved 2026-11-24):
+#: KB_ORACLE=grid | zoom draws each scan's report-matched sets (kb_oracle.py; built once into the private folder) in
+#: place of the similarity picks; needs KB_PRESTAGE=1 and its KB_PRESTAGE_TAG (the version whose library is used).
+KB_ORACLE = os.environ.get("KB_ORACLE", "") if KB_PRESTAGE else ""  # DECIDE: Phil 2026-11-24, two arms
+if KB_ORACLE not in ("", "grid", "zoom"):
+    raise SystemExit(f"KB_ORACLE must be grid or zoom, not {KB_ORACLE!r}")
 if KB_ARM:
     import kb_materialize  # the library holds PNGs; the pinned engine writes versions out as text (2026-11-23)
 

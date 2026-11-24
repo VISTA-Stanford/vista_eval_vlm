@@ -84,7 +84,18 @@ def _img(path: Path) -> dict:
 def content_for(item: dict, view: str, examples: list[dict] | None) -> list[dict]:
     win = rd.WINDOW_NAME[rd.WINDOW[item["track"]]]
     out = []
-    if examples:
+    if examples and "kind" in examples[0]:  # layer 3: report-matched (oracle) set, the same three kinds for every case
+        out.append({"type": "text", "text": (f"First, {len(examples)} reference images from other patients ({win}). "
+                                             f"Each says what the radiologist reported on that slice.")})
+        for k, ex in enumerate(examples, 1):
+            if ex["kind"] == "no":
+                cap = f"no {NOUN[item['track']]} on this slice (the report says this region is clear); location: {ex['site']}"
+            else:
+                cap = f"a confirmed {NOUN[item['track']]}: {ex['desc']}; location: {ex['location']}"
+            out.append({"type": "text", "text": f"Reference {k}: {cap}."})
+            out.append(_img(rd.path_of(ex["item"], view)))
+        out.append({"type": "text", "text": "Now the image to read, from a different patient:"})
+    elif examples:
         out.append({"type": "text", "text": (f"First, {len(examples)} reference images from other patients, each "
                                              f"with a confirmed {NOUN[item['track']]} that the radiologist reported "
                                              f"on that slice ({win}).")})
@@ -299,13 +310,38 @@ def cmd_layer2_zoom(_args) -> int:
     return run_jobs(jobs, "layer 2 zoom")
 
 
+def layer3_jobs(all_items: list[dict], bins=("5-9", "10-19"), view: str = "zoom") -> tuple[list[dict], dict]:
+    """Layer 3 (spec planning/vista_eval_vlm/2026-11-24-oracle-matched-examples.md): every positive and negative of the
+    bins the zoomed layer 2 ran, with its report-matched set (oracle_match.perception_sets: yes at its site, no at its
+    site, decoy elsewhere, shuffled), both models, the zoom view (layer-1 AUROC higher at 5-9 mm, 2026-11-24)."""
+    sys.path.insert(0, str(HERE.parent))
+    import oracle_match as om
+
+    sets, close = om.perception_sets(all_items, it.SEED, bins=bins)
+    by = {i["item"]: i for i in all_items}
+    jobs = [{"layer": 3, "model": m, "view": view, "item": by[k], "examples": v} for k, v in sorted(sets.items()) for m in MODELS]
+    random.Random(it.SEED + 3).shuffle(jobs)
+    return jobs, dict(close)
+
+
+def cmd_layer3(args) -> int:
+    jobs, close = layer3_jobs(it.load_items())
+    if args.limit:
+        keep = sorted({j["item"]["item"] for j in jobs})[: args.limit]
+        jobs = [j for j in jobs if j["item"]["item"] in keep]
+    print(f"layer 3: {len(jobs)} calls; matching {close}")
+    return run_jobs(jobs, "layer 3" + (f" (first {args.limit} items)" if args.limit else ""))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    l3 = sub.add_parser("layer3")
+    l3.add_argument("--limit", type=int, default=0, help="the first N items only (the cost check)")
     for name in ("cost-check", "layer1", "layer2", "zoom", "layer2-zoom"):
         sub.add_parser(name)
     args = ap.parse_args()
-    return {"cost-check": cmd_cost_check, "layer1": cmd_layer1, "layer2": cmd_layer2, "zoom": cmd_zoom, "layer2-zoom": cmd_layer2_zoom}[args.cmd](args)
+    return {"cost-check": cmd_cost_check, "layer1": cmd_layer1, "layer2": cmd_layer2, "zoom": cmd_zoom, "layer2-zoom": cmd_layer2_zoom, "layer3": cmd_layer3}[args.cmd](args)
 
 
 if __name__ == "__main__":

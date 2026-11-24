@@ -27,7 +27,8 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever you change ``prompt`` below.
-PROMPT_TAG = ("ct-findings-5-v1-prob-kb-forced" if config.KB_PRESTAGE
+PROMPT_TAG = (f"ct-findings-5-v1-prob-kb-oracle-{config.KB_ORACLE}" if config.KB_ORACLE
+              else "ct-findings-5-v1-prob-kb-forced" if config.KB_PRESTAGE
               else "ct-findings-5-v1-prob-kb" if config.KB_ARM
               else f"ct-findings-5-v1-prob-examples-{config.EXAMPLE_ARM.lower()}" if config.EXAMPLE_ARM
               else "ct-findings-5-v1-prob-neighbours" if config.NEIGHBOURS else "ct-findings-5-v1-prob")
@@ -182,7 +183,13 @@ def program_spec(forbidden):
         if config.KB_PRESTAGE:  # the examples drawn beside this scan (Phil 2026-11-24), from the scored version's library
             import kb_prestage
 
-            kb_prestage.stage(config.WORKDIR / "versions" / f"val-pass-{config.KB_PRESTAGE_TAG}", Path(folder))
+            tree = config.WORKDIR / "versions" / f"val-pass-{config.KB_PRESTAGE_TAG}"
+            if config.KB_ORACLE:  # report-matched sets (spec 2026-11-24-oracle-matched-examples.md)
+                import kb_oracle
+
+                kb_oracle.stage(call.payload["id"], Path(folder), config.KB_ORACLE, tree / "library")
+            else:
+                kb_prestage.stage(tree, Path(folder))
         if config.EXAMPLE_ARM == "D":
             views = Path(folder) / "ct_views"
             views.mkdir(parents=True, exist_ok=True)
