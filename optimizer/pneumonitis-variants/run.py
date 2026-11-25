@@ -1,0 +1,633 @@
+#!/usr/bin/env python3
+"""One command for the reader's passes and the work folder. Run from the engine's environment:
+
+    uv run --project $AGENTIC_LABEL_OPT python run.py init           the work folder; program-v0 (empty guide/library)
+    uv run --project $AGENTIC_LABEL_OPT python run.py pins --write   fingerprint the sealed sessions, commit the pins
+    uv run --project $AGENTIC_LABEL_OPT python run.py check-token    (seat route only)
+    uv run --project $AGENTIC_LABEL_OPT python run.py val-pass --tag program-v0 [--limit 10]   PAID: one VAL pass
+    uv run --project $AGENTIC_LABEL_OPT python run.py rescore ANSWERS_JSON --split val          $0
+    uv run --project $AGENTIC_LABEL_OPT python run.py test --tag program-vN                     TEST: not built (own go)
+
+The builder loop is scripts/run_loop.py; the whole study is scripts/run_variants.sh. Copied from ct-findings-5
+(feat/ct-organ-zoom @6c1d699): the engine's climb (run, dry-run) and the arm commands are removed, since the builder
+is driven by scripts/run_loop.py, not the engine's optimizer loop.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import config  # noqa: E402  (also puts the engine on sys.path)
+import adapters as ad  # noqa: E402
+import optimizer as opt  # noqa: E402
+import optimizer_prompt as op  # noqa: E402
+
+from engine.driver import DriverConfig, StartPoint, exit_code, run_driver  # noqa: E402
+from engine.loop import AgentOutcome, LoopPause, LoopStop  # noqa: E402
+from engine.loop_ops import LocalLoopOps  # noqa: E402
+from engine.materialize import materialize  # noqa: E402
+from engine.run_start import Carried  # noqa: E402
+from engine.run_store import CheckedRunStore  # noqa: E402
+from engine.versioning import commit_new_version  # noqa: E402
+
+PIN_FILE = "manifest.json"
+#: Engine features this task relies on; the run stops before spending if the engine lacks one.
+CAPABILITIES = (
+    "engine.driver:run_driver",
+    "engine.driver:DriverConfig.program_mode",
+    "engine.schedule:DataSchedule",
+    "isolation.sealed_worker:open_sealed_worker",
+    "isolation.contained_agent:ContainedOptimizerAgent",
+)
+RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout
+
+
+# ==================================================================================================
+# init: the work folder and program-v0
+# ==================================================================================================
+
+
+def cmd_init(args) -> int:
+    layout = opt.Layout()
+    if layout.repo.exists():
+        print(f"{layout.repo} already exists; delete {layout.root} to start over")
+        return 1
+    init_layout(layout)
+    return 0
+
+
+def init_layout(layout) -> None:
+    for d in (layout.versions, layout.feedback, layout.notes, layout.outputs, layout.batches, layout.store,
+              layout.archive, layout.transcripts, layout.stubs / "iter", layout.stubs / "feedback", layout.stubs / "notes"):
+        d.mkdir(parents=True, exist_ok=True)
+    (layout.private / "README.txt").write_text("Run records. Never mounted into a container.\n")
+    (layout.stubs / "iter" / "README.txt").write_text("Releases the loop writes each iteration.\n")
+    (layout.stubs / "notebook.md").write_text("# Notebook\n\n(empty: nothing tried yet)\n")
+    shutil.copy2(layout.stubs / "notebook.md", layout.notebook)
+
+    repo = layout.repo
+    repo.mkdir(parents=True)
+    git(repo, "init", "--initial-branch=main")
+    git(repo, "config", "user.email", "optimizer@localhost")
+    git(repo, "config", "user.name", f"{config.TASK_NAME} optimizer loop")
+    shutil.copytree(config.SEED_PROGRAM_DIR, repo, dirs_exist_ok=True)
+    (repo / "iter").mkdir()
+    (repo / "iter" / "README.txt").write_text("Releases the loop writes each iteration.\n")
+    (repo / ".gitignore").write_text("iter/\n__pycache__/\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "seed program")
+    tag, sha = commit_new_version(ad.TaskStore().manifest(), "seed", repo_root=repo, allow_empty=True)
+    opt.stage_files(layout)
+    print(f"work folder {layout.root}\nseed tagged {tag} at {sha[:10]}")
+
+
+# ==================================================================================================
+# The driver config, shared by dry-run and run
+# ==================================================================================================
+
+
+def schedule(layout):
+    if config.SCHEDULE is None:
+        return None
+    from engine.schedule import DataSchedule, ScheduleConfig
+
+    return DataSchedule(ScheduleConfig(**config.SCHEDULE), ad.TaskSource(layout.batches))
+
+
+def rounds_without_best(rows: list[dict], metric: str) -> int:
+    """How many rounds in a row, counting back from the latest, set no new best VAL score. The best starts at the
+    first round's base score (the start version's VAL, e.g. the seed's zero-shot); a failed version counts as no new
+    best. A row still ``saved_unmeasured`` (the engine writes it before that version's VAL pass) is skipped: its round
+    has not been scored yet, and counting it stopped a dry run before the version it had just paid for was scored."""
+    if not rows:
+        return 0
+    best, streak = rows[0].get("base_metric"), 0
+    for row in rows:
+        if row.get("status") == "saved_unmeasured":
+            continue
+        value = row.get(metric)
+        if value is not None and (best is None or value > best):
+            best, streak = value, 0
+        else:
+            streak += 1
+    return streak
+
+
+ITER_PASS = re.compile(r"^iter-(\d+)-")
+
+
+def run_spend(archive: Path, run_id: str) -> dict[int, float]:
+    """Dollars of patient sessions this run id paid for, by round, from the receipts of every finished pass under
+    ``archive`` (program-outputs/archive). Failed and retried passes count: they were paid for."""
+    by_iter: dict[int, float] = {}
+    for receipts in Path(archive).glob("iter-*/receipts"):
+        m = ITER_PASS.match(receipts.parent.name)
+        for f in receipts.glob("*.json"):
+            try:
+                r = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if r.get("run_id") != run_id or not m:
+                continue
+            by_iter[int(m.group(1))] = by_iter.get(int(m.group(1)), 0.0) + sum(
+                float(s.get("cost_usd") or 0.0) for s in r.get("stages", []))
+    return by_iter
+
+
+def stop_rule(summary_path: Path, archive: Path | None = None, run_id: str | None = None):
+    """A before-pass hook enforcing, before the next pass spends anything on patients:
+    config.STOP_AFTER_ROUNDS_WITHOUT_BEST from the run summary the engine rewrites after every round (so a resumed run
+    counts the same rounds; the optimizer's session for that round may already have run), and the dollar stops
+    config.RUN_BUDGET_USD and ROUND_BUDGET_USD from the run's receipts."""
+    limit = config.STOP_AFTER_ROUNDS_WITHOUT_BEST
+
+    def check(inputs):
+        try:
+            rows = json.loads(Path(summary_path).read_text(encoding="utf-8")).get("iters", [])
+        except (OSError, ValueError):
+            rows = []
+        streak = rounds_without_best(rows, config.METRIC_NAME)
+        if limit and streak >= limit:
+            raise LoopStop(f"{streak} rounds in a row set no new best {config.METRIC_NAME} (limit {limit}); "
+                           f"the best version so far is the winner", reason="no_new_best")
+        if archive is not None and (config.RUN_BUDGET_USD or config.ROUND_BUDGET_USD):
+            spend = run_spend(archive, run_id)
+            done = {r.get("iter") for r in rows if r.get("status") in ("measured", "failed")}
+            over = [i for i in sorted(spend) if i in done and spend[i] > config.ROUND_BUDGET_USD]
+            if config.ROUND_BUDGET_USD and over:
+                raise LoopStop(f"round {over[0]} cost ${spend[over[0]]:.2f} in patient sessions, over the "
+                               f"${config.ROUND_BUDGET_USD:.0f} a round limit: stop and ask", reason="round_over_budget")
+            started = max([*spend, *[r.get("iter") or 0 for r in rows]], default=0)
+            total = sum(spend.values()) + started * config.OPTIMIZER_SESSION_BUDGET_USD
+            if config.RUN_BUDGET_USD and total > config.RUN_BUDGET_USD:
+                raise LoopStop(f"this run has spent about ${total:.2f} (patient sessions plus each round's optimizer "
+                               f"budget), over the ${config.RUN_BUDGET_USD:.0f} limit: stop and ask",
+                               reason="run_over_budget")
+        return None
+
+    return check
+
+
+def driver_config(layout, *, run_id, iterations, agent, runner, release_builder, setup_owners, unsealed=(),
+                  program_mode=None, resume=False, start=StartPoint.NEWEST_GOOD) -> DriverConfig:
+    store = ad.TaskStore()
+    sched = schedule(layout)
+    layout.summary(run_id).parent.mkdir(parents=True, exist_ok=True)
+    return DriverConfig(
+        run_id=run_id, repo_root=layout.repo, iterations=iterations,
+        program_store=store, scorer=ad.TaskScorer(), release_builder=release_builder, agent=agent, runner=runner,
+        train_inputs=None if sched else ad.whole_split("train"),
+        val_inputs=None if sched else ad.whole_split("val"),
+        schedule=sched,
+        materialize_root=layout.versions, manifest_for_version=lambda sha: store.manifest(),
+        carried=(
+            Carried(layout.repo / "iter", "run", stub=layout.stubs / "iter"),
+            Carried(layout.feedback, "run", stub=layout.stubs / "feedback"),
+            Carried(layout.notebook, "lineage", stub=layout.stubs / "notebook.md"),
+            Carried(layout.notes, "lineage", stub=layout.stubs / "notes"),
+        ),
+        archive_root=layout.archive, run_summary_path=layout.summary(run_id),
+        run_store=CheckedRunStore(layout.store), patient_data=config.PATIENT_DATA,
+        engine_pin=config.ENGINE_PIN, engine_root=config.ENGINE_ROOT, engine_capabilities=CAPABILITIES,
+        setup_owners=setup_owners, unsealed=unsealed, program_mode=program_mode,
+        pin_command=f"python {HERE / 'run.py'} pins", start=start, resume=resume,
+        before_pass=((stop_rule(layout.summary(run_id), layout.program_outputs / "archive", run_id),)
+                     if (config.STOP_AFTER_ROUNDS_WITHOUT_BEST or config.RUN_BUDGET_USD or config.ROUND_BUDGET_USD)
+                     else ()),
+        loop_options={
+            # Without loop_ops the loop writes no release files and the optimizer works blind.
+            "loop_ops": LocalLoopOps(layout.repo),
+            "build_mistake_corpus": ad.mistake_corpus(layout.feedback),
+            "metric_field": config.METRIC_NAME,
+            "hard_fields": {"task": config.TASK_NAME, "metric": config.METRIC_NAME, "schedule": config.SCHEDULE},
+            "soft_fields": {"optimizer_model": config.OPTIMIZER_MODEL},
+            "step_back_revert_tolerance": config.STEP_BACK_REVERT_TOLERANCE,
+            "token_budget": config.TOKEN_BUDGET,
+        },
+    )
+
+
+def drive(cfg: DriverConfig) -> int:
+    try:
+        result = run_driver(cfg)
+    except (LoopStop, LoopPause) as exc:
+        print(f"\nSTOPPED ({getattr(exc, 'reason', None) or type(exc).__name__}): {exc}")
+        print(f"run summary: {cfg.run_summary_path}")
+        return exit_code(exc)
+    print(f"\nFINISHED {len(result.results)} iterations. best {result.best_tag} = {result.best_metric_value}")
+    print(f"run summary: {cfg.run_summary_path}")
+    return exit_code(result)
+
+
+# ==================================================================================================
+# dry-run: every piece but the two containers, for $0
+# ==================================================================================================
+
+# TASK-SPECIFIC: canned edits to the toy's label.py. Replace them with one or two hand-written improvements
+# to your own seed, so the dry run shows the score move; or use {} (the scripted edit then appends a comment).
+DRY_RUN_MARKER = ".alo-dry-run"
+
+
+def remove_tree(root: Path) -> None:
+    """Delete a work folder. Materialized versions are read-only, so make everything writable first."""
+    for p in [root, *root.rglob("*")]:
+        if not p.is_symlink():
+            p.chmod(p.stat().st_mode | 0o700 if p.is_dir() else p.stat().st_mode | 0o600)
+    shutil.rmtree(root)
+
+
+def dry_run_layout():
+    """The dry run's own work folder, rebuilt from scratch every time. Never the real one: the dry run
+    commits its scripted edits as versions, and a real run starts from the newest version by default."""
+    return opt.Layout(root=config.WORKDIR.with_name(config.WORKDIR.name + "-dryrun"))
+
+
+# ==================================================================================================
+# print-prompt
+# ==================================================================================================
+
+
+def cmd_print_prompt(args) -> int:
+    from isolation.contained_agent import INPUTS_PATH, NOTES_PATH, OUT_PATH, OptimizerPaths
+
+    names_in = (op.TASK_BRIEF_NAME, op.NOTEBOOK_NAME)
+    names_out = (op.CHANGE_NOTE_NAME, op.NOTEBOOK_NAME)
+    paths = OptimizerPaths(inputs={n: f"{INPUTS_PATH}/{n}" for n in names_in},
+                           outputs={n: f"{OUT_PATH}/{n}" for n in names_out}, notes=NOTES_PATH)
+    print("=" * 30, "SYSTEM PROMPT (prompts/optimizer_instructions.md)", "=" * 30)
+    print(op.system_prompt())
+    print("=" * 30, f"ITERATION {args.iter} PROMPT (optimizer_prompt.build_prompt)", "=" * 30)
+    print(op.build_prompt(args.iter, paths))
+    return 0
+
+
+# ==================================================================================================
+# Images and pins
+# ==================================================================================================
+
+
+def cmd_build_images(args) -> int:
+    from isolation.image_pin import image_ref
+
+    builds = [(config.OPTIMIZER_IMAGE_TAG, "optimizer.Dockerfile", ["--build-arg", f"CLAUDE_CODE_VERSION={config.CLAUDE_CODE_VERSION}"])]
+    if not config.AGENTIC:  # agentic sessions run on the optimizer's image (it has Claude Code)
+        builds.append((config.WORKER_IMAGE_TAG, "worker.Dockerfile", []))
+    for tag, dockerfile, extra in builds:
+        print(f"building {tag} ...", flush=True)
+        subprocess.run(["docker", "build", *extra, "-t", tag, "-f", str(HERE / "docker" / dockerfile), str(HERE / "docker")],
+                       check=True)
+        print(f"  {image_ref(tag)}")
+    return 0
+
+
+def images() -> tuple[str, str]:
+    """(optimizer image, program image), each name:version@sha256:... The agentic program's sessions
+    run on the optimizer's image."""
+    from isolation.image_pin import image_ref
+
+    optimizer = image_ref(config.OPTIMIZER_IMAGE_TAG)
+    return optimizer, optimizer if config.AGENTIC else image_ref(config.WORKER_IMAGE_TAG)
+
+
+def program_runner(layout, *, image, pin):
+    """The sealed runner for the program: a worker per pass (rules_based) or a ProgramRunner (agentic)."""
+    if config.AGENTIC:
+        import agentic
+
+        return agentic.program_runner(layout, image=image, pin=pin, forbidden=opt.forbidden(layout))
+    return ad.SealedRunner(layout.outputs, spec_for=opt.worker_spec_for(layout, image=image, pin=pin),
+                           stderr_dir=layout.transcripts / "worker", versions_root=layout.versions)
+
+
+def sealed_parts(layout, *, run_id, pins, token):
+    """(optimizer, program runner, owners): ``owners`` maps each sealed kind to what the setup check fingerprints,
+    the search sessions included when the proxy is on (a proxied optimizer without that owner is refused)."""
+    optimizer_image, program_image = images()
+    agent = opt.build_agent(layout, ad.TaskStore(), run_id=run_id, image=optimizer_image, pin=pins["optimizer"],
+                            search_pin=pins.get("search"), token=token)
+    runner = program_runner(layout, image=program_image, pin=pins["program"])
+    owners = {"optimizer": agent, "program": runner}
+    if config.SEARCH_PROXY:
+        owners["search"] = agent.proxy
+    return agent, runner, owners
+
+
+#: The sealed kinds this task pins: the optimizer, the program, and the search sessions when the proxy is on.
+PIN_KINDS = ("optimizer", "program", *(("search",) if config.SEARCH_PROXY else ()))
+
+
+def cmd_pins(args) -> int:
+    from isolation.setup_fingerprint import PIN_KEY, UNPINNED, fingerprint_hash, platform_key, setup_fingerprint
+
+    layout = opt.Layout()
+    _agent, _runner, owners = sealed_parts(layout, run_id="pins", pins=dict.fromkeys(PIN_KINDS, UNPINNED), token=None)
+    prints = {kind: setup_fingerprint(owner.setup_description()) for kind, owner in owners.items()}
+    hashes = {k: fingerprint_hash(v) for k, v in prints.items()}
+    print(json.dumps(prints, indent=2))
+    print(f"\nplatform {platform_key()}: {json.dumps(hashes, indent=2)}")
+    if not args.write:
+        print("\nreview the setup above, then rerun with --write to commit these pins")
+        return 0
+    path = layout.repo / PIN_FILE
+    data = json.loads(path.read_text()) if path.exists() else {}
+    pins = data.setdefault("runtime_pins", {}).setdefault(PIN_KEY, {})
+    for kind, value in hashes.items():
+        pins.setdefault(kind, {})[platform_key()] = value
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    git(layout.repo, "add", PIN_FILE)
+    git(layout.repo, "commit", "-m", f"setup pins for {platform_key()}")
+    print(f"committed {path}")
+    return 0
+
+
+def committed_pins(layout) -> dict:
+    from isolation.setup_fingerprint import committed_pin
+
+    try:
+        pins = {k: committed_pin(layout.repo, PIN_FILE, kind=k) for k in PIN_KINDS}
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(f"no committed setup pins ({exc}); run: python {HERE / 'run.py'} pins --write") from exc
+    missing = [k for k, v in pins.items() if v is None]
+    if missing:
+        raise SystemExit(f"no committed setup pin for {missing}; run: python {HERE / 'run.py'} pins --write")
+    return pins
+
+
+# ==================================================================================================
+# The Claude token
+# ==================================================================================================
+
+#: Auth variables a hand-run `claude` would prefer over the token; check-token removes them so it tests the
+#: token alone. The engine passes only TOKEN_ENV_NAME into the containers, whatever else is set.
+COMPETING_AUTH = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK")
+
+
+def load_token() -> tuple[str | None, str]:
+    """The optimizer's Claude token and where it came from: TOKEN_ENV_NAME, else TOKEN_FILE."""
+    if os.environ.get(config.TOKEN_ENV_NAME):
+        return os.environ[config.TOKEN_ENV_NAME].strip(), f"${config.TOKEN_ENV_NAME}"
+    f = config.TOKEN_FILE
+    if f.is_file():
+        if f.stat().st_mode & 0o077:
+            raise SystemExit(f"{f} can be read by other users: run chmod 600 {f}")
+        token = f.read_text(encoding="utf-8").strip()
+        # The agentic program's runner reads the token from this process's environment, by name, at call time
+        # (isolation/program_runner.py); without this a file-only token reaches the optimizer but not the program.
+        os.environ[config.TOKEN_ENV_NAME] = token
+        return token, str(f)
+    return None, ""
+
+
+NO_TOKEN = (
+    "No Claude token. The optimizer runs in a container that cannot see your Claude Code login, so it needs\n"
+    "its own: run `claude setup-token` (it uses the subscription you are already signed into; pick your\n"
+    "organization's account at the browser login) and save what it prints to {file} with mode 600,\n"
+    "or export {env}. Then: python run.py check-token"
+)
+
+
+def cmd_check_token(args) -> int:
+    """One tiny Haiku call that can only use the token: no login files (a throwaway HOME), and the auth
+    variables that would win over it removed. Inside the optimizer image when it is built, so it also tests
+    the route a run uses; else with the `claude` on this machine."""
+    import tempfile
+
+    token, source = load_token()
+    if not token:
+        print(NO_TOKEN.format(file=config.TOKEN_FILE, env=config.TOKEN_ENV_NAME))
+        return 1
+    for name in COMPETING_AUTH:
+        if os.environ.get(name):
+            print(f"note: {name} is set in this shell. Runs are unaffected (the engine passes only the token into\n"
+                  f"      the containers), but a `claude` you run by hand here bills {name} instead of your seat.")
+    env = {k: v for k, v in os.environ.items() if k not in COMPETING_AUTH}
+    env[config.TOKEN_ENV_NAME] = token
+    ask = ["claude", "-p", "Reply with the single word OK", "--model", "haiku", "--output-format", "json"]
+    have_image = subprocess.run(["docker", "image", "inspect", config.OPTIMIZER_IMAGE_TAG],
+                                capture_output=True).returncode == 0 if shutil.which("docker") else False
+    with tempfile.TemporaryDirectory() as home:
+        if have_image:
+            where = f"the optimizer image ({config.OPTIMIZER_IMAGE_TAG})"
+            cmd = ["docker", "run", "--rm", "-i", "-e", config.TOKEN_ENV_NAME, config.OPTIMIZER_IMAGE_TAG, *ask]
+        elif shutil.which("claude"):
+            where, cmd = "this machine's claude (build the images to test the run's own route)", ask
+            env["HOME"] = home
+        else:
+            print("neither the optimizer image nor `claude` is available: run build-images first")
+            return 1
+        proc = subprocess.run(cmd, env=env, cwd=home, capture_output=True, text=True, timeout=180,
+                              stdin=subprocess.DEVNULL)
+    try:
+        out = json.loads(proc.stdout)
+    except ValueError:
+        out = {}
+    ok = proc.returncode == 0 and out.get("is_error") is False
+    print(f"token from {source}, tested in {where}: {'PASS' if ok else 'FAIL'}")
+    if not ok:
+        print((out.get("result") or proc.stderr or proc.stdout)[-600:])
+        return 1
+    print("The optimizer can authenticate with this token alone. Its usage counts against that account's seat.")
+    return 0
+
+
+# ==================================================================================================
+# run: the real thing
+# ==================================================================================================
+
+
+# ==================================================================================================
+# report and test
+# ==================================================================================================
+
+
+def cmd_test(args) -> int:
+    """Score one chosen version on TEST. Every opening is recorded; a second look at TEST for the same
+    version needs --again and is recorded as such, because each look spends TEST's credibility."""
+    if not (config.DATA_DIR / "splits" / "test.jsonl").is_file():
+        print("TEST is not built for this task: it stays sealed until Phil's go (spec). Build it first.")
+        return 1
+    layout = opt.Layout()
+    ledger = [json.loads(line) for line in layout.test_ledger.read_text().splitlines()] if layout.test_ledger.exists() else []
+    earlier = [e for e in ledger if e["tag"] == args.tag]
+    if earlier and not args.again:
+        print(f"{args.tag} was already scored on TEST {len(earlier)} time(s): {earlier[-1]}. Pass --again to look again.")
+        return 1
+    sha = git(layout.repo, "rev-parse", f"{args.tag}^{{commit}}").strip()
+    tree = layout.versions / f"test-{args.tag}"  # where program trees live; private/ is forbidden to the worker
+    materialize(ad.TaskStore().manifest(), sha, repo_root=layout.repo, dest=tree)
+    import agentic
+
+    agentic.set_tree(tree)
+    if args.local:
+        if config.AGENTIC:
+            print("--local runs a rules_based program in this process; an agentic program needs its sessions")
+            return 1
+        artifacts = ad.LocalRunner(layout.outputs).run(tree, ad.whole_split("test"))
+    else:
+        opt.stage_files(layout)
+        runner = program_runner(layout, image=images()[1], pin=committed_pins(layout)["program"])
+        if config.AGENTIC:
+            with runner:  # a ProgramRunner: one network for the pass, containers removed on exit
+                artifacts = runner.as_runner(run_id=f"test-{args.tag}-look{len(earlier) + 1}").run(tree, ad.whole_split("test"))
+        else:
+            artifacts = runner.run(tree, ad.whole_split("test"))
+    if artifacts.status != "ok":
+        print(f"TEST pass failed: {artifacts.status} {artifacts.error}")
+        return 1
+    score = ad.TaskScorer().score(artifacts, "test", {})
+    entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha,
+             config.METRIC_NAME: score.primary_metric.value, "n": score.breakdown["n"],
+             "look": len(earlier) + 1, "sealed": not args.local}
+    with layout.test_ledger.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+    print(json.dumps(entry, indent=2))
+    return 0
+
+
+#: One VAL pass's dollar stop: the per-scan cap times the scans must fit under it before the pass starts (134 x $0.75
+#: = $100.50). The study's real stop is the $250 cap, enforced by scripts/run_variants.sh.
+VAL_PASS_STOP_USD = float(os.environ.get("VAL_PASS_STOP_USD", "110"))
+
+
+def cmd_val_pass(args) -> int:
+    """Score one version once on the VAL pool (200 scans), or on its first --limit scans (the cost check), with no
+    optimizer: the retrieval arm's untuned pass (spec planning/vista_eval_vlm/2026-11-17-ct-findings-retrieval-arm.md).
+    Copied from died-2yr-ct's score-val. Every pass is paid, so each is recorded in private/val_pass_ledger.jsonl with
+    its answers file, which scripts/retrieval_usage.py reads with the pass's transcripts beside it."""
+    layout = opt.Layout()
+    ledger_path = layout.private / "val_pass_ledger.jsonl"
+    earlier = ([e for e in map(json.loads, ledger_path.read_text().splitlines()) if e["tag"] == args.tag]
+               if ledger_path.exists() else [])
+    ids = sorted(ad.pools()["val"])
+    if args.limit:
+        ids = ids[: args.limit]
+    if config.PROGRAM_CALL_BUDGET_USD * len(ids) > VAL_PASS_STOP_USD:
+        print(f"STOPPED: {len(ids)} scans at the ${config.PROGRAM_CALL_BUDGET_USD:.2f} cap could pass the "
+              f"${VAL_PASS_STOP_USD:.0f} stop")
+        return 1
+    sha = git(layout.repo, "rev-parse", f"{args.tag}^{{commit}}").strip()
+    tree = layout.versions / f"val-pass-{args.tag}"
+    materialize(ad.TaskStore().manifest(), sha, repo_root=layout.repo, dest=tree)
+    opt.stage_files(layout)
+    import agentic
+
+    agentic.set_tree(tree)  # the examples drawn beside each scan come from this version's library
+    look = len(earlier) + 1
+    inputs = ad.TaskSource(layout.private / "val-pass-batches").stage(ids, "val", f"val-pass-{args.tag}-n{len(ids)}-look{look}")
+    runner = program_runner(layout, image=images()[1], pin=committed_pins(layout)["program"])
+    with runner:  # a ProgramRunner: one network for the pass, containers removed on exit
+        artifacts = runner.as_runner(run_id=f"val-pass-{args.tag}-look{look}").run(tree, inputs)
+    if artifacts.status != "ok":
+        print(f"VAL pass failed: {artifacts.status} {artifacts.error}")
+        return 1
+    score = ad.TaskScorer().score(artifacts, "val", {})
+    entry = {"utc": datetime.now(timezone.utc).isoformat(), "tag": args.tag, "version_sha": sha,
+             config.METRIC_NAME: score.primary_metric.value,
+             "n": score.breakdown["n"], "program_errors": score.breakdown["program_errors"], "look": look,
+             "answers": artifacts.artifact_refs[0].path, "questions": per_question(score)}
+    with ledger_path.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+    print(json.dumps(entry, indent=2))
+    return 0
+
+
+# ==================================================================================================
+
+
+def per_question(score) -> dict:
+    """The per-question numbers of a score, without the calibration table."""
+    return {key: {k: v for k, v in score.breakdown[key].items() if k != "calibration_by_decile"}
+            for key, _t, _q in config.QUESTIONS}
+
+
+def cmd_rescore(args) -> int:
+    """$0: score archived answers.json files again (the passes of a run) and print, per question, AUROC, the ties
+    (distinct values, share on the most common one), Brier and the yes/no/unscored counts. Split from the pass name
+    (-val- or -train-) unless --split. Counts only."""
+    from engine.schemas import ArtifactRef, RunArtifacts
+
+    paths = list(args.answers)
+    if args.run:
+        paths += sorted((args.run / "program-outputs" / "archive").glob(f"{args.passes}/answers.json"))
+    if not paths:
+        print("no answers.json given or found")
+        return 1
+    out = []
+    for path in paths:
+        name = path.parent.name
+        split = args.split or next((s for s in ("val", "test", "train") if f"-{s}-" in name or name.startswith(f"{s}-")),
+                                   None)
+        if split is None:
+            print(f"{name}: can't tell the split from the pass name; give --split")
+            return 1
+        arts = RunArtifacts(batch_id="rescore", status="ok", artifact_refs=(ArtifactRef(path=str(path), sha256="0" * 64),))
+        score = ad.TaskScorer().score(arts, split, {})
+        row = {"pass": name, "split": split, config.METRIC_NAME: round(score.primary_metric.value, 4),
+               **{k: v for k, v in score.breakdown.items() if not isinstance(v, dict)}}
+        row.update(per_question(score))
+        out.append(row)
+        print(json.dumps(row))
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    return 0
+
+
+def run_id_arg(value: str) -> str:
+    if not RUN_ID.match(value):
+        raise argparse.ArgumentTypeError("a run id is letters, digits, '.', '_' or '-', at most 64")
+    return value
+
+
+def start_arg(value: str):
+    return {"newest": StartPoint.NEWEST_GOOD, "seed": StartPoint.SEED}.get(value, value)
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("init")
+    pp = sub.add_parser("print-prompt")
+    pp.add_argument("--iter", type=int, default=2)
+    sub.add_parser("build-images")
+    sub.add_parser("check-token")
+    pins = sub.add_parser("pins")
+    pins.add_argument("--write", action="store_true")
+    t = sub.add_parser("test")
+    t.add_argument("--tag", required=True)
+    t.add_argument("--again", action="store_true")
+    t.add_argument("--local", action="store_true", help="run unsealed in this process (only for checking the template)")
+    vp = sub.add_parser("val-pass", help="PAID: score one version once on the VAL pool, no optimizer")
+    vp.add_argument("--tag", default="program-v0")
+    vp.add_argument("--limit", type=int, default=0, help="only the first N VAL pool scans (the cost check)")
+    rs = sub.add_parser("rescore", help="$0: re-score archived answers.json files and print the full breakdown")
+    rs.add_argument("answers", nargs="*", type=Path)
+    rs.add_argument("--run", type=Path, help="a work folder: its archived passes matching --passes")
+    rs.add_argument("--passes", default="iter-*-val-*", help="glob over pass folders (default every VAL pass)")
+    rs.add_argument("--split", choices=("train", "val", "test"))
+    rs.add_argument("--out", type=Path)
+    args = p.parse_args(argv)
+    return {
+        "init": cmd_init, "print-prompt": cmd_print_prompt, "build-images": cmd_build_images,
+        "pins": cmd_pins, "check-token": cmd_check_token, "test": cmd_test,
+        "rescore": cmd_rescore, "val-pass": cmd_val_pass,
+    }[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
