@@ -31,6 +31,22 @@ def mean_auroc(gold: dict, probs: dict, ids: list[str]) -> tuple[float, dict]:
     return sum(per.values()) / len(per), per
 
 
+MERGED = ("radiation", "drug", "cop", "infection")
+
+
+def merged_auroc(gold: dict, probs: dict, ids: list[str]) -> tuple[float, dict]:
+    """Four classes, other drug and immunotherapy merged into "drug" (gold: either; probability: the larger of the
+    two), one-vs-rest AUROC each and their mean (spec 2026-11-25-ct-pneumonitis-library.md)."""
+    def g(i, v):
+        return int(gold[i]["other_drug"] or gold[i]["immunotherapy"]) if v == "drug" else gold[i][v]
+
+    def p(i, v):
+        return max(probs[i]["other_drug"], probs[i]["immunotherapy"]) if v == "drug" else probs[i][v]
+
+    per = {v: ad.auroc([(g(i, v), p(i, v)) for i in ids]) for v in MERGED}
+    return sum(per.values()) / len(per), per
+
+
 def arm_probs(answers: dict) -> dict:
     return {i: {v: ad.prob(a, v) for v in VARIANTS} for i, a in answers.items()}
 
@@ -83,7 +99,9 @@ def main() -> int:
            "positives": {v: sum(gold[i][v] for i in ids) for v in VARIANTS}, "arms": {}, "pairs": {}}
     for n, pr in probs.items():
         m, per = mean_auroc(gold, pr, ids)
+        mm, mper = merged_auroc(gold, pr, ids)
         out["arms"][n] = {"mean": round(m, 4), **{v: round(x, 4) for v, x in per.items()},
+                          "merged_drug_mean": round(mm, 4), "merged": {v: round(x, 4) for v, x in mper.items()},
                           "failed": sum(bool(answers[n][i].get("error")) for i in ids) if n in answers else 0}
     for seed, (b, a) in enumerate(pairs):
         obs, ci = paired_boot(gold, probs[a], probs[b], groups, ids, seed=seed)
@@ -95,6 +113,10 @@ def main() -> int:
              "| arm | " + " | ".join(VARIANTS) + " | mean |", "|" + "---|" * (len(VARIANTS) + 2)]
     for n, r in out["arms"].items():
         lines.append(f"| {n} | " + " | ".join(f"{r[v]:.3f}" for v in VARIANTS) + f" | {r['mean']:.3f} |")
+    lines += ["", "Merged 'any drug' (other drug and immunotherapy as one; four classes):", "",
+              "| arm | " + " | ".join(MERGED) + " | mean |", "|" + "---|" * (len(MERGED) + 2)]
+    for n, r in out["arms"].items():
+        lines.append(f"| {n} | " + " | ".join(f"{r['merged'][v]:.3f}" for v in MERGED) + f" | {r['merged_drug_mean']:.3f} |")
     lines.append("")
     for k, d in out["pairs"].items():
         lines.append(f"{k} on the mean: {d['mean']:+.3f} [{d['ci95'][0]:+.3f}, {d['ci95'][1]:+.3f}] "

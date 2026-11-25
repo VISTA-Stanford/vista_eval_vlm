@@ -182,3 +182,58 @@ def stage_atlas(tree: Path, folder: Path, case_id: str) -> list[str]:
     for f in out.iterdir():
         f.chmod(0o444)
     return written
+
+
+# --------------------------------------------------------------------------------------------------
+# The library arm (config.LIBRARY; spec 2026-11-25-ct-pneumonitis-library.md)
+# --------------------------------------------------------------------------------------------------
+
+
+def library_examples(tree: Path) -> dict[str, dict]:
+    out = {}
+    for f in sorted((Path(tree) / "library" / "examples").glob("*/entry.json")):
+        try:
+            out[f.parent.name] = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def own_patient_examples(tree: Path, case_id: str) -> list[str]:
+    """Library examples from this scan or another scan of its patient: hidden from this session. Reads no label."""
+    mine = _groups().get(case_id)
+    return sorted(eid for eid, e in library_examples(tree).items()
+                  if e.get("source") == case_id or (mine is not None and _groups().get(e.get("source")) == mine))
+
+
+def _link_tree(src: Path, dest: Path) -> None:
+    """Hard-link every file under src into dest (same disk by construction: the work folder's caches)."""
+    import os
+
+    for f in sorted(Path(src).rglob("*")):
+        if f.is_file():
+            out = dest / f.relative_to(src)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            os.link(f, out)
+
+
+def stage_library(tree: Path, folder: Path, case_id: str) -> dict:
+    """library_assets/ (the literature images and their index, and exclude.json: the examples hidden from this scan)
+    and library_scans/<source>/ (each visible example's full CT and organ mask) in the call folder, hard-linked from
+    config.LIT_ASSETS_DIR and config.TRAIN_SCANS_DIR. Returns counts. Raises when a cache is missing."""
+    folder = Path(folder)
+    assets = folder / "library_assets"
+    _link_tree(config.LIT_ASSETS_DIR, assets)
+    hidden = own_patient_examples(tree, case_id)
+    (assets / "exclude.json").write_text(json.dumps(hidden), encoding="utf-8")
+    sources = sorted({e.get("source") for eid, e in library_examples(tree).items() if eid not in hidden and e.get("source")})
+    for src in sources:
+        base = config.TRAIN_SCANS_DIR / src
+        _link_tree(base / "ct", folder / "library_scans" / src / "ct")
+        for name in ("organs.json", "organ_mask.npz"):
+            import os
+
+            os.link(base / name, folder / "library_scans" / src / name)
+    for f in [assets / "exclude.json"]:
+        f.chmod(0o444)
+    return {"hidden_examples": len(hidden), "example_scans": len(sources)}

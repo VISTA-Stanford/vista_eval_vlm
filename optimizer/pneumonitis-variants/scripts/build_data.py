@@ -15,6 +15,10 @@ infection scan), each with a MerlinOnc ep99 embedding. Train and valid splits on
     volumes  convert each pool scan's NIfTI to patients/<id>/{ct.npz, meta.json} with ct-findings-5's converter
     masks    each pool scan's TotalSegmentator mask on ct.npz's slab grid: masks/<id>.npz and organs/<id>.json, as
              ct-findings-5 scripts/build_masks.py builds them for the organ-zoom arms
+    discovery-set  the library arm's discovery set (spec 2026-11-25-ct-pneumonitis-library.md): every eligible TRAIN scan
+             with an embedding (probe/train.jsonl, 599) as pools.json "train_all", so volumes / masks / reports cover
+             them; the climb's reader rounds (rounds.json) are unchanged. Writes discovery/scans.jsonl (id, patient
+             group, cause) for the discovery agents. Prints counts only.
     drop-empty-masks  remove from the pools, rounds and splits any pool scan whose organ mask has no lungs (a failed
              segmentation: the zoom tool and the drawn examples need the lungs); recorded in pools.json _draw. Not
              redrawn: a redraw would reshuffle every round (2026-11-25: 1 TRAIN round-2 scan, round 2 has 79)
@@ -240,7 +244,7 @@ def id_map() -> dict[str, dict]:
 
 def pool_ids() -> list[str]:
     p = json.loads((DATA_DIR / "pools.json").read_text())
-    return sorted(set(p["val"]) | set(p["train"]))
+    return sorted(set(p["val"]) | set(p["train"]) | set(p.get("train_all", [])))
 
 
 def _convert(item):
@@ -343,6 +347,22 @@ def cmd_masks(args) -> int:
     return 0 if c["built"] + c["kept"] == len(jobs) else 1
 
 
+def cmd_discovery_set(_args) -> int:
+    p = json.loads((DATA_DIR / "pools.json").read_text())
+    rows = [json.loads(x) for x in (DATA_DIR / "probe" / "train.jsonl").read_text().splitlines() if x]
+    if {r["id"] for r in rows} & set(p["val"]):
+        raise SystemExit("a VAL scan is in the probe's TRAIN rows")
+    p["train_all"] = sorted(r["id"] for r in rows)
+    (DATA_DIR / "pools.json").write_text(json.dumps(p, indent=1))
+    (DATA_DIR / "discovery").mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "discovery" / "scans.jsonl").write_text("".join(
+        json.dumps({"id": r["id"], "group": r["group"], "cause": r["variant"]}) + "\n" for r in rows))
+    new = set(p["train_all"]) - set(p["train"])
+    print(f"discovery set {len(rows)} TRAIN scans ({len(new)} not yet in the climb pool): "
+          + str(dict(Counter(r["variant"] for r in rows))))
+    return 0
+
+
 def cmd_drop_empty_masks(_args) -> int:
     p = json.loads((DATA_DIR / "pools.json").read_text())
     rounds = json.loads((DATA_DIR / "rounds.json").read_text())
@@ -353,6 +373,11 @@ def cmd_drop_empty_masks(_args) -> int:
             bad.add(i)
     for split in ("train", "val"):
         p[split] = [i for i in p[split] if i not in bad]
+    if "train_all" in p:  # the library arm's discovery set
+        p["train_all"] = [i for i in p["train_all"] if i not in bad]
+        f = DATA_DIR / "discovery" / "scans.jsonl"
+        if f.is_file():
+            f.write_text("".join(x + "\n" for x in f.read_text().splitlines() if x and json.loads(x)["id"] not in bad))
         f = DATA_DIR / "splits" / f"{split}.jsonl"
         rows = [x for x in f.read_text().splitlines() if x and json.loads(x)["id"] not in bad]
         f.write_text("".join(r + "\n" for r in rows))
@@ -373,7 +398,7 @@ def cmd_reports(_args) -> int:
     from google.cloud import bigquery
 
     p = json.loads((DATA_DIR / "pools.json").read_text())
-    train, val = set(p["train"]), set(p["val"])
+    train, val = set(p["train"]) | set(p.get("train_all", [])), set(p["val"])
     m = id_map()
     acc = {m[i]["accession_number"]: i for i in train}
     if {m[i]["accession_number"] for i in val} & set(acc):
@@ -453,9 +478,10 @@ def main() -> int:
         b.add_argument("--limit", type=int, default=0)
     sub.add_parser("reports")
     sub.add_parser("drop-empty-masks")
+    sub.add_parser("discovery-set")
     sub.add_parser("check")
     args = ap.parse_args()
-    return {"select": cmd_select, "volumes": cmd_volumes, "masks": cmd_masks, "reports": cmd_reports, "drop-empty-masks": cmd_drop_empty_masks,
+    return {"select": cmd_select, "volumes": cmd_volumes, "masks": cmd_masks, "reports": cmd_reports, "drop-empty-masks": cmd_drop_empty_masks, "discovery-set": cmd_discovery_set,
             "check": cmd_check}[args.cmd](args)
 
 

@@ -45,7 +45,9 @@ def main() -> int:
             answers_files.add(f.parent.parent / "answers.json")
     builder = 0.0
     for st in (args.work / "private" / "loop").glob("*/state.json"):
-        builder += sum(float(x.get("builder_usd") or 0.0) for x in json.loads(st.read_text())["rounds"].values())
+        d = json.loads(st.read_text())
+        builder += sum(float(x.get("builder_usd") or 0.0) for x in d.get("rounds", {}).values())
+        builder += sum(float(x.get("builder_usd") or 0.0) for x in d.get("discovery", {}).values())  # library arm
     out = {"reader_usd": round(reader, 2), "reader_sessions": sessions, "builder_usd": round(builder, 2),
            "loop_usd": round(builder + loop_reader, 2),
            "before_usd": args.before, "total_usd": round(reader + builder + args.before, 2)}

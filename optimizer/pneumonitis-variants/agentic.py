@@ -22,10 +22,13 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever ``prompt`` below changes.
-PROMPT_TAG = "pneumonitis-variants-atlas-v1" if config.ATLAS else "pneumonitis-variants-v1"
+PROMPT_TAG = ("pneumonitis-variants-library-v1" if config.LIBRARY else "pneumonitis-variants-atlas-v1" if config.ATLAS
+              else "pneumonitis-variants-v1")
 MAX_REASONS = 5
 FINDINGS = "findings.md"
 VIEW_LOG = "views.jsonl"
+#: The library arm's use log (tools/library.py writes one line per command), kept with the answers.
+LIBRARY_LOG = "library_log.jsonl"
 #: No Agent tool: a subagent would view the images again at full price.
 TOOLS = ("Read", "Write", "Edit", "Glob", "Grep", "Bash")
 _TREE: Path | None = None
@@ -77,16 +80,19 @@ def program_spec(forbidden):
         if _TREE is None:
             raise RuntimeError("agentic.set_tree was not called: no program version to draw examples from")
         stage_scan(call.payload["id"], Path(folder))
-        if config.ATLAS:
+        if config.LIBRARY:
+            stage_examples.stage_library(_TREE, Path(folder), call.payload["id"])
+        elif config.ATLAS:
             stage_examples.stage_atlas(_TREE, Path(folder), call.payload["id"])
         else:
             stage_examples.stage(_TREE, Path(folder), call.payload["id"])
 
     def prompt(call, stage_name, paths, pass_id):
         # The per-call wrapper: not edited by the builder. Container paths only.
-        beside = "atlas_images" if config.ATLAS else "drawn_examples"
-        library = "atlas" if config.ATLAS else "example library"
-        library_dir = "atlas" if config.ATLAS else "examples"
+        beside = ("library_assets/ and library_scans" if config.LIBRARY else "atlas_images" if config.ATLAS
+                  else "drawn_examples")
+        library = "library" if config.LIBRARY else "atlas" if config.ATLAS else "example library"
+        library_dir = "library" if config.LIBRARY else "atlas" if config.ATLAS else "examples"
         questions = " ".join(f'({n}) "{key}": {text}' for n, (key, _t, text) in enumerate(config.QUESTIONS, 1))
         keys = ", ".join(f'"{key}": <a whole number from 0 to 100>' for key, _t, _q in config.QUESTIONS)
         return (
@@ -121,6 +127,7 @@ def program_spec(forbidden):
             out = next((o["path"] for o in r.get("outputs", []) if o["rel"] == OUTPUT), None)
             log = next((o["path"] for o in r.get("outputs", []) if o["rel"] == FINDINGS), None)
             views = next((o["path"] for o in r.get("outputs", []) if o["rel"] == VIEW_LOG), None)
+            libuse = next((o["path"] for o in r.get("outputs", []) if o["rel"] == LIBRARY_LOG), None)
             if out and not error:
                 try:
                     body = json.loads(Path(out).read_text(encoding="utf-8"))
@@ -134,14 +141,15 @@ def program_spec(forbidden):
             elif not error:
                 error = "no_output"
             answers[r["call_id"]] = {**said, "reason": reason, "error": error, "findings_log": log,
-                                     "views_log": views, "reasons": reasons}
+                                     "views_log": views, "library_log": libuse, "reasons": reasons}
         manifest = Path(archive) / "answers.json"
         manifest.write_text(json.dumps({"answers": answers}), encoding="utf-8")
         return manifest
 
     return ProgramSpec(
         calls_for=calls_for, stage=stage, prompt=prompt, read_stamp=read_stamp, summarize=summarize,
-        stages=("label",), output_patterns=(OUTPUT, FINDINGS, VIEW_LOG), prompt_tag=PROMPT_TAG,
+        stages=("label",), output_patterns=(OUTPUT, FINDINGS, VIEW_LOG, *((LIBRARY_LOG,) if config.LIBRARY else ())),
+        prompt_tag=PROMPT_TAG,
         max_concurrent=config.PROGRAM_MAX_CONCURRENT, timeout_seconds=config.PROGRAM_CALL_TIMEOUT_SECONDS,
         max_budget_usd=config.PROGRAM_CALL_BUDGET_USD, forbidden=forbidden,
         token_env_name=None if config.ROUTE.is_vertex else config.TOKEN_ENV_NAME,

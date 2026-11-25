@@ -59,3 +59,24 @@ variants study is done; compares atlas, guide arm, zero-shot and the probe on th
 | Builder session | 2 hours (10 write-ups per cause plus the review) |
 | Atlas tool | a new `tools/atlas.py` in the atlas program, not an edit of `examples.py`, so the variants study's reader tools are unchanged |
 | Guide-read count | `scripts/usage.py` also counts `cat`/`head` of a guide file (Read-only counting reported 59% of round-1 sessions; all 80 read it) |
+
+## Library arm (spec `planning/vista_eval_vlm/2026-11-25-ct-pneumonitis-library.md`, Approved 2026-11-25)
+
+Branch `feat/ct-pneumonitis-library`; supersedes the atlas arm (held in round 0). `LIBRARY=1` switches to
+`program_agentic_library/` (the reader's tools plus `tools/library.py`, over an editable `library/`: wiki pages,
+Stanford examples, catalogue) and its own work folder (`~/.cache/alo-tasks/pneumonitis-variants-library`).
+Literature: review v2 (86 sources) and 252 images (144 open access, 108 from paywalled papers), the reader sees all.
+Discovery (`scripts/run_loop.py discover`): director plan, five per-cause managers, director synthesis, each a sealed
+Opus session that may fan out subagents, over all 599 TRAIN scans (`scripts/library_assets.py train`). Then a fixed
+5-round climb (round 1 reads discovery's library; from round 2 the director revises first), then VAL once. Launcher
+`scripts/run_library.sh`, cap $450 (discovery $175).
+
+| Build decision | Answer |
+|---|---|
+| Discovery set | `build_data.py discovery-set`: all 599 eligible TRAIN scans as pools.json `train_all` (250 more converted); the climb's reader rounds keep rounds.json |
+| Caches | the 599 TRAIN scans (~22 GB) and the literature images copied once to the work folder's disk; every session gets hard links (stage_examples.stage_library); the TRAIN cache is deleted after VAL |
+| Own patient | examples from the reader's own patient are listed in `library_assets/exclude.json`, hidden by the tool, and their CTs not linked |
+| Library use | free (no required opens); `library_log.jsonl` per session, summarised in the reader feedback |
+| Climb order | round 1 reads discovery's library (no builder); rounds 2-5 director then reader, so the final version is one the reader used on TRAIN |
+| Builder budget | $25 a session (fan-out), 2 hours; discovery stops before a session that could pass $175 |
+| Merged score | "any drug" = max(other drug, immunotherapy), four classes, in scripts/compare.py beside the five causes |

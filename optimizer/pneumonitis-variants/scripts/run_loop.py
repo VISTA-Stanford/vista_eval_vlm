@@ -56,7 +56,8 @@ from usage import usage  # noqa: E402
 BUILDER_BUDGET_USD = config.OPTIMIZER_SESSION_BUDGET_USD
 PIN_KIND = "builder"
 RETIRED = "retired.json"
-EMPTY_GUIDE = (config.SEED_PROGRAM_DIR / "guide" / "README.md").read_text(encoding="utf-8")
+_GUIDE_SEED = config.SEED_PROGRAM_DIR / "guide" / "README.md"  # the library program has no guide/
+EMPTY_GUIDE = _GUIDE_SEED.read_text(encoding="utf-8") if _GUIDE_SEED.is_file() else ""
 VARIANTS = tuple(k for k, _t, _q in config.QUESTIONS)
 
 
@@ -146,6 +147,8 @@ def add_scans(lay, ids: list[str], origin: str) -> int:
 
 def stage_brief(lay) -> None:
     opt.stage_files(lay)  # worker.py and the brief (context/task.md -> inputs/task.md)
+    if config.LIBRARY:  # the literature review: the mount is forbidden to every session, so a copy
+        shutil.copy2(config.LITERATURE_V2, lay.inputs / "literature.md")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -201,7 +204,62 @@ Before you finish, run `python3 -B tools/atlas.py check` from your working folde
 """
 
 
+#: Discovery's seven sessions, in order (spec 2026-11-25-ct-pneumonitis-library.md); the climb's director follows.
+DISCOVERY_ROLES = ("director-plan", *VARIANTS, "director-synth")
+ROLE: dict = {"role": None, "round": None}
+
+
+def library_prompt(iter_n: int, paths) -> str:
+    """The library arm's builder prompt for the current ROLE (a discovery role, or the climb director)."""
+    role, k = ROLE["role"], ROLE["round"]
+    if role == "director-plan":
+        first = ("You are the director, session 1 of discovery. Read the literature review closely and look through the "
+                 "literature images' index. Plan the library: the patterns to look for for each cause (the literature's "
+                 "terms), the hard pairs, and what each of the five managers should find and count in our 599 TRAIN "
+                 "scans. Write a first start page (pages/index.md), one page per cause and per pattern from the literature "
+                 "(what it says, how often, which literature images show it), and catalogue/plan.md with the managers' "
+                 "instructions. Do not add Stanford examples yet; a few subagents reading reports to size the work is fine.")
+    elif role in VARIANTS:
+        first = (f"You are the manager for {role}, a discovery session. Read catalogue/plan.md and the pages so far. Find in "
+                 f"our 599 TRAIN scans what the literature describes for {role}, and the variants it does not describe: fan "
+                 "out subagents over the reports (Grep) and the images, count each pattern across the scans of every cause "
+                 f"(the look-alikes matter as much), and add up to 30 Stanford examples of {role} (clear ones, and ones that "
+                 f"show a look-alike), each written up and marked. Update the pattern and cause pages with what our data "
+                 f"shows, and write catalogue/{role}.json (pattern -> counts by cause, and how you counted). Leave the other "
+                 "causes' examples and catalogues as they are.")
+    elif role == "director-synth":
+        first = ("You are the director, the last discovery session. Reconcile the five managers' work into one library: "
+                 "merge or split patterns, resolve contradictions, write catalogue/counts.json and catalogue/README.md "
+                 "(pattern x cause from all five catalogues), write the hard-pair pages (what the image can and cannot "
+                 "separate, from the literature and our counts; when to stay near even odds), rewrite the start page as a "
+                 "short reading procedure, and keep at most 150 Stanford examples (retire the weakest). Note in the notebook "
+                 "the literature you would ask for in the next run.")
+    else:
+        first = (f"You are the director, climb round {k}. The reader has read rounds 1 to {k - 1} with the library; its "
+                 f"feedback is in `{paths.inputs['reader']}/round-<j>/` (answers, findings notes, how it used the library). "
+                 "Start with the latest round: what it got wrong, which pages and examples it used and whether they "
+                 "helped. Revise the library: pages, examples (swap within the 150), the catalogue, the start page. Fan "
+                 "out subagents as you need. Note literature you would ask for in the next run in the notebook.")
+    return f"""{first}
+
+## Where things are
+- `{paths.inputs['task.md']}`: the task brief. Read it first.
+- `{paths.inputs['literature.md']}`: the literature review. `{paths.inputs['lit']}/`: the literature images and index.json.
+- `{paths.inputs['train']}/`: the 599 labelled TRAIN scans (README.md, index.json, _tools/similar.py).
+- `{paths.inputs['reader']}/`: the reader's feedback, one folder per finished climb round (empty during discovery).
+- `library/` in your working folder (`/workspace/rw/program`): edit files under it only; `instructions.md` and `tools/`
+  are the reader's and must not change (a change there refuses your whole edit). tools/library.py (the reader's tool;
+  `check` for you), tools/atlas.py (draw), tools/view_ct.py, tools/zoom_organ.py.
+- `{paths.inputs['notebook.md']}`: the team's notebook so far. Copy it to `{paths.outputs['notebook.md']}` first, then
+  add to it there.
+- `{paths.outputs['change_note.json']}`: this session's change note (a JSON object: what you did and why).
+- `{paths.versions}/`: earlier versions of the program, as plain folders.
+"""
+
+
 def builder_prompt(iter_n: int, paths) -> str:
+    if config.LIBRARY:
+        return library_prompt(iter_n, paths)
     if config.ATLAS:
         return atlas_prompt(iter_n, paths)
     reader = paths.inputs["reader"]
@@ -264,8 +322,11 @@ def build_builder(lay, *, run_id: str, pin: str, search_pin: str):
         image=run.images()[0],
         expected_fingerprint=pin,
         transcript_dir=lay.transcripts / "builder",
-        readable_inputs=((op.TASK_BRIEF_NAME, lay.inputs / op.TASK_BRIEF_NAME), (op.NOTEBOOK_NAME, lay.notebook),
-                         ("scans", scans_dir(lay)), ("reader", reader_dir(lay))),
+        readable_inputs=(((op.TASK_BRIEF_NAME, lay.inputs / op.TASK_BRIEF_NAME), (op.NOTEBOOK_NAME, lay.notebook),
+                          ("literature.md", lay.inputs / "literature.md"), ("lit", config.LIT_ASSETS_DIR / "lit"),
+                          ("train", config.TRAIN_SCANS_DIR), ("reader", reader_dir(lay))) if config.LIBRARY else
+                         ((op.TASK_BRIEF_NAME, lay.inputs / op.TASK_BRIEF_NAME), (op.NOTEBOOK_NAME, lay.notebook),
+                          ("scans", scans_dir(lay)), ("reader", reader_dir(lay)))),
         declared_outputs=(DeclaredOutput(op.CHANGE_NOTE_NAME), DeclaredOutput(op.NOTEBOOK_NAME, destination=lay.notebook)),
         notes_root=lay.notes,
         run_id=run_id,
@@ -282,7 +343,7 @@ def build_builder(lay, *, run_id: str, pin: str, search_pin: str):
     return ProxiedOptimizer(agent, proxy) if proxy else agent
 
 
-def retire_entries(library: Path) -> list[str]:
+def retire_entries(library: Path, sub: str = "entries") -> list[str]:
     """Delete the entries listed in examples/retired.json (the session may not delete files), then the list."""
     f = library / RETIRED
     if not f.is_file():
@@ -294,7 +355,7 @@ def retire_entries(library: Path) -> list[str]:
     f.unlink()
     removed = []
     for name in names if isinstance(names, list) else []:
-        d = library / "entries" / str(name)
+        d = library / sub / str(name)
         if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", str(name)) and (d / "entry.json").is_file():
             shutil.rmtree(d)
             removed.append(str(name))
@@ -338,6 +399,48 @@ def atlas_version_problems(tree: Path, allowed: dict[str, str], literature_only:
     return bad
 
 
+def load_library_tool(tree: Path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(f"library_{abs(hash(str(tree)))}", Path(tree) / "tools" / "library.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(Path(tree) / "tools"))
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(Path(tree) / "tools"))
+        sys.modules.pop("examples", None)
+        sys.modules.pop("view_ct", None)
+    mod.PROGRAM = Path(tree)
+    mod.LIBRARY = mod.PROGRAM / "library"
+    mod.PAGES, mod.EXAMPLES, mod.CATALOGUE = mod.LIBRARY / "pages", mod.LIBRARY / "examples", mod.LIBRARY / "catalogue"
+    mod._call = None
+    return mod
+
+
+def train_causes() -> dict[str, str]:
+    return {r["id"]: r["cause"] for r in json.loads((config.TRAIN_SCANS_DIR / "index.json").read_text())}
+
+
+def library_version_problems(tree: Path, *, examples_allowed: bool = True) -> list[str]:
+    """The reader's library check (pages, links, examples, size), plus: every example from a train/ scan with that
+    scan's answer as its cause; no examples in the director's planning session."""
+    tool = load_library_tool(tree)
+    lit_ids = {r["id"] for r in json.loads((config.LIT_ASSETS_DIR / "lit" / "index.json").read_text())}
+    bad = list(tool.library_problems(lit_ids))
+    allowed = train_causes()
+    exs = tool.examples()
+    if not examples_allowed and exs:
+        bad.append("the planning session adds no Stanford examples")
+    for eid, e in exs.items():
+        src = e.get("source")
+        if src not in allowed:
+            bad.append(f"example {eid}: source is not one of the TRAIN scans")
+        elif e.get("cause") != allowed[src]:
+            bad.append(f"example {eid}: cause is not its scan's answer")
+    return bad
+
+
 def version_problems(tree: Path, allowed: dict[str, str]) -> list[str]:
     """The reader's own check over a version's library, plus: every entry's source is one of the builder's scans
     (``allowed``: id -> cause) and its variant is that scan's cause; the guide is written (not the empty placeholder)."""
@@ -364,6 +467,12 @@ def version_problems(tree: Path, allowed: dict[str, str]) -> list[str]:
 
 
 def library_stats(tree: Path) -> dict:
+    if config.LIBRARY:
+        tool = load_library_tool(tree)
+        exs = tool.examples()
+        text = sum(f.stat().st_size for f in (tree / "library").rglob("*") if f.is_file() and f.suffix in (".md", ".json"))
+        return {"pages": len(tool.pages()), "examples": len(exs), "by_cause": dict(Counter(e.get("cause") for e in exs.values())),
+                "text_bytes": text}
     if config.ATLAS:
         tool = load_atlas_tool(tree)
         rows = [e for _eid, e in tool.entries()]
@@ -402,7 +511,11 @@ def write_feedback(lay, k: int, artifacts, score, tree: Path) -> tuple[dict, lis
     for i, a in sorted(answers.items()):
         events = next((f for f in ad._trace_files(artifacts, i) if f.name == "events.jsonl"), None)
         u = usage(events)
-        staged = len(stage_examples.planned_atlas(tree, i) if config.ATLAS else stage_examples.planned(tree, i))
+        if config.LIBRARY:
+            u.update(library_use(a.get("library_log")))
+            staged = 0
+        else:
+            staged = len(stage_examples.planned_atlas(tree, i) if config.ATLAS else stage_examples.planned(tree, i))
         top, truth = ranked_first(a), gold_variant(gold[i])
         wrong = top != truth
         if wrong:
@@ -415,7 +528,9 @@ def write_feedback(lay, k: int, artifacts, score, tree: Path) -> tuple[dict, lis
                       "reasons": a.get("reasons") or [],
                       "findings_note": f"findings/{i}.md" if (out / "findings" / f"{i}.md").is_file() else None,
                       "in_your_scans": wrong, "drawn_images_opened": u["drawn_opened"],
-                      "drawn_images_staged": staged, "read_guide": u["read_guide"]})
+                      "drawn_images_staged": staged, "read_guide": u["read_guide"],
+                      **({k2: u[k2] for k2 in ("library_commands", "pages_read", "examples_opened", "lit_images_opened",
+                                               "searches")} if config.LIBRARY else {})})
     per_q = run.per_question(score)
     opened_all = [s for s in scans if s["drawn_images_staged"] and s["drawn_images_opened"] >= s["drawn_images_staged"]]
     summary = {
@@ -425,6 +540,11 @@ def write_feedback(lay, k: int, artifacts, score, tree: Path) -> tuple[dict, lis
         "confusions": dict(Counter(f"{s['answer']}->{s['ranked_first']}" for s in scans if s["mistake"])),
         "share_opened_all_drawn_images": round(len(opened_all) / max(len(scans), 1), 3),
         "share_read_guide": round(sum(s["read_guide"] for s in scans) / max(len(scans), 1), 3),
+        **({"share_used_library": round(sum(s["library_commands"] > 0 for s in scans) / max(len(scans), 1), 3),
+            "mean_library_commands": round(sum(s["library_commands"] for s in scans) / max(len(scans), 1), 2),
+            "mean_examples_opened": round(sum(s["examples_opened"] for s in scans) / max(len(scans), 1), 2),
+            "mean_lit_images_opened": round(sum(s["lit_images_opened"] for s in scans) / max(len(scans), 1), 2),
+            "pages_read": dict(Counter(p for s in scans for p in s["pages_read"]).most_common(30))} if config.LIBRARY else {}),
         "failed_sessions": sum(bool(s["error"]) for s in scans),
     }
     (out / "scans.json").write_text(json.dumps(scans, indent=1))
@@ -440,6 +560,22 @@ def write_feedback(lay, k: int, artifacts, score, tree: Path) -> tuple[dict, lis
         if p.is_file():
             p.chmod(0o444)
     return summary, mistakes
+
+
+def library_use(log_path) -> dict:
+    """One reader session's library use, from its library_log.jsonl (tools/library.py writes one line per command)."""
+    rows = []
+    if log_path and Path(log_path).is_file():
+        for x in Path(log_path).read_text(encoding="utf-8").splitlines():
+            try:
+                rows.append(json.loads(x))
+            except ValueError:
+                continue
+    return {"library_commands": len(rows),
+            "pages_read": sorted({r.get("name") for r in rows if r.get("cmd") == "page" and r.get("found")}),
+            "examples_opened": sum(r.get("cmd") == "example" and bool(r.get("found")) for r in rows),
+            "lit_images_opened": sum(r.get("cmd") == "lit" and bool(r.get("found")) for r in rows),
+            "searches": sum(r.get("cmd") == "search" for r in rows)}
 
 
 def pass_cost(run_id: str) -> tuple[float, int]:
@@ -472,9 +608,18 @@ def cmd_init(_args) -> int:
     if not lay.repo.exists():
         run.init_layout(lay)
     stage_brief(lay)
+    reader_dir(lay).mkdir(parents=True, exist_ok=True)
+    if config.LIBRARY:  # the caches every session links from: all discovery TRAIN scans, the literature images
+        import subprocess
+
+        for step in ("train", "lit", "check"):
+            subprocess.run([sys.executable, "-B", str(HERE / "scripts" / "library_assets.py"), step], check=True)
+        if not (lay.repo / run.PIN_FILE).exists():
+            run.cmd_pins(argparse.Namespace(write=True))
+        print(f"work folder {lay.root}; caches {config.TRAIN_SCANS_DIR}, {config.LIT_ASSETS_DIR}")
+        return 0
     rounds = json.loads((config.DATA_DIR / "rounds.json").read_text())
     new = add_scans(lay, rounds["source"], "source")
-    reader_dir(lay).mkdir(parents=True, exist_ok=True)
     if not (lay.repo / run.PIN_FILE).exists():
         run.cmd_pins(argparse.Namespace(write=True))
     print(f"work folder {lay.root}; builder scans {len(json.loads((scans_dir(lay) / 'index.json').read_text()))} "
@@ -511,6 +656,95 @@ def builder_pin(lay) -> str:
     return pin
 
 
+def commit_builder_session(lay, state, rec, *, base: str, iter_n: int, label: str, bpin: str, pins: dict,
+                           cap_left) -> int:
+    """One library builder session on ``base``: run it (one retry), retire listed examples, commit, check. Fills rec
+    with tag, version_sha, library stats and builder_usd. Returns 0, or 1 when it failed or left problems."""
+    sha = run.git(lay.repo, "rev-parse", f"{base}^{{commit}}").strip()
+    for name in config.EDITABLE_FILES:
+        shutil.rmtree(lay.repo / name, ignore_errors=True)
+        run.git(lay.repo, "checkout", sha, "--", name)
+    tree = lay.versions / f"{label}-base-{base}"
+    if not tree.exists():
+        materialize(ad.TaskStore().manifest(), sha, repo_root=lay.repo, dest=tree)
+    agent = build_builder(lay, run_id=state["run_id"], pin=bpin, search_pin=pins.get("search"))
+    outcome = None
+    for attempt in (1, 2):
+        if attempt == 2 and not cap_left():
+            break
+        print(f"{label}: builder on {base} (attempt {attempt}) ...", flush=True)
+        outcome = agent.run(iter_n=iter_n, materialized_path=tree)
+        rec["builder_usd"] = round(float(rec.get("builder_usd") or 0.0) + float(outcome.cost_usd or 0.0), 4)
+        rec["builder_attempts"] = int(rec.get("builder_attempts") or 0) + 1
+        rec["builder_detail"] = str(outcome.detail)[:300]
+        save_state(lay, state)
+        if outcome.exit_code == 0:
+            break
+        print(f"{label}: attempt {attempt} failed: {str(outcome.detail)[:200]}", flush=True)
+    if outcome is None or outcome.exit_code != 0:
+        print(f"STOPPED: {label}'s builder failed: {outcome.detail if outcome else 'not started'}")
+        return 1
+    rec["retired"] = retire_entries(lay.repo / "library", sub="examples")
+    tag, new_sha = commit_new_version(ad.TaskStore().manifest(), f"{state['run_id']} {label}", repo_root=lay.repo,
+                                      allow_empty=True)
+    vtree = lay.versions / f"{label}-{tag}"
+    materialize(ad.TaskStore().manifest(), new_sha, repo_root=lay.repo, dest=vtree)
+    problems = library_version_problems(vtree, examples_allowed=(label != "discovery-director-plan"))
+    if problems:
+        rec.setdefault("refused_tags", []).append(tag)
+        save_state(lay, state)
+        print(f"STOPPED: {tag} has {len(problems)} problems, first: {problems[:3]}; re-running starts {label} again from {base}")
+        return 1
+    rec.update({"tag": tag, "version_sha": new_sha, "library": library_stats(vtree)})
+    save_state(lay, state)
+    print(f"{label}: {tag} {rec['library']}; builder ${rec['builder_usd']:.2f}", flush=True)
+    return 0
+
+
+def discovery_spent(state: dict) -> float:
+    return round(sum(float(r.get("builder_usd") or 0) for r in state.get("discovery", {}).values()), 4)
+
+
+def cmd_discover(args) -> int:
+    """The library arm's discovery: DISCOVERY_ROLES in order, each a builder session on the previous one's version,
+    stopping before a session that could pass config.DISCOVERY_BUDGET_USD. --stop-after N pauses after N sessions."""
+    if not config.LIBRARY:
+        raise SystemExit("discover needs LIBRARY=1")
+    lay = layout()
+    state = load_state(lay, args.run_id)
+    disc = state.setdefault("discovery", {})
+    pins, bpin = run.committed_pins(lay), builder_pin(lay)
+    stage_brief(lay)
+    base = "program-v0"
+    for n, role in enumerate(DISCOVERY_ROLES, 1):
+        rec = disc.setdefault(role, {"session": n, "role": role})
+        if "tag" in rec:
+            base = rec["tag"]
+            continue
+        if args.stop_after is not None and n > args.stop_after:
+            print(f"PAUSED after {args.stop_after} discovery sessions (--stop-after); spent ${discovery_spent(state):.2f}")
+            return 0
+
+        def cap_left() -> bool:
+            return discovery_spent(state) + BUILDER_BUDGET_USD <= config.DISCOVERY_BUDGET_USD
+
+        if not cap_left():
+            print(f"STOPPED: session {n} ({role}) could pass the ${config.DISCOVERY_BUDGET_USD:.0f} discovery cap "
+                  f"(spent ${discovery_spent(state):.2f})")
+            return 3
+        ROLE.update(role=role, round=None)
+        code = commit_builder_session(lay, state, rec, base=base, iter_n=n, label=f"discovery-{role}", bpin=bpin,
+                                      pins=pins, cap_left=cap_left)
+        if code:
+            return code
+        base = rec["tag"]
+    state["discovery_final"] = {"tag": base, "version_sha": disc["director-synth"]["version_sha"],
+                                "spent_usd": discovery_spent(state)}
+    save_state(lay, state)
+    print(json.dumps(state["discovery_final"]))
+    return 0
+
+
 def cmd_loop(args) -> int:
     lay = layout()
     state = load_state(lay, args.run_id)
@@ -529,10 +763,29 @@ def cmd_loop(args) -> int:
         return est, 1.15 * est * args.val_scans
 
     first = 0 if config.ATLAS else 1  # the atlas arm's round 0 is the literature review: a builder, no reader
+    if config.LIBRARY:  # spent includes discovery (the cap is the study's total through VAL)
+        args.already_spent += discovery_spent(state)
     for k in range(first, config.ITERATIONS + 1):
         rec = state["rounds"].setdefault(str(k), {"round": k})
         iter_n = k + 1 if config.ATLAS else k
-        # 1. the builder
+        # 1. the builder (library arm: round 1 reads discovery's library; from round 2 the director revises first)
+        if config.LIBRARY and "tag" not in rec:
+            if k == 1:
+                fin = state.get("discovery_final")
+                if not fin:
+                    raise SystemExit("run discover first: no discovery library")
+                rec.update({"tag": fin["tag"], "version_sha": fin["version_sha"]})
+                save_state(lay, state)
+            else:
+                if total() + BUILDER_BUDGET_USD + reserve()[1] > args.cap:
+                    print(f"STOPPED: round {k}'s director could pass the ${args.cap:.0f} cap (spent ${total():.2f})")
+                    return 3
+                ROLE.update(role="climb", round=k)
+                code = commit_builder_session(lay, state, rec, base=state["rounds"][str(k - 1)]["tag"],
+                                              iter_n=len(DISCOVERY_ROLES) + k - 1, label=f"climb-round{k}", bpin=bpin,
+                                              pins=pins, cap_left=lambda: total() + BUILDER_BUDGET_USD <= args.cap)
+                if code:
+                    return code
         if "tag" not in rec:
             if total() + BUILDER_BUDGET_USD + reserve()[1] > args.cap:
                 print(f"STOPPED: round {k}'s builder could pass the ${args.cap:.0f} cap with the guide arm's VAL pass "
@@ -608,17 +861,18 @@ def cmd_loop(args) -> int:
                 return 1
             score = ad.TaskScorer().score(artifacts, "train", {})
             summary, mistakes = write_feedback(lay, k, artifacts, score, tree)
-            added = add_scans(lay, mistakes, f"round-{k}")
+            added = 0 if config.LIBRARY else add_scans(lay, mistakes, f"round-{k}")  # the library's director sees all TRAIN
             rec.update({"answers": artifacts.artifact_refs[0].path, "mean_auroc": summary["mean_auroc"],
                         "auroc": summary["auroc"], "ranked_first_right": summary["ranked_first_right"],
                         "share_opened_all_drawn_images": summary["share_opened_all_drawn_images"],
                         "share_read_guide": summary["share_read_guide"], "failed_sessions": summary["failed_sessions"],
+                        **{x: summary.get(x) for x in ("share_used_library", "mean_library_commands")},
                         "mistakes_added": added, "finished": now()})
             save_state(lay, state)
             print(f"round {k}: TRAIN mean {summary['mean_auroc']:.3f} {summary['auroc']}; opened all drawn images "
                   f"{summary['share_opened_all_drawn_images']:.0%}; reader ${rec['reader_usd']:.2f} for "
                   f"{rec['reader_sessions']}; spent ${total():.2f}", flush=True)
-            if k == 1 and summary["share_opened_all_drawn_images"] < 0.5:
+            if k == 1 and not config.LIBRARY and summary["share_opened_all_drawn_images"] < 0.5:
                 print("STOPPED: fewer than half the round-1 reader sessions opened every drawn image")
                 return 3
         if args.stop_after is not None and k >= args.stop_after and k < config.ITERATIONS:
@@ -638,8 +892,14 @@ def cmd_report(args) -> int:
         r = state["rounds"][k]
         rows.append({x: r.get(x) for x in ("round", "tag", "library", "mean_auroc", "auroc", "ranked_first_right",
                                            "share_opened_all_drawn_images", "share_read_guide", "failed_sessions",
+                                           "share_used_library", "mean_library_commands",
                                            "mistakes_added", "builder_usd", "reader_usd", "reader_sessions")})
     out = {"run_id": args.run_id, "rounds": rows, "final": state.get("final"), "spent_usd": spent(state)}
+    if state.get("discovery"):
+        out["discovery"] = [{x: r.get(x) for x in ("session", "role", "tag", "library", "builder_usd", "retired")}
+                            for r in state["discovery"].values()]
+        out["discovery_final"] = state.get("discovery_final")
+        out["spent_usd"] = round(out["spent_usd"] + discovery_spent(state), 4)
     print(json.dumps(out, indent=1))
     if args.out:
         Path(args.out).write_text(json.dumps(out, indent=1))
@@ -671,13 +931,16 @@ def main(argv=None) -> int:
     lp.add_argument("--val-scans", type=int, default=134, help="the guide arm's VAL pass to keep room for")
     lp.add_argument("--already-spent", type=float, default=0.0, help="dollars spent before the loop (launcher)")
     lp.add_argument("--stop-after", type=int, default=None, help="pause after this round's reader pass")
+    dp = sub.add_parser("discover")
+    dp.add_argument("--run-id", default="library-r1", type=run.run_id_arg)
+    dp.add_argument("--stop-after", type=int, default=None, help="pause after this many discovery sessions")
     rp = sub.add_parser("report")
     rp.add_argument("--run-id", default="loop-r1")
     rp.add_argument("--out")
     pp = sub.add_parser("print-prompt")
     pp.add_argument("--iter", type=int, default=2)
     args = ap.parse_args(argv)
-    return {"init": cmd_init, "pins": cmd_pins, "loop": cmd_loop, "report": cmd_report,
+    return {"init": cmd_init, "pins": cmd_pins, "loop": cmd_loop, "report": cmd_report, "discover": cmd_discover,
             "print-prompt": cmd_print_prompt}[args.cmd](args)
 
 

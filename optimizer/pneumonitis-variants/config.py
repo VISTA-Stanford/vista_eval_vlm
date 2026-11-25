@@ -75,6 +75,21 @@ if ATLAS:
     SEED_PROGRAM_DIR = HERE / "program_agentic_atlas"
     EDITABLE_FILES = ("guide", "atlas")
     SEED_EXTRA = (("guide/literature.md", LITERATURE_SEED),)
+#: The library arm (spec planning/vista_eval_vlm/2026-11-25-ct-pneumonitis-library.md, Approved 2026-11-25): LIBRARY=1
+#: runs program_agentic_library/: the reader's tools plus tools/library.py over an editable library/ (wiki pages,
+#: Stanford examples, a catalogue). Literature images (both sets) and each example's full CT are linked into every session
+#: from local caches (stage_examples.stage_library). Built by discovery (a director and five per-cause managers over all
+#: 599 TRAIN scans), then a fixed 5-round climb. Own work folder, caps and literature.
+LIBRARY = os.environ.get("LIBRARY", "0") == "1"  # DECIDE: spec, an on/off switch
+if LIBRARY and ATLAS:
+    raise SystemExit("LIBRARY and ATLAS run alone")
+#: The literature for the library arm: the v2 review (86 sources) and the two image sets (open access on the VM, the
+#: Mac's from the paywalled papers). The reader sees all 252 images (Phil 2026-11-25).
+LITERATURE_V2 = paths.MOUNT / "planning" / "vista_eval_vlm" / "session" / "2026-11-25-pneumonitis-literature-review-v2.md"
+LIT_IMAGE_SETS = (paths.MOUNT / "pneumonitis-literature-images", paths.MOUNT / "pneumonitis-literature-images" / "mac")
+if LIBRARY:
+    SEED_PROGRAM_DIR = HERE / "program_agentic_library"
+    EDITABLE_FILES = ("library",)
 #: Examples drawn beside each scan before its session (stage_examples.py): per variant, this many entries.
 EXAMPLES_PER_VARIANT = 2  # DECIDE: spec, 2 per variant, 10 images
 import kb_materialize  # noqa: E402  the library holds PNGs; the pinned engine writes versions out as text
@@ -82,13 +97,14 @@ import kb_materialize  # noqa: E402  the library holds PNGs; the pinned engine w
 kb_materialize.install()
 
 #: The builder's brief and standing instructions (scripts/run_loop.py stages the brief).
-TASK_BRIEF = HERE / "context" / ("task_atlas.md" if ATLAS else "task.md")
-OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / ("builder_instructions_atlas.md" if ATLAS else "builder_instructions.md")
+TASK_BRIEF = HERE / "context" / ("task_library.md" if LIBRARY else "task_atlas.md" if ATLAS else "task.md")
+OPTIMIZER_INSTRUCTIONS = HERE / "prompts" / ("builder_instructions_library.md" if LIBRARY
+                                             else "builder_instructions_atlas.md" if ATLAS else "builder_instructions.md")
 
 #: The reader: Sonnet, 3 at a time, $0.75 a scan (spec, Decided), 30 minutes (10 example images plus the zoom tool).
 PROGRAM_MODEL = os.environ.get("PROGRAM_MODEL", "claude-sonnet-5-5")  # DECIDE: spec
 PROGRAM_MAX_CONCURRENT = int(os.environ.get("PROGRAM_MAX_CONCURRENT", "3"))
-PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD", "0.75"))  # DECIDE: spec
+PROGRAM_CALL_BUDGET_USD = float(os.environ.get("PROGRAM_CALL_BUDGET_USD", "1.00" if LIBRARY else "0.75"))  # DECIDE: specs
 PROGRAM_CALL_TIMEOUT_SECONDS = 1800
 
 #: AUROC per variant, one-vs-rest, over every scored scan (a failed answer counts 0.5), averaged over the five.
@@ -100,16 +116,19 @@ METRIC_NAME = "auroc"
 OPTIMIZER_MODEL = os.environ.get("OPTIMIZER_MODEL", "claude-opus-5-5")  # DECIDE: spec, Opus builder
 ITERATIONS = int(os.environ.get("ITERATIONS", "5"))  # DECIDE: spec, 5 rounds
 STOP_AFTER_ROUNDS_WITHOUT_BEST = 0  # the loop runs all 5 rounds; only round 5 is scored (spec)
-RUN_BUDGET_USD = float(os.environ.get("RUN_BUDGET_USD", "300" if ATLAS else "250"))  # DECIDE: specs, $250 / atlas $300
+RUN_BUDGET_USD = float(os.environ.get("RUN_BUDGET_USD", "450" if LIBRARY else "300" if ATLAS else "250"))  # DECIDE: specs
+#: The library arm's discovery cap, inside RUN_BUDGET_USD (spec: at most $175).
+DISCOVERY_BUDGET_USD = 175.0
 ROUND_BUDGET_USD = float(os.environ.get("ROUND_BUDGET_USD", "60"))
-OPTIMIZER_SESSION_BUDGET_USD = float(os.environ.get("OPTIMIZER_SESSION_BUDGET_USD", "15"))
+#: A library builder fans out subagents (Phil 2026-11-25), so a session gets $25 (7 discovery sessions fit the $175).
+OPTIMIZER_SESSION_BUDGET_USD = float(os.environ.get("OPTIMIZER_SESSION_BUDGET_USD", "25" if LIBRARY else "15"))
 OPTIMIZER_EFFORT = os.environ.get("OPTIMIZER_EFFORT", "high")
 #: The atlas builder writes 10 marked write-ups a cause and the literature review: 2 hours (build decision).
-OPTIMIZER_TIMEOUT_SECONDS = 7200 if ATLAS else 3600
+OPTIMIZER_TIMEOUT_SECONDS = 7200 if (ATLAS or LIBRARY) else 3600
 #: The builder reads TRAIN scans, so it never searches itself: the search proxy, a separate sealed session that sees
 #: only the request (Radiopaedia and the literature as text and links; spec, Decided).
 OPTIMIZER_WEB_SEARCH = False
-SEARCH_PROXY = not ATLAS  # off for the atlas arm (see LITERATURE_SEED)
+SEARCH_PROXY = not (ATLAS or LIBRARY)  # off: it cannot work on Vertex (VPCSC); literature is handed in
 #: Atlas: up to 80 every round (the spec's round-0 literature budget; a ceiling, kept the same every round so the
 #: sealed setup does not change between rounds).
 SEARCH_REQUESTS_PER_ROUND = 80 if ATLAS else 40  # DECIDE: build
@@ -119,7 +138,11 @@ TOKEN_BUDGET: int | None = None
 SCHEDULE: dict | None = None
 
 WORKDIR = Path(os.environ.get("TASK_WORKDIR", Path.home() / ".cache" / "alo-tasks" /
-                              (f"{TASK_NAME}-atlas" if ATLAS else TASK_NAME))).resolve()
+                              (f"{TASK_NAME}-library" if LIBRARY else f"{TASK_NAME}-atlas" if ATLAS else TASK_NAME))).resolve()
+#: The library arm's local copies, on the work folder's disk so sessions get hard links: every discovery TRAIN scan
+#: (ct/, organs.json, organ_mask.npz, answer.json, report.txt; ~36 MB each) and the literature images with one index.
+TRAIN_SCANS_DIR = WORKDIR / "train-scans"
+LIT_ASSETS_DIR = WORKDIR / "lit-assets"
 
 # --------------------------------------------------------------------------------------------------
 # Sealing (as ct-findings-5): route, images
