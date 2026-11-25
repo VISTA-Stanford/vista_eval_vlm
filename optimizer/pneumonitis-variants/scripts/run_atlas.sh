@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # The atlas arm on phil-sllm-02, Vertex (spec planning/vista_eval_vlm/2026-11-25-ct-pneumonitis-atlas-arm.md, Approved
 # 2026-11-25; this launcher is its approved Expensive step, <= $300 through VAL). Copied from scripts/run_variants.sh.
-# Starts only once the variants study is done: it reuses that study's zero-shot and guide VAL arms (same 134 scans) and
-# needs the shared disk. Re-running resumes.
-#   1. setup: host, engine pin, Vertex login, disk, data check, the variants study finished, the pruner
+# Runs alongside the variants study (Phil 2026-11-25: start in parallel); only the comparison waits for that study's
+# zero-shot and guide VAL arms (same 134 scans). Re-running resumes.
+#   1. setup: host, engine pin, Vertex login, disk, data check, the pruner
 #   2. the loop through round 1: round 0 (literature review + first guide; must pass tools/atlas.py check), round 1
 #      (the atlas, then the reader on 80 TRAIN scans)
 #   3. atlas cost check: round 1's version on the first 10 VAL scans. Stops if a session fails, fewer than half open
 #      every atlas image, or the projection passes CAP_USD
 #   4. the loop on to round 5
 #   5. atlas VAL: round 5's version on all VAL scans
-#   6. $0: the comparison: atlas, guide arm, zero-shot and the MerlinOnc probe; atlas - zero-shot, atlas - guide
+#   6. $0: wait for the variants study to finish, then the comparison: atlas, guide arm, zero-shot and the MerlinOnc
+#      probe; atlas - zero-shot, atlas - guide
 #
 #   git -C ~/code/vista_eval_vlm fetch -q origin && git -C ~/code/vista_eval_vlm show origin/feat/ct-pneumonitis-atlas:optimizer/pneumonitis-variants/scripts/run_atlas.sh > ~/run_atlas.sh && tmux new -d -s pneumonitis-atlas 'bash ~/run_atlas.sh 2>&1 | tee -a ~/pneumonitis-atlas.log'
 #
@@ -50,8 +51,6 @@ n_val=$(wc -l < /mnt/su-vista-uscentral1/chaudhari_lab/phil/pneumonitis-variants
 
 status running "setup on $(hostname)"
 [ "$(hostname)" = phil-sllm-02 ] || echo "note: spec names phil-sllm-02; running on $(hostname)"
-grep -q "^Status: done" "$VARIANTS_OUT/STATUS.txt" 2>/dev/null || fail "the variants study is not done ($VARIANTS_OUT/STATUS.txt): the atlas arm starts after it"
-[ -f "$VARIANTS_OUT/val-zero.json" ] && [ -f "$VARIANTS_OUT/val-guide.json" ] || fail "the variants study's VAL arms are missing"
 git -C "$VLM" fetch -q origin
 if [ -d "$TASK_WT" ]; then
     [ -z "$(git -C "$TASK_WT" status --porcelain)" ] || fail "$TASK_WT has uncommitted changes"
@@ -158,7 +157,13 @@ if [ ! -f "$OUT/val-atlas.json" ]; then
     cp "$ans" "$OUT/val-atlas.json.tmp" && mv "$OUT/val-atlas.json.tmp" "$OUT/val-atlas.json"
 fi
 
-# 6. comparison
+# 6. comparison, once the variants study is done (its two VAL arms)
+until grep -q "^Status: done" "$VARIANTS_OUT/STATUS.txt" 2>/dev/null; do
+    grep -q "^Status: failed" "$VARIANTS_OUT/STATUS.txt" 2>/dev/null && fail "the variants study failed: atlas VAL is in val-atlas.json, no comparison"
+    status running "atlas VAL done; waiting for the variants study to finish for the comparison"
+    sleep 600
+done
+[ -f "$VARIANTS_OUT/val-zero.json" ] && [ -f "$VARIANTS_OUT/val-guide.json" ] || fail "the variants study's VAL arms are missing"
 status running "comparison"
 py scripts/compare.py --zero "$VARIANTS_OUT/val-zero.json" --guide "$VARIANTS_OUT/val-guide.json" --arm "atlas=$OUT/val-atlas.json" \
     --pair atlas:zero-shot --pair atlas:guide --pair guide:zero-shot --out "$OUT/comparison" > "$OUT/compare.log" 2>&1 || fail "comparison failed (compare.log)"
