@@ -153,7 +153,57 @@ def stage_brief(lay) -> None:
 # --------------------------------------------------------------------------------------------------
 
 
+def atlas_prompt(iter_n: int, paths) -> str:
+    """The atlas builder (config.ATLAS): session 1 is the literature review (round 0); session k+1 is atlas round k."""
+    reader, k = paths.inputs["reader"], iter_n - 1
+    if k == 0:
+        first = ("This is round 0: the literature review. Before any atlas building, review how the five causes are "
+                 "described and seen on CT in the literature (Radiopaedia, published reviews and case series), through "
+                 "the search assistant: ask many specific questions, several at a time (drop several request files, "
+                 "then wait). Write guide/literature.md (its format: `python3 -B tools/atlas.py --help`) and a first "
+                 "guide/README.md whose `## Patterns` cite it. Read some source scans' reports to learn how this "
+                 "dataset's radiologists word each cause. Do not build atlas entries yet. `python3 -B tools/atlas.py "
+                 "check` must PASS on the literature.")
+    elif k == 1:
+        first = ("This is atlas round 1: the guide and literature review exist (read them first); the atlas is empty. "
+                 f"Build the atlas: exactly {config.ATLAS_PER_VARIANT} entries per cause from your scans, each written "
+                 "up from its report, its answer and its images, findings tied to slice numbers, and marked. Then "
+                 "revise the guide so each pattern points to the atlas entries and slices that show it.")
+    else:
+        first = (f"This is atlas round {k}. The reader has read rounds 1 to {k - 1} with your earlier versions; its "
+                 f"feedback is in `{reader}/round-<j>/`, and the scans it got wrong are now in your scans folder. Start "
+                 "with the latest round: what it got wrong and why. Then revise the guide, the literature review and "
+                 f"the atlas (swap entries to keep exactly {config.ATLAS_PER_VARIANT} per cause).")
+    return f"""{first}
+
+## Where things are
+
+- `{paths.inputs['task.md']}`: the task brief. Read it first.
+- `{paths.inputs['scans']}/`: your labelled TRAIN scans (README.md and index.json there).
+- `{reader}/`: the reader's feedback, one folder per finished round (empty until round 1 is read).
+- `guide/` and `atlas/` in your working folder (`/workspace/rw/program`): edit files under these two only;
+  `instructions.md` and `tools/` are the reader's and must not change (a change there refuses your whole edit).
+- `tools/atlas.py` (draw, list, check), `tools/view_ct.py`, `tools/zoom_organ.py`: the reader's own tools.
+- `{paths.inputs['notebook.md']}`: your notebook so far. Copy it to `{paths.outputs['notebook.md']}` first, then
+  edit it there.
+- `{paths.outputs['change_note.json']}`: write this round's change note here (a JSON object: what you changed and why).
+- `{paths.versions}/`: earlier versions of the program, as plain folders.
+
+Images: every image you open stays in this session's memory, and the session fails once they add up past about 30 MB,
+losing everything you built. Explore scans at `--size 768` or less, draw each atlas image without marks to /tmp at
+`--size 640`, look at it once, place the marks, then write the entry's image with `atlas.py draw` (768 px) without
+opening it again.
+
+Removing entries: you cannot delete files here (a deleted file refuses your whole edit). To remove an entry, add its
+folder name to `atlas/{RETIRED}`, a JSON list of folder names; the loop deletes those entries after your session.
+
+Before you finish, run `python3 -B tools/atlas.py check` from your working folder and fix every problem it prints.
+"""
+
+
 def builder_prompt(iter_n: int, paths) -> str:
+    if config.ATLAS:
+        return atlas_prompt(iter_n, paths)
     reader = paths.inputs["reader"]
     first = ("This is round 1: the guide is empty, the library has no entries, and there is no reader feedback yet. "
              "Build a first guide and a first library from the reference literature and the source scans."
@@ -251,6 +301,43 @@ def retire_entries(library: Path) -> list[str]:
     return removed
 
 
+def load_atlas_tool(tree: Path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(f"atlas_{abs(hash(str(tree)))}", Path(tree) / "tools" / "atlas.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(Path(tree) / "tools"))
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(Path(tree) / "tools"))
+        sys.modules.pop("examples", None)
+        sys.modules.pop("view_ct", None)
+    mod.PROGRAM = Path(tree)
+    mod.ATLAS, mod.GUIDE = mod.PROGRAM / "atlas", mod.PROGRAM / "guide"
+    mod.ENTRIES = mod.ATLAS / "entries"
+    return mod
+
+
+def atlas_version_problems(tree: Path, allowed: dict[str, str], literature_only: bool) -> list[str]:
+    """The atlas tool's own checks (atlas and literature), plus: every entry from one of the builder's scans with that
+    scan's answer as its variant; entries required from atlas round 1, none in round 0."""
+    tool = load_atlas_tool(tree)
+    bad = list(tool.literature_problems()) + list(tool.atlas_problems())
+    rows = tool.entries()
+    if literature_only and rows:
+        bad.append("round 0 builds no atlas entries")
+    if not literature_only and not rows:
+        bad.append("the atlas has no entries")
+    for eid, e in rows:
+        src = e.get("source")
+        if src not in allowed:
+            bad.append(f"{eid}: source is not one of your scans")
+        elif e.get("variant") != allowed[src]:
+            bad.append(f"{eid}: variant is not its scan's answer")
+    return bad
+
+
 def version_problems(tree: Path, allowed: dict[str, str]) -> list[str]:
     """The reader's own check over a version's library, plus: every entry's source is one of the builder's scans
     (``allowed``: id -> cause) and its variant is that scan's cause; the guide is written (not the empty placeholder)."""
@@ -277,6 +364,12 @@ def version_problems(tree: Path, allowed: dict[str, str]) -> list[str]:
 
 
 def library_stats(tree: Path) -> dict:
+    if config.ATLAS:
+        tool = load_atlas_tool(tree)
+        rows = [e for _eid, e in tool.entries()]
+        guide = sum(f.stat().st_size for f in (tree / "guide").rglob("*") if f.is_file())
+        return {"entries": len(rows), "by_variant": dict(Counter(r.get("variant") for r in rows)), "guide_bytes": guide,
+                "sources": tool.cited_sources()}
     rows = [json.loads(f.read_text()) for f in sorted((tree / "examples" / "entries").glob("*/entry.json"))]
     guide = sum(f.stat().st_size for f in (tree / "guide").rglob("*") if f.is_file())
     return {"entries": len(rows), "by_variant": dict(Counter(r.get("variant") for r in rows)), "guide_bytes": guide}
@@ -309,7 +402,7 @@ def write_feedback(lay, k: int, artifacts, score, tree: Path) -> tuple[dict, lis
     for i, a in sorted(answers.items()):
         events = next((f for f in ad._trace_files(artifacts, i) if f.name == "events.jsonl"), None)
         u = usage(events)
-        staged = len(stage_examples.planned(tree, i))
+        staged = len(stage_examples.planned_atlas(tree, i) if config.ATLAS else stage_examples.planned(tree, i))
         top, truth = ranked_first(a), gold_variant(gold[i])
         wrong = top != truth
         if wrong:
@@ -435,15 +528,17 @@ def cmd_loop(args) -> int:
         est = (sum(r["reader_usd"] for r in measured) / sum(r["reader_sessions"] for r in measured)) if measured else per_scan
         return est, 1.15 * est * args.val_scans
 
-    for k in range(1, config.ITERATIONS + 1):
+    first = 0 if config.ATLAS else 1  # the atlas arm's round 0 is the literature review: a builder, no reader
+    for k in range(first, config.ITERATIONS + 1):
         rec = state["rounds"].setdefault(str(k), {"round": k})
+        iter_n = k + 1 if config.ATLAS else k
         # 1. the builder
         if "tag" not in rec:
             if total() + BUILDER_BUDGET_USD + reserve()[1] > args.cap:
                 print(f"STOPPED: round {k}'s builder could pass the ${args.cap:.0f} cap with the guide arm's VAL pass "
                       f"(~${reserve()[1]:.2f}) kept back (spent ${total():.2f})")
                 return 3
-            base = state["rounds"][str(k - 1)]["tag"] if k > 1 else "program-v0"
+            base = state["rounds"][str(k - 1)]["tag"] if k > first else "program-v0"
             sha = run.git(lay.repo, "rev-parse", f"{base}^{{commit}}").strip()
             for name in config.EDITABLE_FILES:  # back to the base: a refused attempt may have left files behind
                 shutil.rmtree(lay.repo / name, ignore_errors=True)
@@ -457,7 +552,7 @@ def cmd_loop(args) -> int:
                 if attempt == 2 and total() + BUILDER_BUDGET_USD + reserve()[1] > args.cap:
                     break
                 print(f"round {k}: builder on {base} (attempt {attempt}) ...", flush=True)
-                outcome = agent.run(iter_n=k, materialized_path=tree)
+                outcome = agent.run(iter_n=iter_n, materialized_path=tree)
                 rec["builder_usd"] = round(float(rec.get("builder_usd") or 0.0) + float(outcome.cost_usd or 0.0), 4)
                 rec["builder_attempts"] = int(rec.get("builder_attempts") or 0) + 1
                 rec["builder_detail"] = str(outcome.detail)[:300]
@@ -468,13 +563,14 @@ def cmd_loop(args) -> int:
             if outcome is None or outcome.exit_code != 0:
                 print(f"STOPPED: round {k}'s builder failed: {outcome.detail if outcome else 'not started'}")
                 return 1
-            rec["retired"] = retire_entries(lay.repo / "examples")
+            rec["retired"] = retire_entries(lay.repo / ("atlas" if config.ATLAS else "examples"))
             tag, new_sha = commit_new_version(ad.TaskStore().manifest(), f"loop {args.run_id} round {k}",
                                               repo_root=lay.repo, allow_empty=True)
             vtree = lay.versions / f"loop-{args.run_id}-round{k}-{tag}"
             materialize(ad.TaskStore().manifest(), new_sha, repo_root=lay.repo, dest=vtree)
             allowed = {e["scan"]: e["cause"] for e in json.loads((scans_dir(lay) / "index.json").read_text())}
-            problems = version_problems(vtree, allowed)
+            problems = (atlas_version_problems(vtree, allowed, literature_only=k == 0) if config.ATLAS
+                        else version_problems(vtree, allowed))
             if problems:
                 rec.setdefault("refused_tags", []).append(tag)
                 save_state(lay, state)
@@ -485,6 +581,8 @@ def cmd_loop(args) -> int:
             save_state(lay, state)
             print(f"round {k}: {tag} {rec['library']}; builder ${rec['builder_usd']:.2f}", flush=True)
         # 2. the reader
+        if k == 0:
+            continue
         if "mean_auroc" not in rec:
             ids = sorted(rounds[str(k)])
             est, keep = reserve()
@@ -523,6 +621,9 @@ def cmd_loop(args) -> int:
             if k == 1 and summary["share_opened_all_drawn_images"] < 0.5:
                 print("STOPPED: fewer than half the round-1 reader sessions opened every drawn image")
                 return 3
+        if args.stop_after is not None and k >= args.stop_after and k < config.ITERATIONS:
+            print(f"PAUSED after round {k} (--stop-after); re-run without it to continue")
+            return 0
     state["final"] = {"round": config.ITERATIONS, "tag": state["rounds"][str(config.ITERATIONS)]["tag"]}
     state["spent_usd"] = spent(state)
     save_state(lay, state)
@@ -569,6 +670,7 @@ def main(argv=None) -> int:
     lp.add_argument("--cap", type=float, default=config.RUN_BUDGET_USD, help="the study's total through VAL (spec)")
     lp.add_argument("--val-scans", type=int, default=134, help="the guide arm's VAL pass to keep room for")
     lp.add_argument("--already-spent", type=float, default=0.0, help="dollars spent before the loop (launcher)")
+    lp.add_argument("--stop-after", type=int, default=None, help="pause after this round's reader pass")
     rp = sub.add_parser("report")
     rp.add_argument("--run-id", default="loop-r1")
     rp.add_argument("--out")

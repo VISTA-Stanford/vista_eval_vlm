@@ -119,3 +119,66 @@ def stage(tree: Path, folder: Path, case_id: str, k: int = config.EXAMPLES_PER_V
     for f in out.iterdir():
         f.chmod(0o444)
     return written
+
+
+# --------------------------------------------------------------------------------------------------
+# The atlas arm (config.ATLAS; spec 2026-11-25-ct-pneumonitis-atlas-arm.md): every entry for every scan
+# --------------------------------------------------------------------------------------------------
+ATLAS_DIR = "atlas_images"
+
+
+def atlas_entries(tree: Path) -> list[tuple[str, dict]]:
+    rows = []
+    for f in sorted((Path(tree) / "atlas" / "entries").glob("*/entry.json")):
+        try:
+            rows.append((f.parent.name, json.loads(f.read_text(encoding="utf-8"))))
+        except (OSError, ValueError):
+            continue
+    order = {v: n for n, (v, _t, _q) in enumerate(config.QUESTIONS)}
+    rows.sort(key=lambda r: (order.get(r[1].get("variant"), 99), r[0]))
+    return rows
+
+
+def planned_atlas(tree: Path, case_id: str) -> list[str]:
+    """The atlas entries staged for this scan, in order: all of them except any from this scan or its patient. Reads
+    no label."""
+    mine = _groups().get(case_id)
+    return [eid for eid, e in atlas_entries(tree)
+            if e.get("source") != case_id and (mine is None or _groups().get(e.get("source")) != mine)]
+
+
+def stage_atlas(tree: Path, folder: Path, case_id: str) -> list[str]:
+    """Copy this scan's atlas images into atlas_images/ with an index of each entry's findings and slices. Returns the
+    image names. Every file is made read-only."""
+    import shutil
+
+    out = Path(folder) / ATLAS_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    by = dict(atlas_entries(tree))
+    lines = ["# Atlas", "", "Clear examples of each cause from other patients' scans, the same for every scan. Each "
+             "image: up to four axial slices of the example, with arrows and boxes at the signs. Open every image "
+             "below with Read.", ""]
+    written, cause = [], None
+    for n, eid in enumerate(planned_atlas(tree, case_id), 1):
+        e = by[eid]
+        if e.get("variant") != cause:
+            cause = e.get("variant")
+            lines += [f"## {cause}", ""]
+        src = Path(tree) / "atlas" / "entries" / eid / e["image"]
+        name = f"{n:02d}-{cause}-{eid}{src.suffix.lower() or '.jpg'}"
+        shutil.copy2(src, out / name)
+        written.append(name)
+        lines += [f"### {name}", f"- {e.get('title', '')}"]
+        lines += [f"- slices {x.get('slices')}{', ' + x['place'] if x.get('place') else ''}: {x.get('text', '')}"
+                  for x in e.get("findings", [])]
+        if e.get("patterns"):
+            lines.append(f"- guide patterns: {', '.join(map(str, e['patterns']))}")
+        if e.get("report_sentence"):
+            lines.append(f"- radiologist's words: {e['report_sentence']}")
+        lines.append("")
+    if not written:
+        lines += ["The atlas has no examples, so there are no images here. Answer from your scan alone.", ""]
+    (out / "index.md").write_text("\n".join(lines), encoding="utf-8")
+    for f in out.iterdir():
+        f.chmod(0o444)
+    return written

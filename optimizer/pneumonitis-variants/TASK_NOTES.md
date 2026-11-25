@@ -41,3 +41,21 @@ the five-variant mean AUROC above zero.
     uv run -q --no-project --with numpy --with scikit-learn python -B scripts/score_probe.py                      $0
     uv run -q --project $AGENTIC_LABEL_OPT --with pytest --with numpy --with pillow --with pandas python -m pytest -q tests/
     bash scripts/run_variants.sh                                                   PAID, <= $250 (the spec's approved run)
+
+## Atlas arm (spec `planning/vista_eval_vlm/2026-11-25-ct-pneumonitis-atlas-arm.md`, Approved 2026-11-25)
+
+Branch `feat/ct-pneumonitis-atlas`. `ATLAS=1` switches to `program_agentic_atlas/` (the same reader tools plus
+`tools/atlas.py`), its own work folder (`~/.cache/alo-tasks/pneumonitis-variants-atlas`), and in place of the 10
+similarity-picked side-by-sides a fixed atlas: exactly 10 marked examples per cause, all staged for every scan (never
+one from its own patient), with an index of each entry's findings tied to slice numbers. Round 0 of the loop is the
+literature review (`guide/literature.md`: at least 5 cited sources per cause; every guide pattern cites one); rounds
+1-5 build and revise the atlas, the guide and the review. Launcher `scripts/run_atlas.sh` (starts only after the
+variants study is done; compares atlas, guide arm, zero-shot and the probe on the same 134 VAL scans), cap $300.
+
+| Build decision | Answer |
+|---|---|
+| Atlas images | `atlas.py draw`: up to 4 axial slices, 768 px, arrows and boxes, JPEG quality 85: ~90 KB on a real scan, ~4.5 MB for 50 (an RGB PNG was ~400 KB, a palette PNG ~360 KB) |
+| Search | up to 80 requests every round (the spec's round-0 budget kept for all rounds, so the sealed setup does not change mid-run) |
+| Builder session | 2 hours (10 write-ups per cause plus the review) |
+| Atlas tool | a new `tools/atlas.py` in the atlas program, not an edit of `examples.py`, so the variants study's reader tools are unchanged |
+| Guide-read count | `scripts/usage.py` also counts `cat`/`head` of a guide file (Read-only counting reported 59% of round-1 sessions; all 80 read it) |

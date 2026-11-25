@@ -5,6 +5,7 @@ them. Win = that interval above zero. A failed answer counts 0.5 on every varian
 Counts and AUROC only.
 
     uv run -q --project $AGENTIC_LABEL_OPT python -B scripts/compare.py --zero ZERO_ANSWERS --guide GUIDE_ANSWERS --out DIR
+    ... --arm atlas=ATLAS_ANSWERS --pair atlas:zero-shot --pair atlas:guide --pair guide:zero-shot   (the atlas arm)
 """
 
 from __future__ import annotations
@@ -52,51 +53,52 @@ def paired_boot(gold, a, b, groups, ids, seed=0, n=N_BOOT) -> tuple[float, list[
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--zero", type=Path, required=True)
-    ap.add_argument("--guide", type=Path, required=True)
+    ap.add_argument("--zero", type=Path, help="the zero-shot arm's answers (same as --arm zero-shot=PATH)")
+    ap.add_argument("--guide", type=Path, help="the guide arm's answers (same as --arm guide=PATH)")
+    ap.add_argument("--arm", action="append", default=[], help="NAME=ANSWERS_JSON, repeatable")
+    ap.add_argument("--pair", action="append", default=[], help="B:A, the paired B - A on the mean; repeatable "
+                                                                "(default guide:zero-shot)")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
+    arms = {}
+    if args.zero:
+        arms["zero-shot"] = args.zero
+    if args.guide:
+        arms["guide"] = args.guide
+    for a in args.arm:
+        name, path = a.split("=", 1)
+        arms[name] = Path(path)
+    pairs = [tuple(p.split(":", 1)) for p in args.pair] or [("guide", "zero-shot")]
     gold = {r["id"]: r for r in ad.read_split("val")}
     groups = json.loads((config.DATA_DIR / "groups.json").read_text())
-    za = json.loads(args.zero.read_text())["answers"]
-    ga = json.loads(args.guide.read_text())["answers"]
-    ids = sorted(set(za) & set(ga) & set(gold))
+    answers = {n: json.loads(p.read_text())["answers"] for n, p in arms.items()}
+    ids = sorted(set(gold).intersection(*answers.values()))
     if len(ids) != len(gold):
-        print(f"note: {len(gold) - len(ids)} VAL scans are missing from one arm; compared on {len(ids)}")
-    zero, guide = arm_probs(za), arm_probs(ga)
+        print(f"note: {len(gold) - len(ids)} VAL scans are missing from an arm; compared on {len(ids)}")
+    probs = {n: arm_probs(a) for n, a in answers.items()}
     pred_path = config.ID_MAP_DIR / "probe_val_predictions.json"
-    probe = json.loads(pred_path.read_text()) if pred_path.is_file() else None
-    zm, zper = mean_auroc(gold, zero, ids)
-    gm, gper = mean_auroc(gold, guide, ids)
-    obs, ci = paired_boot(gold, zero, guide, groups, ids)
+    if pred_path.is_file():
+        probs["MerlinOnc probe"] = json.loads(pred_path.read_text())
     out = {"scans": len(ids), "patients": len({groups[i] for i in ids}),
-           "positives": {v: sum(gold[i][v] for i in ids) for v in VARIANTS},
-           "zero_shot": {"mean": round(zm, 4), **{v: round(x, 4) for v, x in zper.items()},
-                         "failed": sum(bool(za[i].get("error")) for i in ids)},
-           "guide": {"mean": round(gm, 4), **{v: round(x, 4) for v, x in gper.items()},
-                     "failed": sum(bool(ga[i].get("error")) for i in ids)},
-           "guide_minus_zero_shot": {"mean": round(obs, 4), "ci95": [round(ci[0], 4), round(ci[1], 4)],
-                                     "win": ci[0] > 0}}
-    if probe:
-        pm, pper = mean_auroc(gold, probe, ids)
-        pobs, pci = paired_boot(gold, probe, guide, groups, ids, seed=1)
-        out["merlinonc_probe"] = {"mean": round(pm, 4), **{v: round(x, 4) for v, x in pper.items()}}
-        out["guide_minus_probe"] = {"mean": round(pobs, 4), "ci95": [round(pci[0], 4), round(pci[1], 4)]}
+           "positives": {v: sum(gold[i][v] for i in ids) for v in VARIANTS}, "arms": {}, "pairs": {}}
+    for n, pr in probs.items():
+        m, per = mean_auroc(gold, pr, ids)
+        out["arms"][n] = {"mean": round(m, 4), **{v: round(x, 4) for v, x in per.items()},
+                          "failed": sum(bool(answers[n][i].get("error")) for i in ids) if n in answers else 0}
+    for seed, (b, a) in enumerate(pairs):
+        obs, ci = paired_boot(gold, probs[a], probs[b], groups, ids, seed=seed)
+        out["pairs"][f"{b} - {a}"] = {"mean": round(obs, 4), "ci95": [round(ci[0], 4), round(ci[1], 4)], "win": ci[0] > 0}
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "comparison.json").write_text(json.dumps(out, indent=1))
-    head = "| arm | " + " | ".join(VARIANTS) + " | mean |"
     lines = [f"VAL: {out['scans']} scans, {out['patients']} patients; positives "
-             + ", ".join(f"{v} {n}" for v, n in out["positives"].items()), "", head,
-             "|" + "---|" * (len(VARIANTS) + 2)]
-    for name, key in (("zero-shot reader", "zero_shot"), ("guide reader (round 5)", "guide"), ("MerlinOnc probe", "merlinonc_probe")):
-        if key in out:
-            lines.append(f"| {name} | " + " | ".join(f"{out[key][v]:.3f}" for v in VARIANTS) + f" | {out[key]['mean']:.3f} |")
-    d = out["guide_minus_zero_shot"]
-    lines += ["", f"Guide - zero-shot on the mean: {d['mean']:+.3f} [{d['ci95'][0]:+.3f}, {d['ci95'][1]:+.3f}] "
-                  f"(patient bootstrap {N_BOOT}); win: {'yes' if d['win'] else 'no'}."]
-    if "guide_minus_probe" in out:
-        e = out["guide_minus_probe"]
-        lines.append(f"Guide - MerlinOnc probe on the mean: {e['mean']:+.3f} [{e['ci95'][0]:+.3f}, {e['ci95'][1]:+.3f}].")
+             + ", ".join(f"{v} {n}" for v, n in out["positives"].items()), "",
+             "| arm | " + " | ".join(VARIANTS) + " | mean |", "|" + "---|" * (len(VARIANTS) + 2)]
+    for n, r in out["arms"].items():
+        lines.append(f"| {n} | " + " | ".join(f"{r[v]:.3f}" for v in VARIANTS) + f" | {r['mean']:.3f} |")
+    lines.append("")
+    for k, d in out["pairs"].items():
+        lines.append(f"{k} on the mean: {d['mean']:+.3f} [{d['ci95'][0]:+.3f}, {d['ci95'][1]:+.3f}] "
+                     f"(patient bootstrap {N_BOOT}); interval above zero: {'yes' if d['win'] else 'no'}.")
     (args.out / "table.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     return 0

@@ -1,0 +1,19 @@
+You build the reference material another agent, the reader, uses to tell pneumonitis variants apart on chest CT. The reader is a radiologist agent reading one CT scan of a patient with cancer, on its own, with no clinical history. Every scan it reads shows lung change from exactly one of five causes: radiation, an immune checkpoint inhibitor (immunotherapy), another drug, organizing pneumonia, or infection. It answers each cause as a probability from 0 to 100, and each cause is scored one-vs-rest by AUROC: what counts is ranking the scans of each cause above the others.
+
+The reader has the scan, a slice viewer, an organ-zoom tool, the scan's organ ranges, and what you write. Its instructions and tools stay fixed; three things are yours, and only they change between rounds:
+- guide/literature.md: the literature review. How each cause is described and seen on CT in published reviews, case series and reference sources (Radiopaedia and others), through the search assistant: distribution, pattern, timing relative to treatment, how often each sign is reported, the look-alikes and what separates them. Every claim cites a source; every source has a link. This is the foundation: the atlas write-ups and the guide use its terms.
+- atlas/: exactly 10 examples of each cause from the labelled TRAIN scans you are given, the same 50 for every scan the reader reads. Choose the clearest examples, and across the 10 cover the cause's main appearances (not ten copies of one). Each entry: one image of up to four axial slices drawn with `tools/atlas.py draw`, with arrows and boxes at the signs; the findings written out in the literature's terms, each tied to the slice numbers and the place where it shows; the guide patterns it shows; and the radiologist's words for the change. Write each up from the scan's report, its answer and its images together: find on the images what the report describes, at the slices where it is.
+- guide/README.md: the reading procedure, built from the literature and the atlas. A `## Patterns` section: each general pattern in the literature's words, what it looks like on CT at this resolution, which causes it points to and how strongly, which atlas entries and slices show it, and how to tell it from the look-alike; each citing the literature. Then how to weigh the patterns into five probabilities, and what this dataset's answer key tends to call each cause.
+
+How to work each round:
+1. Read the task brief, then your notebook. From atlas round 2, read the reader's feedback for the latest round first: summary.json, then the scans it got most wrong (the cause it ranked first was not the answer), their findings notes (one line per cause: which patterns it looked for and saw), and the confusions. Those scans are among your scans now, with their CT and report.
+2. Ask the search assistant whatever the literature should settle: what the reader keeps confusing, which signs separate those causes, how often they are seen. Ask several questions at a time.
+3. Revise the literature review, the atlas (swap entries; keep exactly 10 per cause) and the guide.
+4. Run `python3 -B tools/atlas.py check` and fix every problem.
+5. Update your notebook (what you changed, why, what the feedback and the literature showed) and write the change note.
+
+Rules:
+- Atlas entries come only from the scans you are given; name the scan an image came from in "source". An entry's "variant" must be its scan's answer.
+- Quote in "report_sentence" only the words about the change shown; leave out names, dates, ages, times, hospital or physician names, accession or record numbers, and anything else that could identify a person. Never put such things in the guide, the atlas, your notes or a search question.
+- Nothing you write may describe one particular reader scan: you never see the reader's VAL scans, and the guide must work on any scan.
+- Keep the guide (README plus literature) under about 60 KB of text.

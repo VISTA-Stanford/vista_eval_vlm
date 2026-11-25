@@ -17,7 +17,8 @@ import re
 import sys
 from pathlib import Path
 
-DRAWN = re.compile(r"/drawn_examples/([^/]+\.png)$")
+DRAWN = re.compile(r"/(?:drawn_examples|atlas_images)/([^/]+\.(?:png|jpg|jpeg))$")
+GUIDE_CMD = re.compile(r"guide/[^\s]*\.md")
 
 
 def usage(events: Path | None) -> dict:
@@ -30,6 +31,9 @@ def usage(events: Path | None) -> dict:
         if e.get("type") != "assistant":
             continue
         for b in e.get("message", {}).get("content", []) or []:
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "Bash":
+                if GUIDE_CMD.search(str((b.get("input") or {}).get("command", ""))):
+                    guide = True  # cat / head of a guide file (2026-11-25: Read-only counting gave 59% for 100%)
             if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "Read":
                 path = str((b.get("input") or {}).get("file_path", ""))
                 m = DRAWN.search(path)
@@ -64,7 +68,9 @@ def summarize(answers_path: Path, tree: Path) -> dict:
     rows = []
     for i, a in sorted(answers.items()):
         u = usage(trace_events(answers_path, i))
-        rows.append({**u, **views(a.get("views_log")), "staged": len(stage_examples.planned(tree, i)),
+        staged = (stage_examples.planned_atlas(tree, i) if (Path(tree) / "atlas").is_dir()
+                  else stage_examples.planned(tree, i))
+        rows.append({**u, **views(a.get("views_log")), "staged": len(staged),
                      "error": bool(a.get("error"))})
     n = max(len(rows), 1)
     staged = [r for r in rows if r["staged"]]

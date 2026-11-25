@@ -22,7 +22,7 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever ``prompt`` below changes.
-PROMPT_TAG = "pneumonitis-variants-v1"
+PROMPT_TAG = "pneumonitis-variants-atlas-v1" if config.ATLAS else "pneumonitis-variants-v1"
 MAX_REASONS = 5
 FINDINGS = "findings.md"
 VIEW_LOG = "views.jsonl"
@@ -77,17 +77,23 @@ def program_spec(forbidden):
         if _TREE is None:
             raise RuntimeError("agentic.set_tree was not called: no program version to draw examples from")
         stage_scan(call.payload["id"], Path(folder))
-        stage_examples.stage(_TREE, Path(folder), call.payload["id"])
+        if config.ATLAS:
+            stage_examples.stage_atlas(_TREE, Path(folder), call.payload["id"])
+        else:
+            stage_examples.stage(_TREE, Path(folder), call.payload["id"])
 
     def prompt(call, stage_name, paths, pass_id):
         # The per-call wrapper: not edited by the builder. Container paths only.
+        beside = "atlas_images" if config.ATLAS else "drawn_examples"
+        library = "atlas" if config.ATLAS else "example library"
+        library_dir = "atlas" if config.ATLAS else "examples"
         questions = " ".join(f'({n}) "{key}": {text}' for n, (key, _t, text) in enumerate(config.QUESTIONS, 1))
         keys = ", ".join(f'"{key}": <a whole number from 0 to 100>' for key, _t, _q in config.QUESTIONS)
         return (
             f"Follow the instructions in {paths.program}/{ENTRY}; its tools are in {paths.program}/tools/ (run "
-            f"Python with python3 -B), its guide in {paths.program}/guide/ and its example library in "
-            f"{paths.program}/examples/. The CT scan is the folder {paths.call}/ct/ (ct.npz and meta.json); beside it "
-            f"are {paths.call}/organs.json, {paths.call}/organ_mask.npz and {paths.call}/drawn_examples/. "
+            f"Python with python3 -B), its guide in {paths.program}/guide/ and its {library} in "
+            f"{paths.program}/{library_dir}/. The CT scan is the folder {paths.call}/ct/ (ct.npz and meta.json); "
+            f"beside it are {paths.call}/organs.json, {paths.call}/organ_mask.npz and {paths.call}/{beside}/. "
             f"Answer five questions about the lung change on this scan: {questions} "
             f"Give each as the chance, from 0 to 100, that the answer is yes. "
             f"Scratch files, including images you render, go in /tmp. Before answering, write {paths.call}/{FINDINGS}: "
