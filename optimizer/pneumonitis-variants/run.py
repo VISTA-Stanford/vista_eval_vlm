@@ -86,6 +86,9 @@ def init_layout(layout) -> None:
     git(repo, "config", "user.email", "optimizer@localhost")
     git(repo, "config", "user.name", f"{config.TASK_NAME} optimizer loop")
     shutil.copytree(config.SEED_PROGRAM_DIR, repo, dirs_exist_ok=True)
+    for rel, src in getattr(config, "SEED_EXTRA", ()):  # the atlas arm's literature review, copied from the mount
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, repo / rel)
     (repo / "iter").mkdir()
     (repo / "iter" / "README.txt").write_text("Releases the loop writes each iteration.\n")
     (repo / ".gitignore").write_text("iter/\n__pycache__/\n")

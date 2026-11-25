@@ -65,9 +65,16 @@ CONTRACT_FILES = ("instructions.md", "tools")
 #: (stage_examples.stage_atlas). A literature review comes first (scripts/run_loop.py, round 0). Own work folder.
 ATLAS = os.environ.get("ATLAS", "0") == "1"  # DECIDE: spec, an on/off switch
 ATLAS_PER_VARIANT = 10  # DECIDE: Phil 2026-11-25
+#: The literature review seeded into the atlas arm's program-v0 as guide/literature.md (run.init_layout copies it in):
+#: an agent with working web search wrote it, 52 sources, PubMed ids checked against their titles (2026-11-25). The
+#: in-loop search proxy is off for this arm: on Vertex every search fails (VPCSC), and the builder took model memory
+#: for literature (Phil 2026-11-25: "this is fine for now"; a deeper review is handed to the Mac).
+LITERATURE_SEED = paths.MOUNT / "planning" / "vista_eval_vlm" / "session" / "2026-11-25-pneumonitis-literature-review.md"
+SEED_EXTRA: tuple = ()
 if ATLAS:
     SEED_PROGRAM_DIR = HERE / "program_agentic_atlas"
     EDITABLE_FILES = ("guide", "atlas")
+    SEED_EXTRA = (("guide/literature.md", LITERATURE_SEED),)
 #: Examples drawn beside each scan before its session (stage_examples.py): per variant, this many entries.
 EXAMPLES_PER_VARIANT = 2  # DECIDE: spec, 2 per variant, 10 images
 import kb_materialize  # noqa: E402  the library holds PNGs; the pinned engine writes versions out as text
@@ -102,7 +109,7 @@ OPTIMIZER_TIMEOUT_SECONDS = 7200 if ATLAS else 3600
 #: The builder reads TRAIN scans, so it never searches itself: the search proxy, a separate sealed session that sees
 #: only the request (Radiopaedia and the literature as text and links; spec, Decided).
 OPTIMIZER_WEB_SEARCH = False
-SEARCH_PROXY = True
+SEARCH_PROXY = not ATLAS  # off for the atlas arm (see LITERATURE_SEED)
 #: Atlas: up to 80 every round (the spec's round-0 literature budget; a ceiling, kept the same every round so the
 #: sealed setup does not change between rounds).
 SEARCH_REQUESTS_PER_ROUND = 80 if ATLAS else 40  # DECIDE: build

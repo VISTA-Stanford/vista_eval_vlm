@@ -20,4 +20,6 @@ The answer is the radiologist's attribution as written, which often draws on his
 
 **Your scans.** `scans/` holds labelled TRAIN scans, one folder each: `ct/` (ct.npz, meta.json), `organs.json`, `answer.json` (the cause), `report.txt` (the radiology report). `scans/index.json` lists each with its cause and where it came from (`source`: given before round 1; `round-<k>`: a scan the reader got wrong in round k).
 
-**The loop.** Round 0: the literature review and a first guide (no atlas yet; the reader does not run). Rounds 1 to 5: you build or revise the atlas, the guide and the review; then the reader reads 80 fresh TRAIN scans (16 per cause) with your version; its answers and findings notes come back, and the scans it got wrong are added to `scans/`. Only round 5's version is scored on VAL, once. VAL and TEST scans never reach you.
+**The literature.** guide/literature.md arrives with a literature review (52 sources from the published literature, found with web search outside this loop). You cannot search the web here.
+
+**The loop.** Round 0: a first guide built from the literature review (no atlas yet; the reader does not run). Rounds 1 to 5: you build or revise the atlas, the guide and the review; then the reader reads 80 fresh TRAIN scans (16 per cause) with your version; its answers and findings notes come back, and the scans it got wrong are added to `scans/`. Only round 5's version is scored on VAL, once. VAL and TEST scans never reach you.

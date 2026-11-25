@@ -157,13 +157,13 @@ def atlas_prompt(iter_n: int, paths) -> str:
     """The atlas builder (config.ATLAS): session 1 is the literature review (round 0); session k+1 is atlas round k."""
     reader, k = paths.inputs["reader"], iter_n - 1
     if k == 0:
-        first = ("This is round 0: the literature review. Before any atlas building, review how the five causes are "
-                 "described and seen on CT in the literature (Radiopaedia, published reviews and case series), through "
-                 "the search assistant: ask many specific questions, several at a time (drop several request files, "
-                 "then wait). Write guide/literature.md (its format: `python3 -B tools/atlas.py --help`) and a first "
-                 "guide/README.md whose `## Patterns` cite it. Read some source scans' reports to learn how this "
-                 "dataset's radiologists word each cause. Do not build atlas entries yet. `python3 -B tools/atlas.py "
-                 "check` must PASS on the literature.")
+        first = ("This is round 0: the guide from the literature. guide/literature.md is a review of the published "
+                 "literature on how the five causes are described and seen on CT, with its sources (each marked full "
+                 "text or abstract). Read it closely. Write a first guide/README.md: a `## Patterns` section built from "
+                 "the review, each pattern citing it, then how to weigh the patterns into five probabilities. Read some "
+                 "source scans' reports to learn how this dataset's radiologists word each cause. You may correct or "
+                 "tighten literature.md (keep its format and sources), but you cannot search the web here. Do not "
+                 "build atlas entries yet. `python3 -B tools/atlas.py check` must PASS on the literature.")
     elif k == 1:
         first = ("This is atlas round 1: the guide and literature review exist (read them first); the atlas is empty. "
                  f"Build the atlas: exactly {config.ATLAS_PER_VARIANT} entries per cause from your scans, each written "
@@ -248,7 +248,7 @@ def build_builder(lay, *, run_id: str, pin: str, search_pin: str):
     prof, credential = config.ROUTE.session_auth()
     token = None if config.ROUTE.is_vertex else run.load_token()[0]
     reader_dir(lay).mkdir(parents=True, exist_ok=True)
-    proxy = opt.search_proxy(lay, image=run.images()[0], pin=search_pin, token=token)
+    proxy = opt.search_proxy(lay, image=run.images()[0], pin=search_pin, token=token)  # None when SEARCH_PROXY is off
     agent = ContainedOptimizerAgent(
         model=config.OPTIMIZER_MODEL,
         system_prompt=op.system_prompt(),
@@ -273,13 +273,13 @@ def build_builder(lay, *, run_id: str, pin: str, search_pin: str):
         max_budget_usd=BUILDER_BUDGET_USD,
         effort=config.OPTIMIZER_EFFORT,
         web_search=False,
-        search_grant=proxy.grant,
+        search_grant=proxy.grant if proxy else None,
         timeout_seconds=config.OPTIMIZER_TIMEOUT_SECONDS,
         host_env={config.TOKEN_ENV_NAME: token} if token else None,
         env=opt.ENV,
         patient_data=config.PATIENT_DATA,
     )
-    return ProxiedOptimizer(agent, proxy)
+    return ProxiedOptimizer(agent, proxy) if proxy else agent
 
 
 def retire_entries(library: Path) -> list[str]:
@@ -546,7 +546,7 @@ def cmd_loop(args) -> int:
             tree = lay.versions / f"loop-{args.run_id}-round{k}-base-{base}"
             if not tree.exists():
                 materialize(ad.TaskStore().manifest(), sha, repo_root=lay.repo, dest=tree)
-            agent = build_builder(lay, run_id=args.run_id, pin=bpin, search_pin=pins["search"])
+            agent = build_builder(lay, run_id=args.run_id, pin=bpin, search_pin=pins.get("search"))
             outcome = None
             for attempt in (1, 2):  # a failed session keeps nothing; one retry before the round stops
                 if attempt == 2 and total() + BUILDER_BUDGET_USD + reserve()[1] > args.cap:
