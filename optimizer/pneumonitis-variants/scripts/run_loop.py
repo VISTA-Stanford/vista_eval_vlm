@@ -885,6 +885,39 @@ def cmd_loop(args) -> int:
     return 0
 
 
+def cmd_retool(args) -> int:
+    """Commit the seed program's reader instructions and tools over the run's latest library version (a host commit,
+    as the KB pilot's retag did), and point the run at it: the last finished discovery session's (or climb round's)
+    tag becomes the new version, so the next session builds on it. For a fixed-tools change mid-run (2026-11-25: the
+    library text limit). Prints the new tag."""
+    lay = layout()
+    state = load_state(lay, args.run_id)
+    recs = [r for r in state.get("discovery", {}).values() if r.get("tag")]
+    recs += [r for _k, r in sorted(state.get("rounds", {}).items(), key=lambda kv: int(kv[0])) if r.get("tag")]
+    if not recs:
+        raise SystemExit("no finished version to retool")
+    rec = recs[-1]
+    sha = run.git(lay.repo, "rev-parse", f"{rec['tag']}^{{commit}}").strip()
+    shutil.rmtree(lay.repo / "library", ignore_errors=True)
+    run.git(lay.repo, "checkout", sha, "--", "library")
+    for name in config.CONTRACT_FILES:
+        dest = lay.repo / name
+        if dest.is_dir():
+            shutil.rmtree(dest)
+        src = config.SEED_PROGRAM_DIR / name
+        (shutil.copytree if src.is_dir() else shutil.copy2)(src, dest)
+    shutil.rmtree(lay.repo / "tools" / "__pycache__", ignore_errors=True)
+    tag, new_sha = commit_new_version(ad.TaskStore().manifest(), f"{args.run_id} retool on {rec['tag']}: {args.why}",
+                                      repo_root=lay.repo, allow_empty=True)
+    rec.setdefault("retooled_from", []).append(rec["tag"])
+    rec.update({"tag": tag, "version_sha": new_sha})
+    if state.get("discovery_final") and state["discovery_final"].get("tag") in rec["retooled_from"]:
+        state["discovery_final"].update({"tag": tag, "version_sha": new_sha})
+    save_state(lay, state)
+    print(f"retooled {rec['retooled_from'][-1]} -> {tag}")
+    return 0
+
+
 def cmd_report(args) -> int:
     state = load_state(layout(), args.run_id)
     rows = []
@@ -937,11 +970,14 @@ def main(argv=None) -> int:
     rp = sub.add_parser("report")
     rp.add_argument("--run-id", default="loop-r1")
     rp.add_argument("--out")
+    rt = sub.add_parser("retool")
+    rt.add_argument("--run-id", default="library-r1", type=run.run_id_arg)
+    rt.add_argument("--why", required=True)
     pp = sub.add_parser("print-prompt")
     pp.add_argument("--iter", type=int, default=2)
     args = ap.parse_args(argv)
     return {"init": cmd_init, "pins": cmd_pins, "loop": cmd_loop, "report": cmd_report, "discover": cmd_discover,
-            "print-prompt": cmd_print_prompt}[args.cmd](args)
+            "print-prompt": cmd_print_prompt, "retool": cmd_retool}[args.cmd](args)
 
 
 if __name__ == "__main__":
