@@ -892,11 +892,14 @@ def cmd_retool(args) -> int:
     library text limit). Prints the new tag."""
     lay = layout()
     state = load_state(lay, args.run_id)
-    recs = [r for r in state.get("discovery", {}).values() if r.get("tag")]
-    recs += [r for _k, r in sorted(state.get("rounds", {}).items(), key=lambda kv: int(kv[0])) if r.get("tag")]
-    if not recs:
-        raise SystemExit("no finished version to retool")
-    rec = recs[-1]
+    if args.from_tag:  # a follow-up arm on a named version; the run's records stay as they are with --no-state
+        rec = {"tag": args.from_tag}
+    else:
+        recs = [r for r in state.get("discovery", {}).values() if r.get("tag")]
+        recs += [r for _k, r in sorted(state.get("rounds", {}).items(), key=lambda kv: int(kv[0])) if r.get("tag")]
+        if not recs:
+            raise SystemExit("no finished version to retool")
+        rec = recs[-1]
     sha = run.git(lay.repo, "rev-parse", f"{rec['tag']}^{{commit}}").strip()
     shutil.rmtree(lay.repo / "library", ignore_errors=True)
     run.git(lay.repo, "checkout", sha, "--", "library")
@@ -909,6 +912,11 @@ def cmd_retool(args) -> int:
     shutil.rmtree(lay.repo / "tools" / "__pycache__", ignore_errors=True)
     tag, new_sha = commit_new_version(ad.TaskStore().manifest(), f"{args.run_id} retool on {rec['tag']}: {args.why}",
                                       repo_root=lay.repo, allow_empty=True)
+    if args.no_state:
+        state.setdefault("follow_ups", []).append({"from": rec["tag"], "tag": tag, "version_sha": new_sha, "why": args.why})
+        save_state(lay, state)
+        print(f"retooled {rec['tag']} -> {tag} (run records unchanged)")
+        return 0
     rec.setdefault("retooled_from", []).append(rec["tag"])
     rec.update({"tag": tag, "version_sha": new_sha})
     if state.get("discovery_final") and state["discovery_final"].get("tag") in rec["retooled_from"]:
@@ -973,6 +981,8 @@ def main(argv=None) -> int:
     rt = sub.add_parser("retool")
     rt.add_argument("--run-id", default="library-r1", type=run.run_id_arg)
     rt.add_argument("--why", required=True)
+    rt.add_argument("--from-tag", help="retool this version instead of the run's latest")
+    rt.add_argument("--no-state", action="store_true", help="leave the run's records unchanged (a follow-up arm)")
     pp = sub.add_parser("print-prompt")
     pp.add_argument("--iter", type=int, default=2)
     args = ap.parse_args(argv)
