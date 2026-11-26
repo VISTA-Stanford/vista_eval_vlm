@@ -181,6 +181,27 @@ def test_suggest_staged_by_similarity_without_own_patient_or_labels(world, tmp_p
     assert "reversed-halo (1 figures)" in sheets
 
 
+def test_drawn_folder_per_cause(world, tmp_path):
+    caches(world)
+    tree = library_tree(tmp_path, {"cop-s6": {"cause": "cop", "source": "s6"}, "cop-s1": {"cause": "cop", "source": "s1"},
+                                   "cop-own": {"cause": "cop", "source": "s5"}, "inf-s4": {"cause": "infection", "source": "s4"}},
+                        {"index": "# Start\n"})
+    folder = tmp_path / "call4"
+    agentic.stage_scan("c1", folder)
+    se.stage_library(tree, folder, "c1")
+    names = se.stage_library_drawn(tree, folder, "c1", k=1)
+    # cop: the most similar visible example (s1) and the cop literature sheet; infection: its one example; no own patient
+    assert names == ["01-cop-cop-s1.jpg", "02-cop-literature-reversed-halo.jpg", "03-infection-inf-s4.jpg"]
+    idx = (folder / "library_drawn" / "index.md").read_text()
+    assert "## cop" in idx and "slices 5-9, right lower lobe" in idx and "cop-own" not in idx
+    import usage as us
+
+    ev = tmp_path / "ev.jsonl"
+    ev.write_text(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Read", "input": {"file_path": f"/workspace/call/library_drawn/{names[0]}"}}]}}))
+    assert us.usage(ev)["drawn_opened"] == 1
+
+
 def test_tool_finds_the_call_folder_itself(staged):
     tree, folder, _c = staged
     out = subprocess.run([sys.executable, "-B", str(tree / "tools" / "library.py"), "page", "index"], capture_output=True,

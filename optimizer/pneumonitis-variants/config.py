@@ -87,8 +87,13 @@ if LIBRARY and ATLAS:
 #: Mac's from the paywalled papers). The reader sees all 252 images (Phil 2026-11-25).
 LITERATURE_V2 = paths.MOUNT / "planning" / "vista_eval_vlm" / "session" / "2026-11-25-pneumonitis-literature-review-v2.md"
 LIT_IMAGE_SETS = (paths.MOUNT / "pneumonitis-literature-images", paths.MOUNT / "pneumonitis-literature-images" / "mac")
+#: LIBRARY_DRAWN=k (Phil 2026-11-26: "just have it look at several examples of each"): before each session, the k
+#: Stanford examples of each cause most like the scan are drawn beside it into library_drawn/, with one literature
+#: sheet per cause, and the reader works from program_agentic_library_drawn/ (the same tools, wording that points at
+#: the drawn folder). 0 = off (the reader fetches from the library itself).
+LIBRARY_DRAWN = int(os.environ.get("LIBRARY_DRAWN", "0"))  # DECIDE: Phil 2026-11-26
 if LIBRARY:
-    SEED_PROGRAM_DIR = HERE / "program_agentic_library"
+    SEED_PROGRAM_DIR = HERE / ("program_agentic_library_drawn" if LIBRARY_DRAWN else "program_agentic_library")
     EDITABLE_FILES = ("library",)
 #: Examples drawn beside each scan before its session (stage_examples.py): per variant, this many entries.
 EXAMPLES_PER_VARIANT = 2  # DECIDE: spec, 2 per variant, 10 images

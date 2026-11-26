@@ -255,3 +255,71 @@ def stage_library(tree: Path, folder: Path, case_id: str) -> dict:
     for f in [assets / "exclude.json", assets / "suggest.json"]:
         f.chmod(0o444)
     return {"hidden_examples": len(hidden), "example_scans": len(sources)}
+
+
+DRAWN_DIR = "library_drawn"
+
+
+def stage_library_drawn(tree: Path, folder: Path, case_id: str, k: int) -> list[str]:
+    """config.LIBRARY_DRAWN: library_drawn/ in the call folder: for each cause, the k visible library examples most
+    like this scan (library_assets/suggest.json, written by stage_library; never the scan's own patient) drawn beside
+    the same region of the scan, and one literature sheet per cause (the one whose pattern group matches the drawn
+    examples' patterns best), with index.md (each image's cause, title and findings). Reads no label."""
+    import re
+    import shutil
+
+    from PIL import Image
+
+    folder = Path(folder)
+    tool = load_tool(tree)  # the reader's tools/examples.py: render and side_by_side
+    out = folder / DRAWN_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    sug = json.loads((folder / "library_assets" / "suggest.json").read_text(encoding="utf-8"))
+    exs = library_examples(tree)
+    organs = json.loads((folder / "organs.json").read_text(encoding="utf-8"))
+    sheets_f = folder / "library_assets" / "lit" / "sheets.json"
+    sheets = json.loads(sheets_f.read_text(encoding="utf-8")) if sheets_f.is_file() else []
+
+    def slug(t):
+        return re.sub(r"[^a-z0-9]+", "-", str(t or "").lower()).strip("-")
+
+    lines = ["# Drawn for your scan", "", "For each cause: the Stanford examples (other patients at this hospital, with this "
+             "hospital's answer key) most like your scan, each drawn beside the same region of YOUR scan (left: the "
+             "example, marked; right: your scan), and one literature sheet (published figures of a pattern of that "
+             "cause). Open every image below with Read.", ""]
+    written, n = [], 0
+    for v, _t, _q in config.QUESTIONS:
+        lines += [f"## {v}", ""]
+        pats = set()
+        for s in sug.get(v, [])[:k]:
+            e = exs.get(s["id"])
+            if not e or not e.get("images"):
+                continue
+            im = e["images"][0]
+            example = Image.open(Path(tree) / "library" / "examples" / s["id"] / im["image"]).convert("L")
+            mine, _why = tool.render(folder / "ct", organs, im.get("view", {}))
+            pic = example if mine is None else tool.side_by_side(example, mine, f"EXAMPLE ({v})", "YOUR SCAN, same region")
+            n += 1
+            name = f"{n:02d}-{v}-{s['id']}.jpg"
+            pic.convert("RGB").save(out / name, format="JPEG", quality=85)
+            written.append(name)
+            pats.update(slug(p) for p in e.get("patterns", []))
+            lines += [f"### {name}", f"- {e.get('title', '')} (similarity to your scan {s['similarity']})"]
+            lines += [f"- slices {x.get('slices')}{', ' + x['place'] if x.get('place') else ''}: {x.get('text', '')}"
+                      for x in e.get("findings", [])[:5]]
+            lines.append("")
+        cands = [m for m in sheets if m["cause"] == v]
+        cands.sort(key=lambda m: (not any(p and (p in slug(m["pattern_group"]) or slug(m["pattern_group"]) in p) for p in pats),
+                                  -len(m["ids"]), m["sheet"]))
+        if cands:
+            n += 1
+            name = f"{n:02d}-{v}-literature-{slug(cands[0]['pattern_group'])}.jpg"
+            shutil.copy2(folder / "library_assets" / "lit" / cands[0]["sheet"], out / name)
+            written.append(name)
+            lines += [f"### {name}", f"- published figures of: {cands[0]['pattern_group']} ({len(cands[0]['ids'])} figures)", ""]
+    if not written:
+        lines += ["The library has no examples, so there are no images here. Answer from your scan alone.", ""]
+    (out / "index.md").write_text("\n".join(lines), encoding="utf-8")
+    for f in out.iterdir():
+        f.chmod(0o444)
+    return written

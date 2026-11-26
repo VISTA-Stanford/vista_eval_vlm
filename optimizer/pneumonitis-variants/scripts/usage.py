@@ -17,7 +17,7 @@ import re
 import sys
 from pathlib import Path
 
-DRAWN = re.compile(r"/(?:drawn_examples|atlas_images)/([^/]+\.(?:png|jpg|jpeg))$")
+DRAWN = re.compile(r"/(?:drawn_examples|atlas_images|library_drawn)/([^/]+\.(?:png|jpg|jpeg))$")
 GUIDE_CMD = re.compile(r"guide/[^\s]*\.md")
 
 

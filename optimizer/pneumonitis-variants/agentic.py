@@ -22,7 +22,8 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever ``prompt`` below changes.
-PROMPT_TAG = ("pneumonitis-variants-library-v1" if config.LIBRARY else "pneumonitis-variants-atlas-v1" if config.ATLAS
+PROMPT_TAG = (f"pneumonitis-variants-library-drawn{config.LIBRARY_DRAWN}-v1" if config.LIBRARY and config.LIBRARY_DRAWN
+              else "pneumonitis-variants-library-v1" if config.LIBRARY else "pneumonitis-variants-atlas-v1" if config.ATLAS
               else "pneumonitis-variants-v1")
 MAX_REASONS = 5
 FINDINGS = "findings.md"
@@ -82,6 +83,8 @@ def program_spec(forbidden):
         stage_scan(call.payload["id"], Path(folder))
         if config.LIBRARY:
             stage_examples.stage_library(_TREE, Path(folder), call.payload["id"])
+            if config.LIBRARY_DRAWN:
+                stage_examples.stage_library_drawn(_TREE, Path(folder), call.payload["id"], config.LIBRARY_DRAWN)
         elif config.ATLAS:
             stage_examples.stage_atlas(_TREE, Path(folder), call.payload["id"])
         else:
