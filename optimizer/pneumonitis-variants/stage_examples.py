@@ -206,6 +206,23 @@ def own_patient_examples(tree: Path, case_id: str) -> list[str]:
                   if e.get("source") == case_id or (mine is not None and _groups().get(e.get("source")) == mine))
 
 
+SUGGEST_PER_CAUSE = 3
+
+
+def suggest(tree: Path, case_id: str, hidden: list[str], k: int = SUGGEST_PER_CAUSE) -> dict:
+    """For tools/library.py suggest: per cause, the visible library examples whose source scans are most like this
+    scan (MerlinOnc cosine), most similar first, with their similarity. Reads embeddings and patient groups only: never
+    a label (the example's cause is the builder's, from TRAIN)."""
+    exs = {eid: e for eid, e in library_examples(tree).items() if eid not in hidden}
+    sims = similarities(case_id, {e.get("source") for e in exs.values() if e.get("source")})
+    out = {}
+    for v, _t, _q in config.QUESTIONS:
+        rows = [(eid, e) for eid, e in exs.items() if e.get("cause") == v and e.get("source") in sims]
+        rows.sort(key=lambda r: (-sims[r[1]["source"]], r[0]))
+        out[v] = [{"id": eid, "similarity": round(sims[e["source"]], 3)} for eid, e in rows[:k]]
+    return out
+
+
 def _link_tree(src: Path, dest: Path) -> None:
     """Hard-link every file under src into dest (same disk by construction: the work folder's caches)."""
     import os
@@ -226,6 +243,7 @@ def stage_library(tree: Path, folder: Path, case_id: str) -> dict:
     _link_tree(config.LIT_ASSETS_DIR, assets)
     hidden = own_patient_examples(tree, case_id)
     (assets / "exclude.json").write_text(json.dumps(hidden), encoding="utf-8")
+    (assets / "suggest.json").write_text(json.dumps(suggest(tree, case_id, hidden)), encoding="utf-8")
     sources = sorted({e.get("source") for eid, e in library_examples(tree).items() if eid not in hidden and e.get("source")})
     for src in sources:
         base = config.TRAIN_SCANS_DIR / src
@@ -234,6 +252,6 @@ def stage_library(tree: Path, folder: Path, case_id: str) -> dict:
             import os
 
             os.link(base / name, folder / "library_scans" / src / name)
-    for f in [assets / "exclude.json"]:
+    for f in [assets / "exclude.json", assets / "suggest.json"]:
         f.chmod(0o444)
     return {"hidden_examples": len(hidden), "example_scans": len(sources)}

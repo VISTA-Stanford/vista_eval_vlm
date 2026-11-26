@@ -42,6 +42,10 @@ def caches(world_ids):
     (lit / "index.json").write_text(json.dumps([{"id": "oa-fig1", "file": "oa-fig1.jpg", "cause": "cop",
                                                  "pattern": "reversed halo", "caption": "a reversed halo sign",
                                                  "source": {"title": "t", "journal": "j", "year": 2020}}]))
+    (lit / "sheets").mkdir()
+    Image.new("RGB", (64, 64), (90, 90, 90)).save(lit / "sheets" / "cop--reversed-halo.jpg")
+    (lit / "sheets.json").write_text(json.dumps([{"sheet": "sheets/cop--reversed-halo.jpg", "cause": "cop",
+                                                  "pattern_group": "reversed-halo", "ids": ["oa-fig1"]}]))
     tr = config.TRAIN_SCANS_DIR
     if tr.exists():
         shutil.rmtree(tr)
@@ -143,6 +147,45 @@ def test_tool_search_page_lit_example_and_log(staged):
     use = run_loop.library_use(folder / "library_log.jsonl")
     assert use["searches"] == 1 and use["pages_read"] == ["reversed-halo"] and use["lit_images_opened"] == 1
     assert use["examples_opened"] == 1 and use["library_commands"] == 5
+
+
+def test_suggest_staged_by_similarity_without_own_patient_or_labels(world, tmp_path, monkeypatch):
+    caches(world)
+    # cop examples from s1 (cos 0.995 to c1), s6 (0.958), s5 (c1's own patient); one infection example from s4
+    tree = library_tree(tmp_path, {"cop-s6": {"cause": "cop", "source": "s6"}, "cop-s1": {"cause": "cop", "source": "s1"},
+                                   "cop-own": {"cause": "cop", "source": "s5"}, "inf-s4": {"cause": "infection", "source": "s4"}},
+                        {"index": "# Start\n"})
+
+    def boom(*_a, **_k):
+        raise AssertionError("a label was read")
+
+    monkeypatch.setattr(ad, "read_split", boom)
+    folder = tmp_path / "call3"
+    agentic.stage_scan("c1", folder)
+    se.stage_library(tree, folder, "c1")
+    sug = json.loads((folder / "library_assets" / "suggest.json").read_text())
+    assert [x["id"] for x in sug["cop"]] == ["cop-s1", "cop-s6"]  # most similar first; the own-patient one never
+    assert [x["id"] for x in sug["infection"]] == ["inf-s4"] and sug["radiation"] == []
+    out = run_tool(tree, "suggest", "--scan", str(folder), "--out", str(tmp_path / "sug"))
+    assert "[cop] cop-s1" in out and "[cop] cop-s6" in out and "cop-own" not in out
+    assert "cop--reversed-halo.jpg" in out  # the literature sheet for the cause
+    from PIL import Image
+
+    with Image.open(tmp_path / "sug" / "suggest-cop-cop-s1.jpg") as im:
+        assert im.width > im.height
+    import run_loop
+
+    use = run_loop.library_use(folder / "library_log.jsonl")
+    assert use["examples_opened"] == 3  # the two cop and the one infection example, logged as opens
+    sheets = run_tool(tree, "lit", "--sheets", "--cause", "cop", "--scan", str(folder))
+    assert "reversed-halo (1 figures)" in sheets
+
+
+def test_tool_finds_the_call_folder_itself(staged):
+    tree, folder, _c = staged
+    out = subprocess.run([sys.executable, "-B", str(tree / "tools" / "library.py"), "page", "index"], capture_output=True,
+                         text=True, cwd=folder / "ct").stdout
+    assert "# Start" in out and (folder / "library_log.jsonl").read_text().count('"page"') >= 1
 
 
 def test_library_check(world, tmp_path):

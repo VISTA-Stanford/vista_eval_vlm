@@ -2,12 +2,20 @@
 other drug, organizing pneumonia, infection), built from the published literature and from labelled scans of other
 patients at our hospital. Spec planning/vista_eval_vlm/2026-11-25-ct-pneumonitis-library.md.
 
+    python3 -B tools/library.py suggest [--cause C ...] [--per 2]   START HERE: the examples most like your scan, per
+                                                                  cause, drawn beside it, and their literature sheets
     python3 -B tools/library.py search WORDS --scan CALL_DIR [--cause C] [--kind page|lit|example] [--limit 20]
     python3 -B tools/library.py page NAME --scan CALL_DIR          print a wiki page (start with: page index)
     python3 -B tools/library.py lit ID --scan CALL_DIR             a literature image: caption, source and its file
     python3 -B tools/library.py example ID --scan CALL_DIR [--out /tmp/lib]
 
-CALL_DIR is your scan's folder: the one that holds ct/, organs.json and library_assets/.
+CALL_DIR is your scan's folder: the one that holds ct/, organs.json and library_assets/. It is found by itself when
+you leave --scan out.
+
+suggest: for each cause (or the ones you name), the Stanford examples whose scans are most like yours (a CT model's
+whole-scan similarity), each drawn beside the same region of your scan as one image to open with Read, with its
+findings; then the literature sheets (one image per pattern: the published figures of that pattern) for the patterns
+those examples show, to open with Read. `lit --sheets [--cause C]` lists every literature sheet.
     python3 -B tools/library.py check                      (for the builders) validate the library
 
 What is where, inside the program folder and beside the reader's scan:
@@ -63,10 +71,18 @@ def log(entry: dict) -> None:
 
 
 def find_call() -> Path | None:
-    """The reader's call folder: the one that holds ct/ and library_assets/ (the cwd or its parents, or /workspace)."""
-    for d in [Path.cwd(), *Path.cwd().parents]:
-        if (d / "ct").is_dir() and (d / "library_assets").is_dir():
-            return d
+    """The reader's call folder: the one that holds ct/ and library_assets/ (the cwd or its parents, or one level or
+    two below /workspace, where the session's folders are mounted)."""
+    base = Path("/workspace")
+    cands = [Path.cwd(), *Path.cwd().parents]
+    if base.is_dir():
+        cands += sorted(base.glob("*")) + sorted(base.glob("*/*"))
+    for d in cands:
+        try:
+            if (d / "ct").is_dir() and (d / "library_assets").is_dir():
+                return d
+        except OSError:
+            continue
     return None
 
 
@@ -165,7 +181,77 @@ def cmd_page(args) -> int:
     return 0
 
 
+def sheets() -> list[dict]:
+    d = lit_dir(_call)
+    f = d / "sheets.json" if d else None
+    return json.loads(f.read_text(encoding="utf-8")) if f and f.is_file() else []
+
+
+def slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")
+
+
+def cmd_suggest(args) -> int:
+    if _call is None:
+        print("could not find your scan's folder; pass --scan CALL_DIR")
+        return 1
+    f = _call / "library_assets" / "suggest.json"
+    sug = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    causes = args.cause or list(CAUSES)
+    exs = examples()
+    log({"cmd": "suggest", "causes": causes, "per": args.per})
+    if not any(sug.get(c) for c in causes):
+        print("no suggestions: the library has no examples" if not exs else "no suggestions for these causes")
+        return 0
+    from PIL import Image
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    organs_path = _call / "organs.json"
+    organs = json.loads(organs_path.read_text(encoding="utf-8")) if organs_path.is_file() else None
+    patterns: dict[str, set] = {}
+    print("Stanford examples most like your scan (similarity of the whole scan, 1.0 = identical), drawn beside your scan:")
+    for c in causes:
+        for s in sug.get(c, [])[: args.per]:
+            e = exs.get(s["id"])
+            if not e:
+                continue
+            log({"cmd": "example", "id": s["id"], "found": True, "via": "suggest"})
+            im = e.get("images", [{}])[0]
+            out = args.out / f"suggest-{c}-{s['id']}.jpg"
+            example = Image.open(EXAMPLES / s["id"] / im["image"]).convert("L")
+            mine, _why = ex.render(_call / "ct", organs, im.get("view", {}))
+            pic = example if mine is None else ex.side_by_side(example, mine, f"EXAMPLE ({c})", "YOUR SCAN, same region")
+            pic.convert("RGB").save(out, format="JPEG", quality=85)
+            print(f"\n[{c}] {s['id']} (similarity {s['similarity']}): {e.get('title', '')}")
+            for x in e.get("findings", [])[:4]:
+                print(f"  - slices {x.get('slices')}{', ' + x['place'] if x.get('place') else ''}: {x.get('text', '')}")
+            print(f"  image: {out}  (left: the example, marked; right: your scan)")
+            patterns.setdefault(c, set()).update(slug(p) for p in e.get("patterns", []))
+    sh = sheets()
+    lines = []
+    for c in causes:
+        picks = [m for m in sh if m["cause"] == c]
+        want = patterns.get(c, set())
+        picks.sort(key=lambda m: (not any(w and (w in slug(m["pattern_group"]) or slug(m["pattern_group"]) in w) for w in want),
+                                  m["sheet"]))
+        lines += [f"  [{c}] {lit_dir(_call) / m['sheet']}  ({m['pattern_group']}, {len(m['ids'])} figures)" for m in picks[:2]]
+    if lines:
+        print("\nLiterature sheets (published figures of a pattern, one image each) for these causes:")
+        print("\n".join(lines))
+    print("\nOpen each image with Read and compare it with your scan; `lit --sheets --cause C` lists every sheet.")
+    return 0
+
+
 def cmd_lit(args) -> int:
+    if args.sheets:
+        rows = [m for m in sheets() if not args.cause or m["cause"] == args.cause]
+        log({"cmd": "lit-sheets", "cause": args.cause, "n": len(rows)})
+        for m in rows:
+            print(f"{m['cause']}: {m['pattern_group']} ({len(m['ids'])} figures): {lit_dir(_call) / m['sheet']}")
+        return 0
+    if not args.id:
+        print("give a literature image ID, or --sheets")
+        return 1
     r = next((x for x in lit_index(_call) if x.get("id") == args.id), None)
     log({"cmd": "lit", "id": args.id, "found": r is not None})
     if r is None:
@@ -310,8 +396,15 @@ def main(argv=None) -> int:
     p.add_argument("name")
     p.add_argument("--scan", type=Path)
     li = sub.add_parser("lit")
-    li.add_argument("id")
+    li.add_argument("id", nargs="?")
     li.add_argument("--scan", type=Path)
+    li.add_argument("--sheets", action="store_true", help="list the literature sheets (one image per pattern)")
+    li.add_argument("--cause", choices=CAUSES)
+    su = sub.add_parser("suggest")
+    su.add_argument("--cause", choices=CAUSES, action="append")
+    su.add_argument("--per", type=int, default=2)
+    su.add_argument("--scan", type=Path)
+    su.add_argument("--out", type=Path, default=Path("/tmp/lib"))
     e = sub.add_parser("example")
     e.add_argument("id")
     e.add_argument("--scan", type=Path, required=True)
@@ -320,7 +413,8 @@ def main(argv=None) -> int:
     c.add_argument("--lit-index", help="the literature images' index.json, to check [[lit:ID]] links")
     args = ap.parse_args(argv)
     _call = Path(args.scan).resolve() if getattr(args, "scan", None) else find_call()
-    return {"search": cmd_search, "page": cmd_page, "lit": cmd_lit, "example": cmd_example, "check": cmd_check}[args.cmd](args)
+    return {"search": cmd_search, "page": cmd_page, "lit": cmd_lit, "example": cmd_example, "check": cmd_check,
+            "suggest": cmd_suggest}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,9 @@ folder's disk so sessions get hard links, not copies.
             a VAL id stops it. Every file read-only. Resumes.
     lit     config.LIT_ASSETS_DIR/lit/<id>.<ext> for both literature image sets and lit/index.json (id, file, cause,
             pattern, caption, panel, source, licence, use), ids "oa-..." (open access) and "mac-..." (paywalled papers).
+    sheets  config.LIT_ASSETS_DIR/lit/sheets/<cause>--<pattern group>.jpg: one contact sheet per (cause, pattern group) of the
+            literature images (up to 6 per sheet, 1024 px, each tile labelled with its id), and lit/sheets.json
+            (sheet, cause, pattern, image ids); tools/library.py suggest and lit --sheet point the reader to them.
     check   $0: every discovery scan staged with all its files; every literature image listed and present. PASS/FAIL.
 
     cd optimizer/pneumonitis-variants
@@ -131,6 +134,7 @@ def cmd_lit(_args) -> int:
             dest.chmod(0o444)
         s = r.get("source", {})
         index.append({"id": lid, "file": dest.name, "cause": r.get("cause"), "pattern": r.get("pattern"),
+                      "pattern_group": r.get("pattern_group") or r.get("pattern"),
                       "caption": r.get("caption"), "panel": r.get("panel"),
                       "source": {k: s.get(k) for k in ("title", "journal", "site or journal", "year", "url", "pmid", "pmcid") if s.get(k)},
                       "licence": r.get("licence"), "use": r.get("use", "may be shown to the reader")})
@@ -141,6 +145,53 @@ def cmd_lit(_args) -> int:
     f.chmod(0o444)
     print(f"literature images {len(index)}: by cause {dict(Counter(r['cause'] for r in index))}; "
           f"by set {dict(Counter(r['id'].split('-')[0] for r in index))}")
+    return 0
+
+
+def slug(text: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9]+", "-", str(text or "other").lower()).strip("-")[:60] or "other"
+
+
+def cmd_sheets(_args) -> int:
+    from PIL import Image, ImageDraw
+
+    root = config.LIT_ASSETS_DIR / "lit"
+    idx = json.loads((root / "index.json").read_text())
+    groups: dict[tuple, list] = {}
+    for r in idx:
+        groups.setdefault((r["cause"], slug(r.get("pattern_group") or r.get("pattern"))), []).append(r)
+    out = root / "sheets"
+    if out.exists():
+        for f in out.iterdir():
+            f.chmod(0o644)
+        shutil.rmtree(out)
+    out.mkdir()
+    meta = []
+    for (cause, pat), rows in sorted(groups.items()):
+        for part in range(0, len(rows), 6):
+            chunk = rows[part:part + 6]
+            tiles = []
+            for r in chunk:
+                im = Image.open(root / r["file"]).convert("RGB")
+                im.thumbnail((480, 480))
+                tile = Image.new("RGB", (480, 500), (0, 0, 0))
+                tile.paste(im, ((480 - im.width) // 2, 20))
+                ImageDraw.Draw(tile).text((4, 3), r["id"][:60], fill=(255, 220, 0))
+                tiles.append(tile)
+            cols = 3 if len(tiles) > 2 else len(tiles)
+            nrow = (len(tiles) + cols - 1) // cols
+            sheet = Image.new("RGB", (cols * 480, nrow * 500))
+            for n, t in enumerate(tiles):
+                sheet.paste(t, ((n % cols) * 480, (n // cols) * 500))
+            sheet.thumbnail((1024, 1024))
+            name = f"{cause}--{pat}{'-' + str(part // 6 + 1) if len(rows) > 6 else ''}.jpg"
+            sheet.save(out / name, format="JPEG", quality=85)
+            (out / name).chmod(0o444)
+            meta.append({"sheet": f"sheets/{name}", "cause": cause, "pattern_group": pat, "ids": [r["id"] for r in chunk]})
+    (root / "sheets.json").write_text(json.dumps(meta, indent=1))
+    print(f"literature sheets {len(meta)} from {len(idx)} images; by cause {dict(Counter(m['cause'] for m in meta))}")
     return 0
 
 
@@ -161,10 +212,10 @@ def cmd_check(_args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("train", "lit", "check"):
+    for n in ("train", "lit", "sheets", "check"):
         sub.add_parser(n)
     args = ap.parse_args()
-    return {"train": cmd_train, "lit": cmd_lit, "check": cmd_check}[args.cmd](args)
+    return {"train": cmd_train, "lit": cmd_lit, "sheets": cmd_sheets, "check": cmd_check}[args.cmd](args)
 
 
 if __name__ == "__main__":
