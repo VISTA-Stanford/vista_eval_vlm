@@ -209,7 +209,7 @@ def cmd_suggest(args) -> int:
     organs_path = _call / "organs.json"
     organs = json.loads(organs_path.read_text(encoding="utf-8")) if organs_path.is_file() else None
     patterns: dict[str, set] = {}
-    print("Stanford examples most like your scan (similarity of the whole scan, 1.0 = identical), drawn beside your scan:")
+    print("Stanford examples most like your scan, for each cause, drawn beside your scan:")
     for c in causes:
         for s in sug.get(c, [])[: args.per]:
             e = exs.get(s["id"])
@@ -222,7 +222,8 @@ def cmd_suggest(args) -> int:
             mine, _why = ex.render(_call / "ct", organs, im.get("view", {}))
             pic = example if mine is None else ex.side_by_side(example, mine, f"EXAMPLE ({c})", "YOUR SCAN, same region")
             pic.convert("RGB").save(out, format="JPEG", quality=85)
-            print(f"\n[{c}] {s['id']} (similarity {s['similarity']}): {e.get('title', '')}")
+            sim = f" (similarity {s['similarity']})" if "similarity" in s else ""
+            print(f"\n[{c}] {s['id']}{sim}: {e.get('title', '')}")
             for x in e.get("findings", [])[:4]:
                 print(f"  - slices {x.get('slices')}{', ' + x['place'] if x.get('place') else ''}: {x.get('text', '')}")
             print(f"  image: {out}  (left: the example, marked; right: your scan)")

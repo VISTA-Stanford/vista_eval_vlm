@@ -22,7 +22,8 @@ from adapters import patient_dir, rows_for
 ENTRY = "instructions.md"
 OUTPUT = "output.json"
 #: Part of the key that decides whether a finished pass can be reused. Bump it whenever ``prompt`` below changes.
-PROMPT_TAG = (f"pneumonitis-variants-library-drawn{config.LIBRARY_DRAWN}-v1" if config.LIBRARY and config.LIBRARY_DRAWN
+PROMPT_TAG = (("pneumonitis-variants-library" + (f"-drawn{config.LIBRARY_DRAWN}" if config.LIBRARY_DRAWN else "")
+               + ("-nosim" if config.LIBRARY_HIDE_SIM else "") + "-v1") if config.LIBRARY and (config.LIBRARY_DRAWN or config.LIBRARY_HIDE_SIM)
               else "pneumonitis-variants-library-v1" if config.LIBRARY else "pneumonitis-variants-atlas-v1" if config.ATLAS
               else "pneumonitis-variants-v1")
 MAX_REASONS = 5

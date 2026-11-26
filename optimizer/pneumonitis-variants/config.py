@@ -92,6 +92,10 @@ LIT_IMAGE_SETS = (paths.MOUNT / "pneumonitis-literature-images", paths.MOUNT / "
 #: sheet per cause, and the reader works from program_agentic_library_drawn/ (the same tools, wording that points at
 #: the drawn folder). 0 = off (the reader fetches from the library itself).
 LIBRARY_DRAWN = int(os.environ.get("LIBRARY_DRAWN", "0"))  # DECIDE: Phil 2026-11-26
+#: LIBRARY_HIDE_SIM=1: the suggested and drawn examples are still picked by similarity, but the reader is not shown the
+#: similarity scores (Phil 2026-11-26: the best score per cause alone gives AUROC ~0.69-0.71, so showing it confounds
+#: "the reader learned from examples" with "the reader read the CT model's similarity").
+LIBRARY_HIDE_SIM = os.environ.get("LIBRARY_HIDE_SIM", "0") == "1"
 if LIBRARY:
     SEED_PROGRAM_DIR = HERE / ("program_agentic_library_drawn" if LIBRARY_DRAWN else "program_agentic_library")
     EDITABLE_FILES = ("library",)

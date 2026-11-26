@@ -220,6 +220,8 @@ def suggest(tree: Path, case_id: str, hidden: list[str], k: int = SUGGEST_PER_CA
         rows = [(eid, e) for eid, e in exs.items() if e.get("cause") == v and e.get("source") in sims]
         rows.sort(key=lambda r: (-sims[r[1]["source"]], r[0]))
         out[v] = [{"id": eid, "similarity": round(sims[e["source"]], 3)} for eid, e in rows[:k]]
+    if config.LIBRARY_HIDE_SIM:  # keep the pick and its order within a cause, drop the scores the reader would see
+        out = {v: [{"id": x["id"]} for x in xs] for v, xs in out.items()}
     return out
 
 
@@ -304,7 +306,7 @@ def stage_library_drawn(tree: Path, folder: Path, case_id: str, k: int) -> list[
             pic.convert("RGB").save(out / name, format="JPEG", quality=85)
             written.append(name)
             pats.update(slug(p) for p in e.get("patterns", []))
-            lines += [f"### {name}", f"- {e.get('title', '')} (similarity to your scan {s['similarity']})"]
+            lines += [f"### {name}", f"- {e.get('title', '')}" + (f" (similarity to your scan {s['similarity']})" if "similarity" in s else "")]
             lines += [f"- slices {x.get('slices')}{', ' + x['place'] if x.get('place') else ''}: {x.get('text', '')}"
                       for x in e.get("findings", [])[:5]]
             lines.append("")

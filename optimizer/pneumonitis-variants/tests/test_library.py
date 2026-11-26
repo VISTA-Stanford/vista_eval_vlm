@@ -202,6 +202,22 @@ def test_drawn_folder_per_cause(world, tmp_path):
     assert us.usage(ev)["drawn_opened"] == 1
 
 
+def test_hide_similarity(world, tmp_path, monkeypatch):
+    caches(world)
+    tree = library_tree(tmp_path, {"cop-s6": {"cause": "cop", "source": "s6"}, "cop-s1": {"cause": "cop", "source": "s1"}},
+                        {"index": "# Start\n"})
+    monkeypatch.setattr(config, "LIBRARY_HIDE_SIM", True)
+    folder = tmp_path / "call5"
+    agentic.stage_scan("c1", folder)
+    se.stage_library(tree, folder, "c1")
+    sug = json.loads((folder / "library_assets" / "suggest.json").read_text())
+    assert sug["cop"] == [{"id": "cop-s1"}, {"id": "cop-s6"}]  # same pick and order, no scores
+    out = run_tool(tree, "suggest", "--scan", str(folder), "--out", str(tmp_path / "s5"))
+    assert "(similarity " not in out and "[cop] cop-s1" in out
+    se.stage_library_drawn(tree, folder, "c1", k=1)
+    assert "(similarity to your scan" not in (folder / "library_drawn" / "index.md").read_text()
+
+
 def test_tool_finds_the_call_folder_itself(staged):
     tree, folder, _c = staged
     out = subprocess.run([sys.executable, "-B", str(tree / "tools" / "library.py"), "page", "index"], capture_output=True,
