@@ -234,6 +234,20 @@ def library_prompt(iter_n: int, paths) -> str:
                  "separate, from the literature and our counts; when to stay near even odds), rewrite the start page as a "
                  "short reading procedure, and keep at most 150 Stanford examples (retire the weakest). Note in the notebook "
                  "the literature you would ask for in the next run.")
+    elif config.LIBRARY_DRAWN:
+        first = (f"You are the director, climb round {k}. The reader has read rounds 1 to {k - 1} with the library; its "
+                 f"feedback is in `{paths.inputs['reader']}/round-<j>/` (answers, findings notes, and how many of the "
+                 "images drawn for it it opened). This reader does not browse: before each scan it is shown "
+                 f"library_drawn/, the {config.LIBRARY_DRAWN} Stanford examples of each cause most like its scan (picked from "
+                 "your examples by a CT model's whole-scan similarity, never shown the similarity), each drawn beside its scan "
+                 "with your findings write-up, plus one literature sheet per cause (the one whose pattern group best "
+                 "matches those examples' patterns). It is told how weak it is without the library and asked to open "
+                 "every image. So what you control is which examples exist, what each image shows and marks, what each "
+                 "write-up teaches (especially how to tell the cause from its look-alikes), and each example's patterns. "
+                 "Start with the latest round: what it got wrong, what its findings notes say about the drawn images, "
+                 "and whether they helped or misled. Revise the examples (swap within the 150), their images and "
+                 "write-ups, the pages and the catalogue. Fan out subagents as you need. Note literature you would ask "
+                 "for in the next run in the notebook.")
     else:
         first = (f"You are the director, climb round {k}. The reader has read rounds 1 to {k - 1} with the library; its "
                  f"feedback is in `{paths.inputs['reader']}/round-<j>/` (answers, findings notes, how it used the library). "
@@ -544,6 +558,7 @@ def write_feedback(lay, k: int, artifacts, score, tree: Path) -> tuple[dict, lis
             "mean_library_commands": round(sum(s["library_commands"] for s in scans) / max(len(scans), 1), 2),
             "mean_examples_opened": round(sum(s["examples_opened"] for s in scans) / max(len(scans), 1), 2),
             "mean_lit_images_opened": round(sum(s["lit_images_opened"] for s in scans) / max(len(scans), 1), 2),
+            "mean_drawn_images_opened": round(sum(s["drawn_images_opened"] for s in scans) / max(len(scans), 1), 2),
             "pages_read": dict(Counter(p for s in scans for p in s["pages_read"]).most_common(30))} if config.LIBRARY else {}),
         "failed_sessions": sum(bool(s["error"]) for s in scans),
     }
@@ -765,15 +780,20 @@ def cmd_loop(args) -> int:
     first = 0 if config.ATLAS else 1  # the atlas arm's round 0 is the literature review: a builder, no reader
     if config.LIBRARY:  # spent includes discovery (the cap is the study's total through VAL)
         args.already_spent += discovery_spent(state)
-    for k in range(first, config.ITERATIONS + 1):
+    last = args.rounds or config.ITERATIONS
+    for k in range(first, last + 1):
         rec = state["rounds"].setdefault(str(k), {"round": k})
         iter_n = k + 1 if config.ATLAS else k
         # 1. the builder (library arm: round 1 reads discovery's library; from round 2 the director revises first)
         if config.LIBRARY and "tag" not in rec:
             if k == 1:
-                fin = state.get("discovery_final")
+                if args.start_tag:  # a climb from a named version (e.g. a retooled one), not from this run's discovery
+                    fin = {"tag": args.start_tag,
+                           "version_sha": run.git(lay.repo, "rev-parse", f"{args.start_tag}^{{commit}}").strip()}
+                else:
+                    fin = state.get("discovery_final")
                 if not fin:
-                    raise SystemExit("run discover first: no discovery library")
+                    raise SystemExit("run discover first (or pass --start-tag): no library to start from")
                 rec.update({"tag": fin["tag"], "version_sha": fin["version_sha"]})
                 save_state(lay, state)
             else:
@@ -875,10 +895,10 @@ def cmd_loop(args) -> int:
             if k == 1 and not config.LIBRARY and summary["share_opened_all_drawn_images"] < 0.5:
                 print("STOPPED: fewer than half the round-1 reader sessions opened every drawn image")
                 return 3
-        if args.stop_after is not None and k >= args.stop_after and k < config.ITERATIONS:
+        if args.stop_after is not None and k >= args.stop_after and k < last:
             print(f"PAUSED after round {k} (--stop-after); re-run without it to continue")
             return 0
-    state["final"] = {"round": config.ITERATIONS, "tag": state["rounds"][str(config.ITERATIONS)]["tag"]}
+    state["final"] = {"round": last, "tag": state["rounds"][str(last)]["tag"]}
     state["spent_usd"] = spent(state)
     save_state(lay, state)
     print(json.dumps({"final": state["final"], "spent_usd": state["spent_usd"]}))
@@ -972,6 +992,8 @@ def main(argv=None) -> int:
     lp.add_argument("--val-scans", type=int, default=134, help="the guide arm's VAL pass to keep room for")
     lp.add_argument("--already-spent", type=float, default=0.0, help="dollars spent before the loop (launcher)")
     lp.add_argument("--stop-after", type=int, default=None, help="pause after this round's reader pass")
+    lp.add_argument("--start-tag", help="library arm: round 1 reads this version instead of this run's discovery")
+    lp.add_argument("--rounds", type=int, default=None, help="climb rounds (default config.ITERATIONS)")
     dp = sub.add_parser("discover")
     dp.add_argument("--run-id", default="library-r1", type=run.run_id_arg)
     dp.add_argument("--stop-after", type=int, default=None, help="pause after this many discovery sessions")
